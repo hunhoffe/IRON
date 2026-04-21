@@ -10,29 +10,35 @@ from iron.common.test_utils import run_test
 
 
 def get_params():
+    # cols must be > 1023 so that design.py computes cols_split >= 2,
+    # ensuring the innermost BD dimension is >= 2 elements (4 bytes for bf16).
     configs = [
-        # (rows, cols, repeat)
-        (4, 64, 2),
-        (4, 64, 4),
-        (8, 32, 2),
-        (8, 32, 4),
-        (2, 128, 3),
+        # (rows, cols, repeat, transfer_size)
+        (4, 1024, 2, 64),
+        (4, 1024, 4, 64),
+        (8, 1024, 2, 64),
+        (8, 1024, 4, 64),
+        (2, 1024, 3, 64),
     ]
 
     return [
-        pytest.param(rows, cols, repeat, id=f"r{rows}_c{cols}_x{repeat}")
-        for rows, cols, repeat in configs
+        pytest.param(
+            rows, cols, repeat, transfer_size,
+            id=f"r{rows}_c{cols}_x{repeat}_ts{transfer_size}",
+        )
+        for rows, cols, repeat, transfer_size in configs
     ]
 
 
-@pytest.mark.parametrize("rows,cols,repeat", get_params())
-def test_repeat(rows, cols, repeat, aie_context):
+@pytest.mark.parametrize("rows,cols,repeat,transfer_size", get_params())
+def test_repeat(rows, cols, repeat, transfer_size, aie_context):
     golden_ref = generate_golden_reference(rows=rows, cols=cols, repeat=repeat)
 
     operator = Repeat(
         rows=rows,
         cols=cols,
         repeat=repeat,
+        transfer_size=transfer_size,
         context=aie_context,
     )
 

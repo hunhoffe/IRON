@@ -2,11 +2,15 @@
 # SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import pytest
+import time
 
+import pytest
+from ml_dtypes import bfloat16
+
+from aie.utils.hostruntime.xrtruntime.tensor import XRTTensor
 from iron.operators.strided_copy.op import StridedCopy
 from iron.operators.strided_copy.reference import generate_golden_reference
-from iron.common.test_utils import run_test
+from iron.common.test_utils import verify_buffer
 
 
 def get_params():
@@ -77,14 +81,31 @@ def test_strided_copy(
         context=aie_context,
     )
 
-    input_buffers = {"input": golden_ref["input"]}
-    output_buffers = {"output": golden_ref["output"]}
+    # StridedCopy.get_arg_spec() passes scalar ints to AIERuntimeArgSpec.shape,
+    # which causes run_test to allocate a 1-element output XRTTensor instead of
+    # the correct size. Manually create XRTTensors with proper tuple shapes.
+    operator.compile()
+    op_func = operator.get_callable()
 
-    errors, latency_us, bandwidth_gbps = run_test(
-        operator, input_buffers, output_buffers, rel_tol=0.01, abs_tol=1e-6
-    )
+    input_buf = XRTTensor.from_torch(golden_ref["input"])
+    output_buf = XRTTensor((output_buffer_size,), dtype=bfloat16)
 
-    print(f"\nLatency (us): {latency_us:.1f}")
+    # Warmup
+    op_func(input_buf, output_buf)
+
+    # Timed run
+    start = time.perf_counter()
+    op_func(input_buf, output_buf)
+    elapsed_us = (time.perf_counter() - start) * 1e6
+
+    total_bytes = input_buf.buffer_object().size() + output_buf.buffer_object().size()
+    bandwidth_gbps = total_bytes / (elapsed_us * 1e-6) / 1e9
+
+    print(f"\nLatency (us): {elapsed_us:.1f}")
     print(f"Effective Bandwidth: {bandwidth_gbps:.6e} GB/s\n")
 
+    output_torch = output_buf.to_torch()
+    errors = verify_buffer(
+        output_torch, "output", golden_ref["output"], rel_tol=0.01, abs_tol=1e-6
+    )
     assert not errors, f"Test failed with errors: {errors}"
