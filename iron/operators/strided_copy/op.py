@@ -87,6 +87,6 @@ class StridedCopy(MLIROperator):
 
     def get_arg_spec(self):
         return [
-            AIERuntimeArgSpec("in", self.input_buffer_size),
-            AIERuntimeArgSpec("out", self.output_buffer_size),
+            AIERuntimeArgSpec("in", (self.input_buffer_size,)),
+            AIERuntimeArgSpec("out", (self.output_buffer_size,)),
         ]
