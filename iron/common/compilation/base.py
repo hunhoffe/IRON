@@ -482,10 +482,11 @@ class GenerateMLIRFromPythonCompilationRule(CompilationRule):
 
 
 class AieccCompilationRule(CompilationRule):
-    def __init__(self, build_dir, peano_dir, mlir_aie_dir, *args, **kwargs):
+    def __init__(self, build_dir, peano_dir, mlir_aie_dir, *args, use_conduit=False, **kwargs):
         self.build_dir = build_dir
         self.aiecc_path = Path(mlir_aie_dir) / "bin" / "aiecc"
         self.peano_dir = peano_dir
+        self.use_conduit = use_conduit
         super().__init__(*args, **kwargs)
 
 
@@ -513,6 +514,8 @@ class AieccFullElfCompilationRule(AieccCompilationRule):
                 os.path.abspath(artifact.filename),
                 os.path.abspath(artifact.mlir_input.filename),
             ]
+            if self.use_conduit:
+                compile_cmd.insert(-1, "--use-conduit")
             commands.append(
                 ShellCompilationCommand(compile_cmd, cwd=str(self.build_dir))
             )
@@ -553,6 +556,8 @@ class AieccXclbinInstsCompilationRule(AieccCompilationRule):
                 str(self.peano_dir),
                 "--dynamic-objFifos",
             ]
+            if self.use_conduit:
+                compile_cmd.append("--use-conduit")
             do_compile_xclbin = mlir_source in mlir_sources_to_xclbins
             do_compile_insts_bin = mlir_source in mlir_sources_to_insts
             if do_compile_xclbin:
