@@ -482,11 +482,12 @@ class GenerateMLIRFromPythonCompilationRule(CompilationRule):
 
 
 class AieccCompilationRule(CompilationRule):
-    def __init__(self, build_dir, peano_dir, mlir_aie_dir, *args, use_conduit=False, **kwargs):
+    def __init__(self, build_dir, peano_dir, mlir_aie_dir, *args, use_conduit=False, bank_aware_placement=True, **kwargs):
         self.build_dir = build_dir
         self.aiecc_path = Path(mlir_aie_dir) / "bin" / "aiecc"
         self.peano_dir = peano_dir
         self.use_conduit = use_conduit
+        self.bank_aware_placement = bank_aware_placement
         super().__init__(*args, **kwargs)
 
 
@@ -516,6 +517,8 @@ class AieccFullElfCompilationRule(AieccCompilationRule):
             ]
             if self.use_conduit:
                 compile_cmd.insert(-1, "--use-conduit")
+            if not self.bank_aware_placement:
+                compile_cmd.insert(-1, "--no-conduit-place-buffers")
             commands.append(
                 ShellCompilationCommand(compile_cmd, cwd=str(self.build_dir))
             )
@@ -558,6 +561,8 @@ class AieccXclbinInstsCompilationRule(AieccCompilationRule):
             ]
             if self.use_conduit:
                 compile_cmd.append("--use-conduit")
+            if not self.bank_aware_placement:
+                compile_cmd.append("--no-conduit-place-buffers")
             do_compile_xclbin = mlir_source in mlir_sources_to_xclbins
             do_compile_insts_bin = mlir_source in mlir_sources_to_insts
             if do_compile_xclbin:
