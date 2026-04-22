@@ -12,7 +12,7 @@ from aie.iron import ObjectFifo, Program, Runtime
 from aie.iron.placers import SequentialPlacer
 
 
-def repeat(dev, dtype, rows, cols, repeat, transfer_size=None):
+def repeat(dev, dtype, rows, cols, repeat, transfer_size=None, num_invocations=1):
     dtype = np.dtype[dtype]
 
     # Try to work around hardware size limitations by breaking transfers into smaller chunks

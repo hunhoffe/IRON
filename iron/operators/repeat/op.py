@@ -23,6 +23,7 @@ class Repeat(MLIROperator):
     repeat: int
     transfer_size: int | None = None
     dtype: object = field(default=bfloat16, repr=False)
+    num_invocations: int = 1
     context: object = field(default=None, repr=False)
 
     _name_aliases: ClassVar[Dict[str, str]] = {
@@ -32,6 +33,10 @@ class Repeat(MLIROperator):
     }
 
     def __post_init__(self):
+        if self.num_invocations < 1:
+            raise ValueError(
+                f"num_invocations must be >= 1, got {self.num_invocations}"
+            )
         MLIROperator.__init__(self, context=self.context)
 
     def get_mlir_artifact(self):
@@ -47,6 +52,7 @@ class Repeat(MLIROperator):
                     self.cols,
                     self.repeat,
                     self.transfer_size,
+                    self.num_invocations,
                 ),
             ),
         )

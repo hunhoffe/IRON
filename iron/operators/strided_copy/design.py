@@ -28,6 +28,7 @@ def strided_copy(
     output_offset,
     transfer_size=None,
     num_aie_channels=1,
+    num_invocations=1,
     input_offset_patch_marker=0,
     output_offset_patch_marker=0,
 ):
