@@ -18,6 +18,7 @@ def my_leaky_relu(
     tile_size,
     trace_size,
     alpha,
+    num_invocations,
 ):
     xfr_dtype = bfloat16
     # Cap to 4096 bfloat16 elements (8 KB) to fit AIE core local memory
@@ -55,12 +56,13 @@ def my_leaky_relu(
 
     # Task for the core to perform
     def core_fn(of_in, of_out, leaky_relu_line):
-        for _ in range_(N_div_n):
-            elemIn = of_in.acquire(1)
-            elemOut = of_out.acquire(1)
-            leaky_relu_line(elemIn, elemOut, line_size, alpha)
-            of_in.release(1)
-            of_out.release(1)
+        for _ in range_(num_invocations):
+            for _ in range_(N_div_n):
+                elemIn = of_in.acquire(1)
+                elemOut = of_out.acquire(1)
+                leaky_relu_line(elemIn, elemOut, line_size, alpha)
+                of_in.release(1)
+                of_out.release(1)
 
     # Create a worker to perform the task
     my_workers = [
@@ -71,6 +73,7 @@ def my_leaky_relu(
                 of_outs[i * num_channels + j].prod(),
                 leaky_relu_fcn,
             ],
+            while_true=False,
         )
         for i in range(num_columns)
         for j in range(num_channels)
