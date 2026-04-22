@@ -18,6 +18,7 @@ def binary_elementwise_design(
     trace_size,
     kernel_fn_name,
     kernel_obj_file,
+    use_finite_loop=False,
     func_prefix="",
 ):
     per_tile_elements = 4096 if tile_size > 4096 else tile_size
@@ -67,6 +68,7 @@ def binary_elementwise_design(
                 of_outs[i].prod(),
                 eltwise_kernel,
             ],
+            while_true=not use_finite_loop,
         )
         for i in range(num_columns)
     ]

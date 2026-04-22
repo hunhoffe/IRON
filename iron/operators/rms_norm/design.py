@@ -18,6 +18,7 @@ def my_rms_norm(
     num_channels,
     tile_size,
     trace_size,
+    use_finite_loop=False,
 ):
     per_tile_elements = 8192 if tile_size > 8192 else tile_size
     total_cores = num_columns * num_channels
@@ -72,6 +73,7 @@ def my_rms_norm(
                 of_outs[i * num_channels + j].prod(),
                 rms_norm_kernel,
             ],
+            while_true=not use_finite_loop,
         )
         for i in range(num_columns)
         for j in range(num_channels)

@@ -64,6 +64,7 @@ class ChanneledUnaryOperator(MLIROperator):
     num_aie_columns: int
     num_channels: int
     tile_size: int
+    use_finite_loop: bool = False
     context: AIEContext | None = field(default=None, repr=False)
 
     kernel_name: ClassVar[str]
@@ -127,6 +128,7 @@ class ChanneledUnaryOperator(MLIROperator):
             self.kernel_fn_name,
             self._kernel_link_file,
             self.tile_cap,
+            self.use_finite_loop,
         ]
         return PythonGeneratedMLIRArtifact(
             f"{self.name}.mlir",
@@ -182,6 +184,7 @@ class BinaryElementwiseOperator(MLIROperator):
     size: int
     tile_size: int
     num_aie_columns: int = 8
+    use_finite_loop: bool = False
     context: AIEContext | None = field(default=None, repr=False)
 
     kernel_name: ClassVar[str]
@@ -238,6 +241,7 @@ class BinaryElementwiseOperator(MLIROperator):
         callback_args = self._mlir_callback_args() + [
             self.kernel_fn_name,
             f"{self.kernel_name}.o",
+            self.use_finite_loop,
         ]
         return PythonGeneratedMLIRArtifact(
             f"{self.name}.mlir",
