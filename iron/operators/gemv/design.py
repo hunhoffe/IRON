@@ -34,6 +34,7 @@ def my_matvec(
     m_input,
     m_output=None,
     num_batches=1,
+    num_invocations=1,
     kernel_object="mv.o",
     func_prefix="",
     verbose=False,
@@ -99,7 +100,7 @@ def my_matvec(
 
     def core_body(A_L3L1_fifo, B_L3L1_fifo, C_L1L3_fifo, matvec):
         one_idx = index.constant(1)
-        for _ in range_(0xFFFFFFFF):  # batch dim handled as part of this loop
+        for _ in range_(num_invocations * num_batches):
             b = B_L3L1_fifo.acquire(1)
             # The kernel function computes m output rows; each core is responsible for (M/cols) output rows, so we need to call the kernel (M/cols)/m times.
             for i_idx in range_(M // m_output // cols):
@@ -123,6 +124,7 @@ def my_matvec(
                 C_L1L3_fifos[i].prod(),
                 matvec,
             ],
+            while_true=False,
         )
         for i in range(cols)
     ]

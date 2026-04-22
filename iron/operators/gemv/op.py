@@ -25,6 +25,7 @@ class GEMV(MLIROperator):
     tile_size_input: int = 2
     tile_size_output: int | None = None
     num_batches: int = 1
+    num_invocations: int = 1
     kernel_vector_size: int = field(default=64, repr=False)
     context: object = field(default=None, repr=False)
 
@@ -34,9 +35,14 @@ class GEMV(MLIROperator):
         "tile_size_input": "tsi",
         "tile_size_output": "tso",
         "num_batches": "batch",
+        "num_invocations": "ni",
     }
 
     def __post_init__(self):
+        if self.num_invocations < 1:
+            raise ValueError(
+                f"num_invocations must be >= 1, got {self.num_invocations}"
+            )
         if self.tile_size_output is None:
             self.tile_size_output = self.tile_size_input
 
@@ -68,6 +74,7 @@ class GEMV(MLIROperator):
                     self.tile_size_input,
                     self.tile_size_output,
                     self.num_batches,
+                    self.num_invocations,
                 ),
                 {
                     "verbose": mlir_verbose,
