@@ -215,6 +215,10 @@ class BinaryElementwiseOperator(MLIROperator):
     }
 
     def __post_init__(self) -> None:
+        if self.num_invocations < 1:
+            raise ValueError(
+                f"num_invocations must be >= 1, got {self.num_invocations}"
+            )
         if self.size % (self.num_aie_columns * self.tile_size) != 0:
             raise ValueError(
                 f"size ({self.size}) must be a multiple of "
