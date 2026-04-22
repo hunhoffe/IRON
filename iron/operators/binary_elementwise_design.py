@@ -39,18 +39,18 @@ def binary_elementwise_design(
     tile_ty = np.ndarray[(per_tile_elements,), np.dtype[dtype]]
 
     # AIE-array data movement with object fifos (one per column, not per channel)
-    of_in1s = [
-        ObjectFifo(tile_ty, name=f"in1_{i}", fusion_group=input_fusion_group_a)
-        for i in range(num_columns)
-    ]
-    of_in2s = [
-        ObjectFifo(tile_ty, name=f"in2_{i}", fusion_group=input_fusion_group_b)
-        for i in range(num_columns)
-    ]
-    of_outs = [
-        ObjectFifo(tile_ty, name=f"out_{i}", fusion_group=output_fusion_group)
-        for i in range(num_columns)
-    ]
+    # Only pass fusion_group kwarg when set, so design works against ObjectFifo
+    # implementations that don't accept it (e.g., wheels-installed mlir-aie
+    # without the fusion_group kwarg restoration).
+    def _of(name, fg):
+        kw = {"name": name}
+        if fg is not None:
+            kw["fusion_group"] = fg
+        return ObjectFifo(tile_ty, **kw)
+
+    of_in1s = [_of(f"in1_{i}", input_fusion_group_a) for i in range(num_columns)]
+    of_in2s = [_of(f"in2_{i}", input_fusion_group_b) for i in range(num_columns)]
+    of_outs = [_of(f"out_{i}", output_fusion_group) for i in range(num_columns)]
 
     # AIE Core Function declaration
     eltwise_kernel = Kernel(

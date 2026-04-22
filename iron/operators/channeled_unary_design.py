@@ -46,9 +46,13 @@ def channeled_unary_design(
     chunk = size // num_columns // num_channels
 
     # Dataflow with ObjectFifos
+    # Only pass fusion_group kwarg when set, so design works against ObjectFifo
+    # implementations that don't accept it (e.g., wheels-installed mlir-aie).
+    fg_in = {"fusion_group": input_fusion_group} if input_fusion_group is not None else {}
+    fg_out = {"fusion_group": output_fusion_group} if output_fusion_group is not None else {}
     of_ins = [
         ObjectFifo(
-            line_type, name=f"in{i}_{j}", fusion_group=input_fusion_group,
+            line_type, name=f"in{i}_{j}", **fg_in,
             **fifo_kwargs,
         )
         for i in range(num_columns)
@@ -56,7 +60,7 @@ def channeled_unary_design(
     ]
     of_outs = [
         ObjectFifo(
-            line_type, name=f"out{i}_{j}", fusion_group=output_fusion_group,
+            line_type, name=f"out{i}_{j}", **fg_out,
             **fifo_kwargs,
         )
         for i in range(num_columns)
