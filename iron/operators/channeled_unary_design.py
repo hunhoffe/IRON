@@ -21,6 +21,8 @@ def channeled_unary_design(
     kernel_fn_name,
     kernel_obj_file,
     tile_cap=4096,
+    input_fusion_group=None,
+    output_fusion_group=None,
     func_prefix="",
 ):
     xfr_dtype = bfloat16
@@ -45,12 +47,18 @@ def channeled_unary_design(
 
     # Dataflow with ObjectFifos
     of_ins = [
-        ObjectFifo(line_type, name=f"in{i}_{j}", **fifo_kwargs)
+        ObjectFifo(
+            line_type, name=f"in{i}_{j}", fusion_group=input_fusion_group,
+            **fifo_kwargs,
+        )
         for i in range(num_columns)
         for j in range(num_channels)
     ]
     of_outs = [
-        ObjectFifo(line_type, name=f"out{i}_{j}", **fifo_kwargs)
+        ObjectFifo(
+            line_type, name=f"out{i}_{j}", fusion_group=output_fusion_group,
+            **fifo_kwargs,
+        )
         for i in range(num_columns)
         for j in range(num_channels)
     ]

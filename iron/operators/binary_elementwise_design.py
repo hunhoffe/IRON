@@ -19,6 +19,9 @@ def binary_elementwise_design(
     num_invocations,
     kernel_fn_name,
     kernel_obj_file,
+    input_fusion_group_a=None,
+    input_fusion_group_b=None,
+    output_fusion_group=None,
     func_prefix="",
 ):
     per_tile_elements = 4096 if tile_size > 4096 else tile_size
@@ -36,9 +39,18 @@ def binary_elementwise_design(
     tile_ty = np.ndarray[(per_tile_elements,), np.dtype[dtype]]
 
     # AIE-array data movement with object fifos (one per column, not per channel)
-    of_in1s = [ObjectFifo(tile_ty, name=f"in1_{i}") for i in range(num_columns)]
-    of_in2s = [ObjectFifo(tile_ty, name=f"in2_{i}") for i in range(num_columns)]
-    of_outs = [ObjectFifo(tile_ty, name=f"out_{i}") for i in range(num_columns)]
+    of_in1s = [
+        ObjectFifo(tile_ty, name=f"in1_{i}", fusion_group=input_fusion_group_a)
+        for i in range(num_columns)
+    ]
+    of_in2s = [
+        ObjectFifo(tile_ty, name=f"in2_{i}", fusion_group=input_fusion_group_b)
+        for i in range(num_columns)
+    ]
+    of_outs = [
+        ObjectFifo(tile_ty, name=f"out_{i}", fusion_group=output_fusion_group)
+        for i in range(num_columns)
+    ]
 
     # AIE Core Function declaration
     eltwise_kernel = Kernel(

@@ -65,6 +65,8 @@ class ChanneledUnaryOperator(MLIROperator):
     num_channels: int
     tile_size: int
     num_invocations: int = 1
+    input_fusion_group: str | None = None
+    output_fusion_group: str | None = None
     context: AIEContext | None = field(default=None, repr=False)
 
     kernel_name: ClassVar[str]
@@ -74,14 +76,11 @@ class ChanneledUnaryOperator(MLIROperator):
     tile_cap: ClassVar[int] = 4096
     _name_aliases: ClassVar[dict[str, str]] = {
         **MLIROperator._name_aliases,
-        "num_invocations": "ni",
+        "input_fusion_group": "ifg",
+        "output_fusion_group": "ofg",
     }
 
     def __post_init__(self) -> None:
-        if self.num_invocations < 1:
-            raise ValueError(
-                f"num_invocations must be >= 1, got {self.num_invocations}"
-            )
         max_multiple = self.num_aie_columns * self.tile_size
         if self.size % max_multiple != 0:
             raise ValueError(
@@ -137,6 +136,8 @@ class ChanneledUnaryOperator(MLIROperator):
             self.kernel_fn_name,
             self._kernel_link_file,
             self.tile_cap,
+            self.input_fusion_group,
+            self.output_fusion_group,
         ]
         return PythonGeneratedMLIRArtifact(
             f"{self.name}.mlir",
@@ -193,6 +194,9 @@ class BinaryElementwiseOperator(MLIROperator):
     tile_size: int
     num_aie_columns: int = 8
     num_invocations: int = 1
+    input_fusion_group_a: str | None = None
+    input_fusion_group_b: str | None = None
+    output_fusion_group: str | None = None
     context: AIEContext | None = field(default=None, repr=False)
 
     kernel_name: ClassVar[str]
@@ -205,14 +209,12 @@ class BinaryElementwiseOperator(MLIROperator):
     _name_aliases: ClassVar[dict[str, str]] = {
         **MLIROperator._name_aliases,
         "num_aie_columns": "col",  # intentionally overrides parent's "c" alias
-        "num_invocations": "ni",
+        "input_fusion_group_a": "ifga",
+        "input_fusion_group_b": "ifgb",
+        "output_fusion_group": "ofg",
     }
 
     def __post_init__(self) -> None:
-        if self.num_invocations < 1:
-            raise ValueError(
-                f"num_invocations must be >= 1, got {self.num_invocations}"
-            )
         if self.size % (self.num_aie_columns * self.tile_size) != 0:
             raise ValueError(
                 f"size ({self.size}) must be a multiple of "
@@ -255,6 +257,9 @@ class BinaryElementwiseOperator(MLIROperator):
         callback_args = self._mlir_callback_args() + [
             self.kernel_fn_name,
             f"{self.kernel_name}.o",
+            self.input_fusion_group_a,
+            self.input_fusion_group_b,
+            self.output_fusion_group,
         ]
         return PythonGeneratedMLIRArtifact(
             f"{self.name}.mlir",
