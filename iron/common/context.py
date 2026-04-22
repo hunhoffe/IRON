@@ -26,6 +26,7 @@ class AIEContext:
     build_dir: Path = field(default_factory=lambda: Path(os.getcwd()) / "build")
     mlir_verbose: bool = False
     use_conduit: bool = False
+    conduit_fusion_passes: list[str] = field(default_factory=list)
     bank_aware_placement: bool = True
     mlir_aie_install_dir: Path | None = None
 
@@ -51,11 +52,13 @@ class AIEContext:
             comp.AieccXclbinInstsCompilationRule(
                 self.build_dir, peano_dir, mlir_aie_dir,
                 use_conduit=self.use_conduit,
+                conduit_fusion_passes=self.conduit_fusion_passes,
                 bank_aware_placement=self.bank_aware_placement,
             ),
             comp.AieccFullElfCompilationRule(
                 self.build_dir, peano_dir, mlir_aie_dir,
                 use_conduit=self.use_conduit,
+                conduit_fusion_passes=self.conduit_fusion_passes,
                 bank_aware_placement=self.bank_aware_placement,
             ),
         ]
