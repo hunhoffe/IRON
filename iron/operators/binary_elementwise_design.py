@@ -67,6 +67,7 @@ def binary_elementwise_design(
                 of_outs[i].prod(),
                 eltwise_kernel,
             ],
+            while_true=False,
         )
         for i in range(num_columns)
     ]
