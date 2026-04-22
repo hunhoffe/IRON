@@ -16,6 +16,7 @@ def binary_elementwise_design(
     num_columns,
     tile_size,
     trace_size,
+    num_invocations,
     kernel_fn_name,
     kernel_obj_file,
     func_prefix="",
@@ -48,14 +49,15 @@ def binary_elementwise_design(
 
     # Define a task that will run on a compute tile
     def core_body(of_in1, of_in2, of_out, eltwise_fn):
-        for _ in range_(N_div_n):
-            elem_in1 = of_in1.acquire(1)
-            elem_in2 = of_in2.acquire(1)
-            elem_out = of_out.acquire(1)
-            eltwise_fn(elem_in1, elem_in2, elem_out, per_tile_elements)
-            of_in1.release(1)
-            of_in2.release(1)
-            of_out.release(1)
+        for _ in range_(num_invocations):
+            for _ in range_(N_div_n):
+                elem_in1 = of_in1.acquire(1)
+                elem_in2 = of_in2.acquire(1)
+                elem_out = of_out.acquire(1)
+                eltwise_fn(elem_in1, elem_in2, elem_out, per_tile_elements)
+                of_in1.release(1)
+                of_in2.release(1)
+                of_out.release(1)
 
     # Create a worker to run the task on a compute tile (one per column)
     my_workers = [
@@ -67,6 +69,7 @@ def binary_elementwise_design(
                 of_outs[i].prod(),
                 eltwise_kernel,
             ],
+            while_true=False,
         )
         for i in range(num_columns)
     ]

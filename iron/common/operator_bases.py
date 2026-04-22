@@ -182,6 +182,7 @@ class BinaryElementwiseOperator(MLIROperator):
     size: int
     tile_size: int
     num_aie_columns: int = 8
+    num_invocations: int = 1
     context: AIEContext | None = field(default=None, repr=False)
 
     kernel_name: ClassVar[str]
@@ -194,9 +195,14 @@ class BinaryElementwiseOperator(MLIROperator):
     _name_aliases: ClassVar[dict[str, str]] = {
         **MLIROperator._name_aliases,
         "num_aie_columns": "col",  # intentionally overrides parent's "c" alias
+        "num_invocations": "ni",
     }
 
     def __post_init__(self) -> None:
+        if self.num_invocations < 1:
+            raise ValueError(
+                f"num_invocations must be >= 1, got {self.num_invocations}"
+            )
         if self.size % (self.num_aie_columns * self.tile_size) != 0:
             raise ValueError(
                 f"size ({self.size}) must be a multiple of "
@@ -232,6 +238,7 @@ class BinaryElementwiseOperator(MLIROperator):
             self.num_aie_columns,
             self.tile_size,
             0,
+            self.num_invocations,
         ]
 
     def get_mlir_artifact(self) -> PythonGeneratedMLIRArtifact:
