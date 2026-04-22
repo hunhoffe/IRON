@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from dataclasses import dataclass, field
+from typing import ClassVar, Dict
 
 import aie.utils as aie_utils
 from iron.common import (
@@ -25,9 +26,19 @@ class Transpose(MLIROperator):
     m: int
     n: int
     s: int
+    num_invocations: int = 1
     context: object = field(default=None, repr=False)
 
+    _name_aliases: ClassVar[Dict[str, str]] = {
+        **MLIROperator._name_aliases,
+        "num_invocations": "ni",
+    }
+
     def __post_init__(self):
+        if self.num_invocations < 1:
+            raise ValueError(
+                f"num_invocations must be >= 1, got {self.num_invocations}"
+            )
         if self.M % self.m != 0:
             raise ValueError(f"Matrix rows ({self.M}) must be a multiple of {self.m}")
         if self.N % self.n != 0:
@@ -66,6 +77,7 @@ class Transpose(MLIROperator):
                     self.m,
                     self.n,
                     self.s,
+                    self.num_invocations,
                 ),
             ),
         )

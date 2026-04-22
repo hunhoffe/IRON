@@ -10,7 +10,7 @@ from aie.helpers.taplib.tap import TensorAccessPattern
 from aie.iron.controlflow import range_
 
 
-def shuffle_transpose(dev, M, N, num_columns, num_channels, m, n, s, func_prefix=""):
+def shuffle_transpose(dev, M, N, num_columns, num_channels, m, n, s, num_invocations, func_prefix=""):
     num_elements = M * N
     per_tile_elements = m * n
     dtype = bfloat16
@@ -106,14 +106,15 @@ def shuffle_transpose(dev, M, N, num_columns, num_channels, m, n, s, func_prefix
 
     # Define a task that will run on a compute tile
     def core_body(of_in1, of_out, transpose_kernel):
-        # Number of sub-matrix "tile" iterations
-        for _ in range_(N // n // num_columns):
-            for _ in range_(M // m // num_channels):
-                elem_in1 = of_in1.acquire(1)
-                elem_out = of_out.acquire(1)
-                transpose_kernel(elem_in1, elem_out)
-                of_out.release(1)
-                of_in1.release(1)
+        for _ in range_(num_invocations):
+            # Number of sub-matrix "tile" iterations
+            for _ in range_(N // n // num_columns):
+                for _ in range_(M // m // num_channels):
+                    elem_in1 = of_in1.acquire(1)
+                    elem_out = of_out.acquire(1)
+                    transpose_kernel(elem_in1, elem_out)
+                    of_out.release(1)
+                    of_in1.release(1)
 
     # Create a worker to run the task on a compute tile
     my_workers = [
@@ -124,6 +125,7 @@ def shuffle_transpose(dev, M, N, num_columns, num_channels, m, n, s, func_prefix
                 of_outs[i * num_channels + j].prod(),
                 transpose_kernel,
             ],
+            while_true=False,
         )
         for i in range(num_columns)
         for j in range(num_channels)
