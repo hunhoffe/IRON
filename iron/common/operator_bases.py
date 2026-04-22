@@ -64,6 +64,7 @@ class ChanneledUnaryOperator(MLIROperator):
     num_aie_columns: int
     num_channels: int
     tile_size: int
+    num_invocations: int = 1
     context: AIEContext | None = field(default=None, repr=False)
 
     kernel_name: ClassVar[str]
@@ -71,8 +72,16 @@ class ChanneledUnaryOperator(MLIROperator):
     callback_fn: ClassVar[str]
     needs_lut_ops: ClassVar[bool] = False
     tile_cap: ClassVar[int] = 4096
+    _name_aliases: ClassVar[dict[str, str]] = {
+        **MLIROperator._name_aliases,
+        "num_invocations": "ni",
+    }
 
     def __post_init__(self) -> None:
+        if self.num_invocations < 1:
+            raise ValueError(
+                f"num_invocations must be >= 1, got {self.num_invocations}"
+            )
         max_multiple = self.num_aie_columns * self.tile_size
         if self.size % max_multiple != 0:
             raise ValueError(
@@ -124,6 +133,7 @@ class ChanneledUnaryOperator(MLIROperator):
 
     def get_mlir_artifact(self) -> PythonGeneratedMLIRArtifact:
         callback_args = self._mlir_callback_args() + [
+            self.num_invocations,
             self.kernel_fn_name,
             self._kernel_link_file,
             self.tile_cap,

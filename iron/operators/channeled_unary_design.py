@@ -17,6 +17,7 @@ def channeled_unary_design(
     num_channels,
     tile_size,
     trace_size,
+    num_invocations,
     kernel_fn_name,
     kernel_obj_file,
     tile_cap=4096,
@@ -63,12 +64,13 @@ def channeled_unary_design(
 
     # Task for the core to perform
     def core_fn(of_in, of_out, kernel_line):
-        for _ in range_(N_div_n):
-            elem_in = of_in.acquire(1)
-            elem_out = of_out.acquire(1)
-            kernel_line(elem_in, elem_out, line_size)
-            of_in.release(1)
-            of_out.release(1)
+        for _ in range_(num_invocations):
+            for _ in range_(N_div_n):
+                elem_in = of_in.acquire(1)
+                elem_out = of_out.acquire(1)
+                kernel_line(elem_in, elem_out, line_size)
+                of_in.release(1)
+                of_out.release(1)
 
     # Create a worker to perform the task
     my_workers = [
@@ -79,6 +81,7 @@ def channeled_unary_design(
                 of_outs[i * num_channels + j].prod(),
                 kernel_fcn,
             ],
+            while_true=False,
         )
         for i in range(num_columns)
         for j in range(num_channels)
