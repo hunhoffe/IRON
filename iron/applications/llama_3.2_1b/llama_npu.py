@@ -103,7 +103,6 @@ class AIELlamaOperators:
         min_N = 64 * 8 * 4  # tile_n * num_aie_columns * partition_N
         config.padded_vocab_size = (config.vocab_size + min_N - 1) // min_N * min_N
         config.vocab_partitions = 4
-        # TODO(Phase D): add num_invocations=4 (vocab_partitions) when GEMM (Class C) gains support
         self.prefill.gemv_out_head_compilable = GEMM(
             M=prompt_len,
             K=config.emb_dim,
@@ -114,13 +113,13 @@ class AIELlamaOperators:
             tile_n=64,
             b_col_maj=True,
             separate_c_tiles=True,
+            num_invocations=4,  # vocab_partitions
             context=self.context,
         ).compile()
         self.prefill.out_head = self.prefill.gemv_out_head_compilable.get_callable()
 
         # SwiGLU FFN operators
         # Prefill: M=prompt_len, K=emb_dim, N=hidden_dim
-        # TODO(Phase D): add num_invocations=32 when GEMM (Class C) gains support
         self.prefill.ffn_up_gate = (
             GEMM(
                 M=prompt_len,
@@ -131,13 +130,13 @@ class AIELlamaOperators:
                 tile_k=64,
                 tile_n=64,
                 b_col_maj=False,  # exceeds stride dimensions otherwise; just transpose weights
+                num_invocations=32,  # 2/layer × 16 layers (gate + up)
                 context=self.context,
             )
             .compile()
             .get_callable()
         )
 
-        # TODO(Phase D): add num_invocations=16 when GEMM (Class C) gains support
         self.prefill.ffn_down = (
             GEMM(
                 M=prompt_len,
@@ -148,6 +147,7 @@ class AIELlamaOperators:
                 tile_k=64,
                 tile_n=64,
                 b_col_maj=False,  # exceeds stride dimensions otherwise; just transpose weights
+                num_invocations=16,  # 1/layer × 16 layers
                 context=self.context,
             )
             .compile()
@@ -221,7 +221,6 @@ class AIELlamaOperators:
         )
 
         # Attention projection operators
-        # TODO(Phase D): add num_invocations=16 when GEMM (Class C) gains support (attn_query, attn_key, attn_value)
         # Query projection: (seq_len, emb_dim) -> (seq_len, n_heads * head_dim)
         self.prefill.attn_query = (
             GEMM(
@@ -233,6 +232,7 @@ class AIELlamaOperators:
                 tile_k=64,
                 tile_n=64,
                 b_col_maj=False,
+                num_invocations=16,  # 1/layer × 16 layers
                 context=self.context,
             )
             .compile()
@@ -250,6 +250,7 @@ class AIELlamaOperators:
                 tile_k=64,
                 tile_n=64,
                 b_col_maj=False,
+                num_invocations=16,  # 1/layer × 16 layers
                 context=self.context,
             )
             .compile()
@@ -267,6 +268,7 @@ class AIELlamaOperators:
                 tile_k=64,
                 tile_n=64,
                 b_col_maj=False,
+                num_invocations=16,  # 1/layer × 16 layers
                 context=self.context,
             )
             .compile()
@@ -275,7 +277,6 @@ class AIELlamaOperators:
 
         # Attention score computation: Q @ K^T per head
         # For prefill: (seq_len, head_dim) @ (head_dim, seq_len) = (seq_len, seq_len) per head
-        # TODO(Phase D): add num_invocations=512 (n_heads × 16 layers) when GEMM (Class C) gains support
         self.prefill.attn_scores = (
             GEMM(
                 M=prompt_len,
@@ -286,6 +287,7 @@ class AIELlamaOperators:
                 tile_k=64,
                 tile_n=64,
                 b_col_maj=False,
+                num_invocations=512,  # n_heads(32) × 16 layers
                 context=self.context,
             )
             .compile()
@@ -297,23 +299,23 @@ class AIELlamaOperators:
 
         elf_ctx = AIEContext(build_dir="build_elf")
 
-        # TODO(Phase D): add num_invocations=16 when GEMV (Class C) gains support
         gemv_attn_query_op = GEMV(
             M=config.n_heads * config.head_dim,
             K=config.emb_dim,
             num_aie_columns=8,
             tile_size_input=4,
             tile_size_output=config.head_dim // 2,
+            num_invocations=16,  # 1/layer × 16 layers
             context=elf_ctx,
         )
 
-        # TODO(Phase D): add num_invocations=32 when GEMV (Class C) gains support
         gemv_attn_key_value_op = GEMV(
             M=config.n_kv_groups * config.head_dim,
             K=config.emb_dim,
             num_aie_columns=8,
             tile_size_input=4,
             tile_size_output=config.head_dim // 2,
+            num_invocations=32,  # key + value, 1 each/layer × 16 layers
             context=elf_ctx,
         )
 
@@ -334,7 +336,7 @@ class AIELlamaOperators:
             context=elf_ctx,
         )
 
-        # TODO(Phase D): add num_invocations=32 when StridedCopy gains support (extends MLIROperator, not a Phase A base)
+        # TODO(Phase D): StridedCopy still needs num_invocations support (num_invocations=32; extends MLIROperator directly, not a Phase A base)
         strided_copy_cache_magic = 0xDEADBEE0
         strided_copy_cache_op = StridedCopy(
             input_sizes=(config.n_kv_groups, config.head_dim),
@@ -352,7 +354,6 @@ class AIELlamaOperators:
 
         # For decode: per head, (1, head_dim) @ (head_dim, max_context_len)
         # Use GEMV: (max_context_len, head_dim) @ (head_dim,) = (max_context_len,)
-        # TODO(Phase D): add num_invocations=16 when GEMV (Class C) gains support
         gemv_attn_scores_op = GEMV(
             M=prompt_len,  # max possible context length
             K=config.head_dim,
@@ -360,6 +361,7 @@ class AIELlamaOperators:
             tile_size_input=4,
             tile_size_output=prompt_len // 8,
             num_batches=config.n_heads,
+            num_invocations=16,  # 1/layer × 16 layers (batched over n_heads=32)
             context=elf_ctx,
         )
 
@@ -373,7 +375,6 @@ class AIELlamaOperators:
 
         # Softmax operators for attention weights
         softmax_magic = 0xBA5EBA11
-        # TODO(Phase D): add num_invocations=16 when Softmax (Class C) gains support
         softmax_op = Softmax(
             rows=config.n_heads,
             cols=prompt_len,
@@ -381,6 +382,7 @@ class AIELlamaOperators:
             num_channels=1,
             rtp_vector_size=prompt_len,  # Compile with max size
             mask_patch_value=softmax_magic,  # Magic value for patching
+            num_invocations=16,  # 1/layer × 16 layers
             context=elf_ctx,
         )
 
@@ -398,7 +400,6 @@ class AIELlamaOperators:
         )
 
         # GEMV for attention context: (head_dim, max_context_len) @ (max_context_len,) = (head_dim,) per head
-        # TODO(Phase D): add num_invocations=16 when GEMV (Class C) gains support
         gemv_attn_context_op = GEMV(
             M=config.head_dim,
             K=prompt_len,  # max possible context length
@@ -406,16 +407,17 @@ class AIELlamaOperators:
             tile_size_input=4,
             tile_size_output=4,
             num_batches=config.n_heads,
+            num_invocations=16,  # 1/layer × 16 layers
             context=elf_ctx,
         )
 
-        # TODO(Phase D): add num_invocations=16 when GEMV (Class C) gains support
         gemv_attn_output_op = GEMV(
             M=config.emb_dim,
             K=config.n_heads * config.head_dim,
             num_aie_columns=8,
             tile_size_input=4,
             tile_size_output=config.emb_dim // 8,
+            num_invocations=16,  # 1/layer × 16 layers
             context=elf_ctx,
         )
 
@@ -429,23 +431,23 @@ class AIELlamaOperators:
             context=elf_ctx,
         )
 
-        # TODO(Phase D): add num_invocations=32 when GEMV (Class C) gains support
         gemv_ffn_up_gate_op = GEMV(
             M=config.hidden_dim,
             K=config.emb_dim,
             num_aie_columns=8,
             tile_size_input=4,
             tile_size_output=config.hidden_dim // 8,
+            num_invocations=32,  # 2/layer × 16 layers (gate + up)
             context=elf_ctx,
         )
 
-        # TODO(Phase D): add num_invocations=16 when GEMV (Class C) gains support
         gemv_ffn_down_op = GEMV(
             M=config.emb_dim,
             K=config.hidden_dim,
             num_aie_columns=8,
             tile_size_input=1,
             tile_size_output=config.emb_dim // 8,
+            num_invocations=16,  # 1/layer × 16 layers
             context=elf_ctx,
         )
 
@@ -472,7 +474,7 @@ class AIELlamaOperators:
             context=elf_ctx,
         )
 
-        # TODO(Phase D): add num_invocations=32 when Repeat gains support (extends MLIROperator, not a Phase A base)
+        # TODO(Phase D): Repeat still needs num_invocations support (num_invocations=32; extends MLIROperator directly, not a Phase A base)
         repeat_interleave_op = Repeat(
             rows=config.n_kv_groups,
             cols=prompt_len * config.head_dim,  # Max context length
@@ -481,13 +483,13 @@ class AIELlamaOperators:
             context=elf_ctx,
         )
 
-        # TODO(Phase D): add num_invocations=1 when GEMV (Class C) gains support
         gemv_out_head_op = GEMV(
             M=config.vocab_size,
             K=config.emb_dim,
             num_aie_columns=8,
             tile_size_input=4,
             tile_size_output=32,
+            num_invocations=1,  # final output head, once per launch
             context=self.context,
         )
 
