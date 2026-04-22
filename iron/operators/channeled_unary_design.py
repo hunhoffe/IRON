@@ -20,7 +20,6 @@ def channeled_unary_design(
     kernel_fn_name,
     kernel_obj_file,
     tile_cap=4096,
-    use_finite_loop=False,
     func_prefix="",
 ):
     xfr_dtype = bfloat16
@@ -80,7 +79,6 @@ def channeled_unary_design(
                 of_outs[i * num_channels + j].prod(),
                 kernel_fcn,
             ],
-            while_true=not use_finite_loop,
         )
         for i in range(num_columns)
         for j in range(num_channels)

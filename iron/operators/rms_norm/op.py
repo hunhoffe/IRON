@@ -26,7 +26,6 @@ class RMSNorm(MLIROperator):
     num_channels: int
     tile_size: int
     weighted: bool = False
-    use_finite_loop: bool = False
     context: object = field(default=None, repr=False)
 
     _name_aliases: ClassVar[Dict[str, str]] = {
@@ -88,7 +87,6 @@ class RMSNorm(MLIROperator):
                     self.num_channels,
                     self.tile_size,
                     0,  # trace_size
-                    self.use_finite_loop,
                 ),
             ),
         )
