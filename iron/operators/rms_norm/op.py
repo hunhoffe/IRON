@@ -26,14 +26,20 @@ class RMSNorm(MLIROperator):
     num_channels: int
     tile_size: int
     weighted: bool = False
+    num_invocations: int = 1
     context: object = field(default=None, repr=False)
 
     _name_aliases: ClassVar[Dict[str, str]] = {
         **MLIROperator._name_aliases,
         "weighted": "w",
+        "num_invocations": "ni",
     }
 
     def __post_init__(self):
+        if self.num_invocations < 1:
+            raise ValueError(
+                f"num_invocations must be >= 1, got {self.num_invocations}"
+            )
         # Note: epsilon is hardcoded to 1e-5 in the AIE kernel and cannot be changed at runtime.
         dev = aie_utils.get_current_device()
         shim_dma_limit = get_shim_dma_limit(dev)
@@ -87,6 +93,7 @@ class RMSNorm(MLIROperator):
                     self.num_channels,
                     self.tile_size,
                     0,  # trace_size
+                    self.num_invocations,
                 ),
             ),
         )

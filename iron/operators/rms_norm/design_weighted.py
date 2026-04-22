@@ -18,6 +18,7 @@ def my_weighted_rms_norm(
     num_channels,
     weight_length,
     trace_size,
+    num_invocations,
     func_prefix="",
 ):
     per_tile_elements = weight_length
@@ -74,23 +75,26 @@ def my_weighted_rms_norm(
 
     # Define a task that will run on a compute tile
     def core_body_norm(of_in1, of_out1, rms_norm):
-        # Number of sub-vector "tile" iterations
-        for _ in range_(N_div_n):
-            elem_in1 = of_in1.acquire(1)
-            elem_out = of_out1.acquire(1)
-            rms_norm(elem_in1, elem_out, per_tile_elements)
-            of_in1.release(1)
-            of_out1.release(1)
+        for _ in range_(num_invocations):
+            # Number of sub-vector "tile" iterations
+            for _ in range_(N_div_n):
+                elem_in1 = of_in1.acquire(1)
+                elem_out = of_out1.acquire(1)
+                rms_norm(elem_in1, elem_out, per_tile_elements)
+                of_in1.release(1)
+                of_out1.release(1)
 
     def core_body_mul(of_in1, of_in2, of_out2, eltwise_mul):
-        # Number of sub-vector "tile" iterations
+        # Acquire weight ONCE before outer loop
         elem_in2 = of_in2.acquire(1)
-        for _ in range_(N_div_n):
-            elem_in1 = of_in1.acquire(1)
-            elem_out = of_out2.acquire(1)
-            eltwise_mul(elem_in1, elem_in2, elem_out, per_tile_elements)
-            of_in1.release(1)
-            of_out2.release(1)
+        for _ in range_(num_invocations):
+            # Number of sub-vector "tile" iterations
+            for _ in range_(N_div_n):
+                elem_in1 = of_in1.acquire(1)
+                elem_out = of_out2.acquire(1)
+                eltwise_mul(elem_in1, elem_in2, elem_out, per_tile_elements)
+                of_in1.release(1)
+                of_out2.release(1)
         of_in2.release(1)
 
     # Create workers to run the task on compute tiles,
@@ -107,6 +111,7 @@ def my_weighted_rms_norm(
                         of_out1s[idx].prod(),
                         rms_norm_kernel,
                     ],
+                    while_true=False,
                 )
             )
     for i in range(num_columns):
@@ -121,6 +126,7 @@ def my_weighted_rms_norm(
                         of_out2s[idx].prod(),
                         eltwise_mul_kernel,
                     ],
+                    while_true=False,
                 )
             )
 
