@@ -147,6 +147,7 @@ def my_matmul(
     kernel_object=None,
     func_prefix="",
     generate_taps=False,
+    num_invocations=1,
 ):
     n_aie_rows = 4
 
@@ -451,27 +452,29 @@ def my_matmul(
         barrier.wait_for_value(1)
         rtp_K_div_k = my_rtp[0]
         rtp_n_tiles_per_core = my_rtp[1]
-        loop = range(1)  # Workaround for issue #1547
-        if rtp_n_tiles_per_core > 1:
-            loop = range_(rtp_n_tiles_per_core)
-        for _ in loop:
-            if not use_larger_internal_buffer:
-                elem_out_internal = out_c.acquire(1)
-            zero(elem_out_internal)
+        ni_loop = range(1) if num_invocations == 1 else range_(num_invocations)
+        for _ni in ni_loop:
+            loop = range(1)  # Workaround for issue #1547
+            if rtp_n_tiles_per_core > 1:
+                loop = range_(rtp_n_tiles_per_core)
+            for _ in loop:
+                if not use_larger_internal_buffer:
+                    elem_out_internal = out_c.acquire(1)
+                zero(elem_out_internal)
 
-            for _ in range_(rtp_K_div_k):
-                elem_in_a = in_a.acquire(1)
-                elem_in_b = in_b.acquire(1)
-                matmul(elem_in_a, elem_in_b, elem_out_internal)
-                in_a.release(1)
-                in_b.release(1)
+                for _ in range_(rtp_K_div_k):
+                    elem_in_a = in_a.acquire(1)
+                    elem_in_b = in_b.acquire(1)
+                    matmul(elem_in_a, elem_in_b, elem_out_internal)
+                    in_a.release(1)
+                    in_b.release(1)
 
-            if use_larger_internal_buffer:
-                elem_out_transfer = out_c.acquire(1)
-                convert_copy(elem_out_internal, elem_out_transfer, m * n)
-                out_c.release(1)
-            else:
-                out_c.release(1)
+                if use_larger_internal_buffer:
+                    elem_out_transfer = out_c.acquire(1)
+                    convert_copy(elem_out_internal, elem_out_transfer, m * n)
+                    out_c.release(1)
+                else:
+                    out_c.release(1)
 
     # Set up compute tiles
     workers = []
@@ -500,6 +503,7 @@ def my_matmul(
                     ],
                     placement=Tile(tile_col, tile_row),
                     stack_size=0xD00,
+                    while_true=False,
                 )
             )
 
