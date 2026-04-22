@@ -62,7 +62,7 @@ def test_gemv(M, K, num_aie_columns, tile_size_input, tile_size_output, aie_cont
         operator, input_buffers, output_buffers, rel_tol=0.04, abs_tol=1e-3
     )
 
-    print(f"\nLatency: {latency_us:.1f} us")
+    print(f"\nLatency (us): {latency_us:.1f}")
 
     gflops = (2.0 * M * K) / (latency_us * 1e-6) / 1e9
     print(f"Throughput: {gflops:.6e} GFLOP/s")

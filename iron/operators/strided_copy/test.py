@@ -41,6 +41,10 @@ def get_params():
     ]
 
 
+@pytest.mark.metrics(
+    Latency=r"Latency \(us\): (?P<value>[\d\.]+)",
+    Bandwidth=r"Effective Bandwidth: (?P<value>[\d\.e\+-]+) GB/s",
+)
 @pytest.mark.parametrize(
     "input_sizes,input_strides,input_offset,"
     "output_sizes,output_strides,output_offset,"
