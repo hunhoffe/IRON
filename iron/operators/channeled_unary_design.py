@@ -79,7 +79,6 @@ def channeled_unary_design(
                 of_outs[i * num_channels + j].prod(),
                 kernel_fcn,
             ],
-            while_true=False,
         )
         for i in range(num_columns)
         for j in range(num_channels)

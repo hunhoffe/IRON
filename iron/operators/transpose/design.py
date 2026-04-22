@@ -124,7 +124,6 @@ def shuffle_transpose(dev, M, N, num_columns, num_channels, m, n, s, func_prefix
                 of_outs[i * num_channels + j].prod(),
                 transpose_kernel,
             ],
-            while_true=False,
         )
         for i in range(num_columns)
         for j in range(num_channels)

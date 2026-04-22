@@ -107,7 +107,6 @@ def my_weighted_rms_norm(
                         of_out1s[idx].prod(),
                         rms_norm_kernel,
                     ],
-                    while_true=False,
                 )
             )
     for i in range(num_columns):
@@ -122,7 +121,6 @@ def my_weighted_rms_norm(
                         of_out2s[idx].prod(),
                         eltwise_mul_kernel,
                     ],
-                    while_true=False,
                 )
             )
 

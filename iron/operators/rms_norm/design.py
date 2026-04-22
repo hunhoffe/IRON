@@ -72,7 +72,6 @@ def my_rms_norm(
                 of_outs[i * num_channels + j].prod(),
                 rms_norm_kernel,
             ],
-            while_true=False,
         )
         for i in range(num_columns)
         for j in range(num_channels)

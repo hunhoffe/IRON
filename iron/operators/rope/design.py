@@ -103,7 +103,6 @@ def rope(
                 of_out[i].prod(),
                 rope_kernel,
             ],
-            while_true=False,
         )
         for i in range(num_aie_columns)
     ]
