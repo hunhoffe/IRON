@@ -29,6 +29,7 @@ def softmax(
     tile_size,
     rtp_vector_size=None,
     mask_patch_value=0,
+    num_invocations=1,
     func_prefix="",
     kernel_obj_file="softmax.o",
 ):
@@ -77,7 +78,7 @@ def softmax(
     def core_body(of_in1, of_out, softmax_kernel, mask_kernel, rtp, barrier):
         barrier.wait_for_value(1)
         vector_size = rtp[0]
-        for _ in range_(N_div_n):
+        for _ in range_(num_invocations * N_div_n):
             elem_in1 = of_in1.acquire(1)
             elem_out = of_out.acquire(1)
             mask_kernel(elem_in1, vector_size, per_tile_elements)
@@ -111,7 +112,7 @@ def softmax(
         barriers[i * num_channels + j],
     ]
     my_workers = [
-        Worker(core_body, worker_args(i, j))
+        Worker(core_body, worker_args(i, j), while_true=False)
         for i in range(num_aie_columns)
         for j in range(num_channels)
     ]

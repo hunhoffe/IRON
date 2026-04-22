@@ -28,6 +28,7 @@ class Softmax(MLIROperator):
     num_channels: int = 1
     rtp_vector_size: int | None = None
     mask_patch_value: int = 0
+    num_invocations: int = 1
     context: object = field(default=None, repr=False)
 
     @property
@@ -35,6 +36,10 @@ class Softmax(MLIROperator):
         return self.rows * self.cols
 
     def __post_init__(self):
+        if self.num_invocations < 1:
+            raise ValueError(
+                f"num_invocations must be >= 1, got {self.num_invocations}"
+            )
         if self.rows % 16 != 0:
             raise ValueError(f"rows ({self.rows}) must be a multiple of 16")
         if self.cols % 16 != 0:
@@ -68,6 +73,7 @@ class Softmax(MLIROperator):
                     "tile_size": self.cols,
                     "rtp_vector_size": self.rtp_vector_size,
                     "mask_patch_value": self.mask_patch_value,
+                    "num_invocations": self.num_invocations,
                     "kernel_obj_file": self._kernel_link_file,
                 },
             ),
