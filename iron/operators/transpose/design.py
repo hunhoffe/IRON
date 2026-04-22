@@ -80,19 +80,19 @@ def shuffle_transpose(dev, M, N, num_columns, num_channels, m, n, s, num_invocat
 
     # AIE-array data movement with object fifos
     of_in1s_L3L2 = [
-        ObjectFifo(tile_ty, name=f"of_in1s_L3L2_{i}_{j}", depth=fifodepth)
+        ObjectFifo(tile_ty, name=f"{func_prefix}of_in1s_L3L2_{i}_{j}", depth=fifodepth)
         for i in range(num_columns)
         for j in range(num_channels)
     ]
     of_in1s_L2L1 = [
         of_in1s_L3L2[i * num_channels + j]
         .cons(dims_from_stream=taps_in_L2L1[i * num_channels + j].transformation_dims)
-        .forward(obj_type=tile_ty, name=f"of_in1s_L2L1_{i}_{j}", depth=fifodepth)
+        .forward(obj_type=tile_ty, name=f"{func_prefix}of_in1s_L2L1_{i}_{j}", depth=fifodepth)
         for i in range(num_columns)
         for j in range(num_channels)
     ]
     of_outs = [
-        ObjectFifo(tile_ty, name=f"out_{i}_{j}", depth=fifodepth)
+        ObjectFifo(tile_ty, name=f"{func_prefix}out_{i}_{j}", depth=fifodepth)
         for i in range(num_columns)
         for j in range(num_channels)
     ]

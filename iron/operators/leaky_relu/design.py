@@ -19,6 +19,7 @@ def my_leaky_relu(
     trace_size,
     alpha,
     num_invocations,
+    func_prefix="",
 ):
     xfr_dtype = bfloat16
     # Cap to 4096 bfloat16 elements (8 KB) to fit AIE core local memory
@@ -36,12 +37,12 @@ def my_leaky_relu(
 
     # Dataflow with ObjectFifos
     of_ins = [
-        ObjectFifo(line_type, name=f"in{i}_{j}")
+        ObjectFifo(line_type, name=f"{func_prefix}in{i}_{j}")
         for i in range(num_columns)
         for j in range(num_channels)
     ]
     of_outs = [
-        ObjectFifo(line_type, name=f"out{i}_{j}")
+        ObjectFifo(line_type, name=f"{func_prefix}out{i}_{j}")
         for i in range(num_columns)
         for j in range(num_channels)
     ]
@@ -49,8 +50,8 @@ def my_leaky_relu(
     # External, binary kernel definition
     # Leaky RELU kernel takes: input, output, input_size, alpha
     leaky_relu_fcn = Kernel(
-        "leaky_relu_bf16",
-        "leaky_relu.o",
+        f"{func_prefix}leaky_relu_bf16",
+        f"{func_prefix}leaky_relu.o",
         [line_type, line_type, np.int32, np.dtype[xfr_dtype]],
     )
 

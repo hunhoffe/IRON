@@ -89,13 +89,13 @@ def my_matvec(
     )
 
     A_L3L1_fifos = [
-        ObjectFifo(L1_A_ty, name=f"A_L3L1_{i}", depth=2) for i in range(cols)
+        ObjectFifo(L1_A_ty, name=f"{func_prefix}A_L3L1_{i}", depth=2) for i in range(cols)
     ]
     B_L3L1_fifos = [
-        ObjectFifo(L1_B_ty, name=f"B_L3L1_{i}", depth=1) for i in range(cols)
+        ObjectFifo(L1_B_ty, name=f"{func_prefix}B_L3L1_{i}", depth=1) for i in range(cols)
     ]
     C_L1L3_fifos = [
-        ObjectFifo(L1_C_ty, name=f"C_L1L3_{i}", depth=2) for i in range(cols)
+        ObjectFifo(L1_C_ty, name=f"{func_prefix}C_L1L3_{i}", depth=2) for i in range(cols)
     ]
 
     def core_body(A_L3L1_fifo, B_L3L1_fifo, C_L1L3_fifo, matvec):

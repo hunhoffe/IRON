@@ -31,6 +31,7 @@ def strided_copy(
     num_invocations=1,
     input_offset_patch_marker=0,
     output_offset_patch_marker=0,
+    func_prefix="",
 ):
     assert len(input_sizes) == len(input_strides)
     assert len(output_sizes) == len(output_strides)
@@ -118,11 +119,11 @@ def strided_copy(
 
     # Use smaller FIFOs for the transfer amount
     fifos_in = [
-        ObjectFifo(transfer_ty, name=f"fifo_in_{c}", depth=1)
+        ObjectFifo(transfer_ty, name=f"{func_prefix}fifo_in_{c}", depth=1)
         for c in range(num_aie_channels)
     ]
     fifos_out = [
-        fifos_in[c].cons().forward(name=f"fifo_out_{c}", depth=1)
+        fifos_in[c].cons().forward(name=f"{func_prefix}fifo_out_{c}", depth=1)
         for c in range(num_aie_channels)
     ]
 

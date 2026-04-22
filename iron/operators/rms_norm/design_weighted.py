@@ -41,22 +41,22 @@ def my_weighted_rms_norm(
 
     # AIE-array data movement with object fifos
     of_in1s = [
-        ObjectFifo(tile_ty, name=f"in1_{i}_{j}", depth=fifodepth)
+        ObjectFifo(tile_ty, name=f"{func_prefix}in1_{i}_{j}", depth=fifodepth)
         for i in range(num_columns)
         for j in range(num_channels)
     ]
     # One weight ObjectFifo per channel, shared across columns in that channel
     of_in2s = [
-        ObjectFifo(weights_ty, name=f"in2_weights_{j}", depth=fifodepth)
+        ObjectFifo(weights_ty, name=f"{func_prefix}in2_weights_{j}", depth=fifodepth)
         for j in range(num_channels)
     ]
     of_out1s = [
-        ObjectFifo(tile_ty, name=f"out1_{i}_{j}", depth=fifodepth)
+        ObjectFifo(tile_ty, name=f"{func_prefix}out1_{i}_{j}", depth=fifodepth)
         for i in range(num_columns)
         for j in range(num_channels)
     ]
     of_out2s = [
-        ObjectFifo(tile_ty, name=f"out2_{i}_{j}", depth=fifodepth)
+        ObjectFifo(tile_ty, name=f"{func_prefix}out2_{i}_{j}", depth=fifodepth)
         for i in range(num_columns)
         for j in range(num_channels)
     ]

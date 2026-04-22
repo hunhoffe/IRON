@@ -48,9 +48,9 @@ def binary_elementwise_design(
             kw["fusion_group"] = fg
         return ObjectFifo(tile_ty, **kw)
 
-    of_in1s = [_of(f"in1_{i}", input_fusion_group_a) for i in range(num_columns)]
-    of_in2s = [_of(f"in2_{i}", input_fusion_group_b) for i in range(num_columns)]
-    of_outs = [_of(f"out_{i}", output_fusion_group) for i in range(num_columns)]
+    of_in1s = [_of(f"{func_prefix}in1_{i}", input_fusion_group_a) for i in range(num_columns)]
+    of_in2s = [_of(f"{func_prefix}in2_{i}", input_fusion_group_b) for i in range(num_columns)]
+    of_outs = [_of(f"{func_prefix}out_{i}", output_fusion_group) for i in range(num_columns)]
 
     # AIE Core Function declaration
     eltwise_kernel = Kernel(

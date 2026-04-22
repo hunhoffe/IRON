@@ -19,6 +19,7 @@ def my_rms_norm(
     tile_size,
     trace_size,
     num_invocations,
+    func_prefix="",
 ):
     per_tile_elements = 8192 if tile_size > 8192 else tile_size
     total_cores = num_columns * num_channels
@@ -39,12 +40,12 @@ def my_rms_norm(
 
     # AIE-array data movement with object fifos
     of_in1s = [
-        ObjectFifo(tile_ty, name=f"in1_{i}_{j}", depth=fifodepth)
+        ObjectFifo(tile_ty, name=f"{func_prefix}in1_{i}_{j}", depth=fifodepth)
         for i in range(num_columns)
         for j in range(num_channels)
     ]
     of_outs = [
-        ObjectFifo(tile_ty, name=f"out_{i}_{j}", depth=fifodepth)
+        ObjectFifo(tile_ty, name=f"{func_prefix}out_{i}_{j}", depth=fifodepth)
         for i in range(num_columns)
         for j in range(num_channels)
     ]

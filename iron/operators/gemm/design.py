@@ -341,7 +341,7 @@ def my_matmul(
         [
             Buffer(
                 np.ndarray[(2,), np.dtype[np.int32]],
-                name=f"rtp{row}_{col}",
+                name=f"{func_prefix}rtp{row}_{col}",
                 initial_value=np.array([0, 0], dtype=np.int32),
                 use_write_rtp=True,
             )
@@ -358,7 +358,7 @@ def my_matmul(
 
     # Input A
     for i in range(n_shim_mem_A):
-        A_l3l2_fifos[i] = ObjectFifo(A_l2_ty, name=f"A_L3L2_{i}", depth=fifo_depth)
+        A_l3l2_fifos[i] = ObjectFifo(A_l2_ty, name=f"{func_prefix}A_L3L2_{i}", depth=fifo_depth)
         # If n_shim_mem_A == n_rows, n_A_tiles_per_shim is 1 and
         # this simply links a_l3l2_fifos[i] to a_l2l1_fifos[i] directly,
         # If n_shim_mem_A < n_rows, each column receives multiple rows of
@@ -380,7 +380,7 @@ def my_matmul(
             .split(
                 of_offsets,
                 obj_types=[A_l1_ty] * (stop_row - start_row),
-                names=[f"A_L2L1_{row}" for row in range(start_row, stop_row)],
+                names=[f"{func_prefix}A_L2L1_{row}" for row in range(start_row, stop_row)],
                 dims_to_stream=dims_to_stream,
                 placement=Tile(
                     2 * i if n_aie_cols == 8 else i, 1
@@ -393,7 +393,7 @@ def my_matmul(
 
     # Input B
     for col in range(n_aie_cols):
-        B_l3l2_fifos[col] = ObjectFifo(B_l2_ty, name=f"B_L3L2_{col}", depth=fifo_depth)
+        B_l3l2_fifos[col] = ObjectFifo(B_l2_ty, name=f"{func_prefix}B_L3L2_{col}", depth=fifo_depth)
         if b_col_maj:
             dims_to_stream = [(n // t, t * k), (k // s, s), (t, k), (s, 1)]
         else:
@@ -403,7 +403,7 @@ def my_matmul(
             .cons()
             .forward(
                 obj_type=B_l1_ty,
-                name=f"B_L2L1_{col}",
+                name=f"{func_prefix}B_L2L1_{col}",
                 dims_to_stream=dims_to_stream,
                 placement=Tile(col, 1),
             )
@@ -416,7 +416,7 @@ def my_matmul(
             dims_to_stream = [(m // r, r * n), (r, t), (n // t, r * t), (t, 1)]
         C_l2l3_fifos[col] = ObjectFifo(
             C_l2_ty,
-            name=f"C_L2L3_{col}",
+            name=f"{func_prefix}C_L2L3_{col}",
             depth=fifo_depth,
             dims_to_stream=dims_to_stream,
         )
@@ -429,7 +429,7 @@ def my_matmul(
             .join(
                 of_offsets,
                 obj_types=[C_l1_ty] * n_aie_rows,
-                names=[f"C_L1L2_{col}_{row}" for row in range(n_aie_rows)],
+                names=[f"{func_prefix}C_L1L2_{col}_{row}" for row in range(n_aie_rows)],
                 depths=[fifo_depth_out] * n_aie_rows,
                 placement=Tile(col, 1),
             )
@@ -484,7 +484,7 @@ def my_matmul(
             acc_buffer = None
             if use_larger_internal_buffer:
                 acc_buffer = Buffer(
-                    type=C_l1_ty_internal, name=f"acc_buffer_{row}_{col}"
+                    type=C_l1_ty_internal, name=f"{func_prefix}acc_buffer_{row}_{col}"
                 )
 
             workers.append(

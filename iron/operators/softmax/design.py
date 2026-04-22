@@ -52,12 +52,12 @@ def softmax(
 
     # AIE-array data movement with object fifos
     of_in1s = [
-        ObjectFifo(tile_ty, name=f"in1_{i}_{j}")
+        ObjectFifo(tile_ty, name=f"{func_prefix}in1_{i}_{j}")
         for i in range(num_aie_columns)
         for j in range(num_channels)
     ]
     of_outs = [
-        ObjectFifo(tile_ty, name=f"out_{i}_{j}")
+        ObjectFifo(tile_ty, name=f"{func_prefix}out_{i}_{j}")
         for i in range(num_aie_columns)
         for j in range(num_channels)
     ]
@@ -89,7 +89,7 @@ def softmax(
     rtps = [
         Buffer(
             np.ndarray[(1,), np.dtype[np.int32]],
-            name=f"rtp_{i}_{j}",
+            name=f"{func_prefix}rtp_{i}_{j}",
             use_write_rtp=True,
         )
         for i in range(num_aie_columns)

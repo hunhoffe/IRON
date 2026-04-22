@@ -52,7 +52,7 @@ def channeled_unary_design(
     fg_out = {"fusion_group": output_fusion_group} if output_fusion_group is not None else {}
     of_ins = [
         ObjectFifo(
-            line_type, name=f"in{i}_{j}", **fg_in,
+            line_type, name=f"{func_prefix}in{i}_{j}", **fg_in,
             **fifo_kwargs,
         )
         for i in range(num_columns)
@@ -60,7 +60,7 @@ def channeled_unary_design(
     ]
     of_outs = [
         ObjectFifo(
-            line_type, name=f"out{i}_{j}", **fg_out,
+            line_type, name=f"{func_prefix}out{i}_{j}", **fg_out,
             **fifo_kwargs,
         )
         for i in range(num_columns)

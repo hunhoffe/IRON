@@ -12,7 +12,7 @@ from aie.iron import ObjectFifo, Program, Runtime
 from aie.iron.placers import SequentialPlacer
 
 
-def repeat(dev, dtype, rows, cols, repeat, transfer_size=None, num_invocations=1):
+def repeat(dev, dtype, rows, cols, repeat, transfer_size=None, num_invocations=1, func_prefix=""):
     dtype = np.dtype[dtype]
 
     # Try to work around hardware size limitations by breaking transfers into smaller chunks
@@ -59,8 +59,8 @@ def repeat(dev, dtype, rows, cols, repeat, transfer_size=None, num_invocations=1
     )
 
     # Use smaller FIFOs for the transfer amount
-    fifo_in = ObjectFifo(transfer_ty, name="fifo_in", depth=2)
-    fifo_out = fifo_in.cons().forward(name="fifo_out", depth=2)
+    fifo_in = ObjectFifo(transfer_ty, name=f"{func_prefix}fifo_in", depth=2)
+    fifo_out = fifo_in.cons().forward(name=f"{func_prefix}fifo_out", depth=2)
 
     rt = Runtime()
     with rt.sequence(inp_ty, out_ty) as (inp, out):
