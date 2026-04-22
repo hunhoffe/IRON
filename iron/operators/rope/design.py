@@ -33,6 +33,7 @@ def rope(
     num_aie_columns=1,
     trace_size=0,
     method_type=None,
+    num_invocations=1,
     func_prefix="",
 ):
     dtype = bfloat16
@@ -82,16 +83,17 @@ def rope(
 
     # Define a task that will run on a compute tile
     def core_body(of_in, of_lut, of_out, rope_kernel):
-        # Number of sub-vector "tile" iterations
-        for _ in range_(angle_rows_per_aie_column):
-            elem_lut = of_lut.acquire(1)
-            for _ in range_(tensor_rows_per_angle_row):
-                elem_in = of_in.acquire(1)
-                elem_out = of_out.acquire(1)
-                rope_kernel(elem_in, elem_lut, elem_out, cols)
-                of_in.release(1)
-                of_out.release(1)
-            of_lut.release(1)
+        for _ in range_(num_invocations):
+            # Number of sub-vector "tile" iterations
+            for _ in range_(angle_rows_per_aie_column):
+                elem_lut = of_lut.acquire(1)
+                for _ in range_(tensor_rows_per_angle_row):
+                    elem_in = of_in.acquire(1)
+                    elem_out = of_out.acquire(1)
+                    rope_kernel(elem_in, elem_lut, elem_out, cols)
+                    of_in.release(1)
+                    of_out.release(1)
+                of_lut.release(1)
 
     # Create a worker to run the task on a compute tile (one per column)
     my_workers = [
@@ -103,6 +105,7 @@ def rope(
                 of_out[i].prod(),
                 rope_kernel,
             ],
+            while_true=False,
         )
         for i in range(num_aie_columns)
     ]
