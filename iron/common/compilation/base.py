@@ -291,11 +291,24 @@ class _MLIRInputMixin:
 
     @property
     def mlir_input(self):
+        # FusedMLIRSource lives in iron.common.compilation.fusion, which
+        # imports from this module; lazy import avoids the cycle.  It is also
+        # a valid MLIR-source dependency: when its on-disk file is up-to-date
+        # the FusePythonGeneratedMLIRCompilationRule does not fire (the
+        # planning-time replace -> SourceArtifact never happens), and the
+        # FusedMLIRSource itself remains as a dependency of FullElf/Xclbin/
+        # InstsBin artifacts.  Downstream rules only read .filename, which
+        # is identical either way.
+        from iron.common.compilation.fusion import FusedMLIRSource
+
         result = next(
             (
                 d
                 for d in self.dependencies
-                if isinstance(d, (SourceArtifact, PythonGeneratedMLIRArtifact))
+                if isinstance(
+                    d,
+                    (SourceArtifact, PythonGeneratedMLIRArtifact, FusedMLIRSource),
+                )
             ),
             None,
         )
