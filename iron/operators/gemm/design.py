@@ -148,6 +148,9 @@ def my_matmul(
     func_prefix="",
     generate_taps=False,
     num_invocations=1,
+    input_fusion_group_a=None,
+    input_fusion_group_b=None,
+    output_fusion_group=None,
 ):
     n_aie_rows = 4
 
@@ -356,9 +359,17 @@ def my_matmul(
         for row in range(n_aie_rows)
     ]
 
+    # Only pass fusion_group kwarg when set, so design works against ObjectFifo
+    # implementations that don't accept it (e.g., wheels-installed mlir-aie).
+    # The L2->L1 forward/split and L1->L2 join sub-fifos are intentionally not
+    # exposed for fusion tagging (forward chain endpoints, see Pattern E).
+    fg_a = {"fusion_group": input_fusion_group_a} if input_fusion_group_a is not None else {}
+    fg_b = {"fusion_group": input_fusion_group_b} if input_fusion_group_b is not None else {}
+    fg_c = {"fusion_group": output_fusion_group} if output_fusion_group is not None else {}
+
     # Input A
     for i in range(n_shim_mem_A):
-        A_l3l2_fifos[i] = ObjectFifo(A_l2_ty, name=f"{func_prefix}A_L3L2_{i}", depth=fifo_depth)
+        A_l3l2_fifos[i] = ObjectFifo(A_l2_ty, name=f"{func_prefix}A_L3L2_{i}", depth=fifo_depth, **fg_a)
         # If n_shim_mem_A == n_rows, n_A_tiles_per_shim is 1 and
         # this simply links a_l3l2_fifos[i] to a_l2l1_fifos[i] directly,
         # If n_shim_mem_A < n_rows, each column receives multiple rows of
@@ -393,7 +404,7 @@ def my_matmul(
 
     # Input B
     for col in range(n_aie_cols):
-        B_l3l2_fifos[col] = ObjectFifo(B_l2_ty, name=f"{func_prefix}B_L3L2_{col}", depth=fifo_depth)
+        B_l3l2_fifos[col] = ObjectFifo(B_l2_ty, name=f"{func_prefix}B_L3L2_{col}", depth=fifo_depth, **fg_b)
         if b_col_maj:
             dims_to_stream = [(n // t, t * k), (k // s, s), (t, k), (s, 1)]
         else:
@@ -419,6 +430,7 @@ def my_matmul(
             name=f"{func_prefix}C_L2L3_{col}",
             depth=fifo_depth,
             dims_to_stream=dims_to_stream,
+            **fg_c,
         )
         of_offsets = [m * n * i for i in range(n_aie_rows)]
 

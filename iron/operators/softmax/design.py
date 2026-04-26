@@ -32,6 +32,8 @@ def softmax(
     num_invocations=1,
     func_prefix="",
     kernel_obj_file="softmax.o",
+    input_fusion_group=None,
+    output_fusion_group=None,
 ):
     per_tile_elements = tile_size
     if rtp_vector_size is None:
@@ -50,14 +52,18 @@ def softmax(
     tensor_ty = np.ndarray[(num_elements,), np.dtype[dtype]]
     tile_ty = np.ndarray[(per_tile_elements,), np.dtype[dtype]]
 
-    # AIE-array data movement with object fifos
+    # AIE-array data movement with object fifos.
+    # Only pass fusion_group kwarg when set, so design works against ObjectFifo
+    # implementations that don't accept it (e.g., wheels-installed mlir-aie).
+    fg_in = {"fusion_group": input_fusion_group} if input_fusion_group is not None else {}
+    fg_out = {"fusion_group": output_fusion_group} if output_fusion_group is not None else {}
     of_in1s = [
-        ObjectFifo(tile_ty, name=f"{func_prefix}in1_{i}_{j}")
+        ObjectFifo(tile_ty, name=f"{func_prefix}in1_{i}_{j}", **fg_in)
         for i in range(num_aie_columns)
         for j in range(num_channels)
     ]
     of_outs = [
-        ObjectFifo(tile_ty, name=f"{func_prefix}out_{i}_{j}")
+        ObjectFifo(tile_ty, name=f"{func_prefix}out_{i}_{j}", **fg_out)
         for i in range(num_aie_columns)
         for j in range(num_channels)
     ]

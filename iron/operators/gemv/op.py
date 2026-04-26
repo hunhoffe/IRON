@@ -27,6 +27,9 @@ class GEMV(MLIROperator):
     num_batches: int = 1
     num_invocations: int = 1
     kernel_vector_size: int = field(default=64, repr=False)
+    matrix_fusion_group: str | None = None
+    vector_fusion_group: str | None = None
+    output_fusion_group: str | None = None
     context: object = field(default=None, repr=False)
 
     _name_aliases: ClassVar[Dict[str, str]] = {
@@ -36,6 +39,9 @@ class GEMV(MLIROperator):
         "tile_size_output": "tso",
         "num_batches": "batch",
         "num_invocations": "ni",
+        "matrix_fusion_group": "mfg",
+        "vector_fusion_group": "vfg",
+        "output_fusion_group": "ofg",
     }
 
     def __post_init__(self):
@@ -79,6 +85,9 @@ class GEMV(MLIROperator):
                 {
                     "verbose": mlir_verbose,
                     "kernel_object": f"gemv_{self.K}k_{self.kernel_vector_size}vs.o",
+                    "matrix_fusion_group": self.matrix_fusion_group,
+                    "vector_fusion_group": self.vector_fusion_group,
+                    "output_fusion_group": self.output_fusion_group,
                 },
             ),
         )

@@ -35,6 +35,9 @@ def rope(
     method_type=None,
     num_invocations=1,
     func_prefix="",
+    input_fusion_group=None,
+    lut_fusion_group=None,
+    output_fusion_group=None,
 ):
     dtype = bfloat16
 
@@ -65,13 +68,18 @@ def rope(
     tensor_tile_ty = np.ndarray[(1, cols), np.dtype[dtype]]
     angle_tile_ty = np.ndarray[(1, cols), np.dtype[dtype]]
 
-    # AIE-array data movement with object fifos (one per column, not per channel)
-    of_in = [ObjectFifo(tensor_tile_ty, name=f"{func_prefix}in_{i}") for i in range(num_aie_columns)]
+    # AIE-array data movement with object fifos (one per column, not per channel).
+    # Only pass fusion_group kwarg when set, so design works against ObjectFifo
+    # implementations that don't accept it (e.g., wheels-installed mlir-aie).
+    fg_in = {"fusion_group": input_fusion_group} if input_fusion_group is not None else {}
+    fg_lut = {"fusion_group": lut_fusion_group} if lut_fusion_group is not None else {}
+    fg_out = {"fusion_group": output_fusion_group} if output_fusion_group is not None else {}
+    of_in = [ObjectFifo(tensor_tile_ty, name=f"{func_prefix}in_{i}", **fg_in) for i in range(num_aie_columns)]
     of_lut = [
-        ObjectFifo(angle_tile_ty, name=f"{func_prefix}lut_{i}") for i in range(num_aie_columns)
+        ObjectFifo(angle_tile_ty, name=f"{func_prefix}lut_{i}", **fg_lut) for i in range(num_aie_columns)
     ]
     of_out = [
-        ObjectFifo(tensor_tile_ty, name=f"{func_prefix}out_{i}") for i in range(num_aie_columns)
+        ObjectFifo(tensor_tile_ty, name=f"{func_prefix}out_{i}", **fg_out) for i in range(num_aie_columns)
     ]
 
     # AIE Core Function declaration

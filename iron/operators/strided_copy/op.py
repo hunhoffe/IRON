@@ -31,6 +31,7 @@ class StridedCopy(MLIROperator):
     transfer_size: int | None = None
     num_aie_channels: int = 1
     num_invocations: int = 1
+    input_fusion_group: str | None = None
     kwargs: dict = field(default_factory=dict, repr=False)
     context: object = field(default=None, repr=False)
 
@@ -44,6 +45,7 @@ class StridedCopy(MLIROperator):
         "output_offset": "ooff",
         "transfer_size": "tr",
         "num_aie_channels": "ch",
+        "input_fusion_group": "ifg",
     }
 
     def __post_init__(self):
@@ -64,6 +66,9 @@ class StridedCopy(MLIROperator):
         MLIROperator.__init__(self, context=self.context)
 
     def get_mlir_artifact(self):
+        callback_kwargs = dict(self.kwargs)
+        if self.input_fusion_group is not None:
+            callback_kwargs["input_fusion_group"] = self.input_fusion_group
         return PythonGeneratedMLIRArtifact(
             f"{self.name}.mlir",
             DesignGenerator(
@@ -84,7 +89,7 @@ class StridedCopy(MLIROperator):
                     self.num_aie_channels,
                     self.num_invocations,
                 ),
-                self.kwargs,
+                callback_kwargs,
             ),
         )
 

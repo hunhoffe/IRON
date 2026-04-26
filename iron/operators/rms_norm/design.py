@@ -20,6 +20,8 @@ def my_rms_norm(
     trace_size,
     num_invocations,
     func_prefix="",
+    input_fusion_group=None,
+    output_fusion_group=None,
 ):
     per_tile_elements = 8192 if tile_size > 8192 else tile_size
     total_cores = num_columns * num_channels
@@ -38,14 +40,18 @@ def my_rms_norm(
 
     fifodepth = 1 if tile_size > 4096 else 2
 
-    # AIE-array data movement with object fifos
+    # AIE-array data movement with object fifos.
+    # Only pass fusion_group kwarg when set, so design works against ObjectFifo
+    # implementations that don't accept it (e.g., wheels-installed mlir-aie).
+    fg_in = {"fusion_group": input_fusion_group} if input_fusion_group is not None else {}
+    fg_out = {"fusion_group": output_fusion_group} if output_fusion_group is not None else {}
     of_in1s = [
-        ObjectFifo(tile_ty, name=f"{func_prefix}in1_{i}_{j}", depth=fifodepth)
+        ObjectFifo(tile_ty, name=f"{func_prefix}in1_{i}_{j}", depth=fifodepth, **fg_in)
         for i in range(num_columns)
         for j in range(num_channels)
     ]
     of_outs = [
-        ObjectFifo(tile_ty, name=f"{func_prefix}out_{i}_{j}", depth=fifodepth)
+        ObjectFifo(tile_ty, name=f"{func_prefix}out_{i}_{j}", depth=fifodepth, **fg_out)
         for i in range(num_columns)
         for j in range(num_channels)
     ]

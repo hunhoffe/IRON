@@ -27,12 +27,18 @@ class RMSNorm(MLIROperator):
     tile_size: int
     weighted: bool = False
     num_invocations: int = 1
+    input_fusion_group: str | None = None
+    weight_fusion_group: str | None = None
+    output_fusion_group: str | None = None
     context: object = field(default=None, repr=False)
 
     _name_aliases: ClassVar[Dict[str, str]] = {
         **MLIROperator._name_aliases,
         "weighted": "w",
         "num_invocations": "ni",
+        "input_fusion_group": "ifg",
+        "weight_fusion_group": "wfg",
+        "output_fusion_group": "ofg",
     }
 
     def __post_init__(self):
@@ -81,6 +87,16 @@ class RMSNorm(MLIROperator):
             source_path = self.operator_dir / "design.py"
             callback_fn = "my_rms_norm"
 
+        # Build keyword args for the design callback. The unweighted variant
+        # has no notion of a weight ObjectFifo, so we omit weight_fusion_group
+        # for it; the weighted variant accepts all three.
+        callback_kwargs = {
+            "input_fusion_group": self.input_fusion_group,
+            "output_fusion_group": self.output_fusion_group,
+        }
+        if self.weighted:
+            callback_kwargs["weight_fusion_group"] = self.weight_fusion_group
+
         return PythonGeneratedMLIRArtifact(
             f"{self.name}.mlir",
             DesignGenerator(
@@ -95,6 +111,7 @@ class RMSNorm(MLIROperator):
                     0,  # trace_size
                     self.num_invocations,
                 ),
+                callback_kwargs,
             ),
         )
 

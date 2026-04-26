@@ -38,6 +38,9 @@ def my_matvec(
     kernel_object="mv.o",
     func_prefix="",
     verbose=False,
+    matrix_fusion_group=None,
+    vector_fusion_group=None,
+    output_fusion_group=None,
 ):
     if m_output is None:
         m_output = m_input
@@ -88,14 +91,19 @@ def my_matvec(
         [np.int32, np.int32, L1_A_ty, L1_B_ty, L1_C_ty],
     )
 
+    # Only pass fusion_group kwarg when set, so design works against ObjectFifo
+    # implementations that don't accept it (e.g., wheels-installed mlir-aie).
+    fg_a = {"fusion_group": matrix_fusion_group} if matrix_fusion_group is not None else {}
+    fg_b = {"fusion_group": vector_fusion_group} if vector_fusion_group is not None else {}
+    fg_c = {"fusion_group": output_fusion_group} if output_fusion_group is not None else {}
     A_L3L1_fifos = [
-        ObjectFifo(L1_A_ty, name=f"{func_prefix}A_L3L1_{i}", depth=2) for i in range(cols)
+        ObjectFifo(L1_A_ty, name=f"{func_prefix}A_L3L1_{i}", depth=2, **fg_a) for i in range(cols)
     ]
     B_L3L1_fifos = [
-        ObjectFifo(L1_B_ty, name=f"{func_prefix}B_L3L1_{i}", depth=1) for i in range(cols)
+        ObjectFifo(L1_B_ty, name=f"{func_prefix}B_L3L1_{i}", depth=1, **fg_b) for i in range(cols)
     ]
     C_L1L3_fifos = [
-        ObjectFifo(L1_C_ty, name=f"{func_prefix}C_L1L3_{i}", depth=2) for i in range(cols)
+        ObjectFifo(L1_C_ty, name=f"{func_prefix}C_L1L3_{i}", depth=2, **fg_c) for i in range(cols)
     ]
 
     def core_body(A_L3L1_fifo, B_L3L1_fifo, C_L1L3_fifo, matvec):

@@ -27,11 +27,15 @@ class Transpose(MLIROperator):
     n: int
     s: int
     num_invocations: int = 1
+    input_fusion_group: str | None = None
+    output_fusion_group: str | None = None
     context: object = field(default=None, repr=False)
 
     _name_aliases: ClassVar[Dict[str, str]] = {
         **MLIROperator._name_aliases,
         "num_invocations": "ni",
+        "input_fusion_group": "ifg",
+        "output_fusion_group": "ofg",
     }
 
     def __post_init__(self):
@@ -79,6 +83,10 @@ class Transpose(MLIROperator):
                     self.s,
                     self.num_invocations,
                 ),
+                {
+                    "input_fusion_group": self.input_fusion_group,
+                    "output_fusion_group": self.output_fusion_group,
+                },
             ),
         )
 

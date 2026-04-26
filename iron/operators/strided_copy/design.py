@@ -32,6 +32,7 @@ def strided_copy(
     input_offset_patch_marker=0,
     output_offset_patch_marker=0,
     func_prefix="",
+    input_fusion_group=None,
 ):
     assert len(input_sizes) == len(input_strides)
     assert len(output_sizes) == len(output_strides)
@@ -117,9 +118,16 @@ def strided_copy(
         for c in range(num_aie_channels)
     ]
 
+    # Only pass fusion_group kwarg when set, so design works against ObjectFifo
+    # implementations that don't accept it (e.g., wheels-installed mlir-aie).
+    # Note: fifos_out is created via .forward() which does NOT accept
+    # fusion_group, so output-side fusion tagging is not supported here
+    # (forward chain endpoint, see Pattern E).
+    fg_in = {"fusion_group": input_fusion_group} if input_fusion_group is not None else {}
+
     # Use smaller FIFOs for the transfer amount
     fifos_in = [
-        ObjectFifo(transfer_ty, name=f"{func_prefix}fifo_in_{c}", depth=1)
+        ObjectFifo(transfer_ty, name=f"{func_prefix}fifo_in_{c}", depth=1, **fg_in)
         for c in range(num_aie_channels)
     ]
     fifos_out = [
