@@ -11,6 +11,7 @@
 # [ ] Patching of operators (instantiating new xrt::elf for each token) is slow; find quicker way of patching instruction sequence in-memory
 # [ ] Spatial fusion of operators
 
+import os
 import torch
 import math
 from pathlib import Path
@@ -66,8 +67,11 @@ class AIEDecodeOperations:
 
 class AIELlamaOperators:
 
-    def __init__(self, config, prompt_len):
-        self.context = AIEContext()
+    def __init__(self, config, prompt_len, use_conduit=False):
+        self.context = AIEContext(
+            use_conduit=use_conduit,
+            mlir_aie_install_dir=os.environ["CONDUIT_INSTALL"] if use_conduit else None,
+        )
         self.context.build_dir.mkdir(parents=True, exist_ok=True)
 
         self.prefill = AIEPrefillOperations()
@@ -297,7 +301,11 @@ class AIELlamaOperators:
         # Decode operator (everything temporally fused)
         # ##################################################################
 
-        elf_ctx = AIEContext(build_dir="build_elf")
+        elf_ctx = AIEContext(
+            use_conduit=use_conduit,
+            mlir_aie_install_dir=os.environ["CONDUIT_INSTALL"] if use_conduit else None,
+            build_dir=os.environ.get("CONDUIT_BUILD_DIR", "build_elf"),
+        )
 
         gemv_attn_query_op = GEMV(
             M=config.n_heads * config.head_dim,
@@ -1354,7 +1362,7 @@ def main():
 
     config, state = harness.init(args.weights_path, args.tokenizer_path, prompt=prompt)
 
-    aie_ops = AIELlamaOperators(config, max_seq_len)
+    aie_ops = AIELlamaOperators(config, max_seq_len, use_conduit=args.use_conduit)
     aie_buffers = AIELlamaBuffers(config, max_seq_len, aie_ops)
 
     print(prompt, end="", flush=True)
