@@ -18,6 +18,7 @@ def get_params():
     # shape reflects real decoder-model FFN dims (e.g. Qwen3.5-0.8B
     # embedding=1024, hidden=3584) that downstream runtimes actually hit.
     params_list = [
+        (64, 64),  # smallest viable: K==kernel_vector_size; conduit ladder Rung 1+
         (2048, 2048),
         (1024, 3584),
     ]
