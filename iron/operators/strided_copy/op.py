@@ -30,6 +30,8 @@ class StridedCopy(MLIROperator):
     dtype: object = field(default=bfloat16, repr=False)
     transfer_size: int | None = None
     num_aie_channels: int = 1
+    num_invocations: int = 1
+    input_fusion_group: str | None = None
     kwargs: dict = field(default_factory=dict, repr=False)
     context: object = field(default=None, repr=False)
 
@@ -43,9 +45,14 @@ class StridedCopy(MLIROperator):
         "output_offset": "ooff",
         "transfer_size": "tr",
         "num_aie_channels": "ch",
+        "input_fusion_group": "ifg",
     }
 
     def __post_init__(self):
+        if self.num_invocations < 1:
+            raise ValueError(
+                f"num_invocations must be >= 1, got {self.num_invocations}"
+            )
         if len(self.input_sizes) != len(self.input_strides):
             raise ValueError(
                 f"input_sizes and input_strides must have the same length "
@@ -59,6 +66,9 @@ class StridedCopy(MLIROperator):
         MLIROperator.__init__(self, context=self.context)
 
     def get_mlir_artifact(self):
+        callback_kwargs = dict(self.kwargs)
+        if self.input_fusion_group is not None:
+            callback_kwargs["input_fusion_group"] = self.input_fusion_group
         return PythonGeneratedMLIRArtifact(
             f"{self.name}.mlir",
             DesignGenerator(
@@ -77,8 +87,9 @@ class StridedCopy(MLIROperator):
                     self.output_offset,
                     self.transfer_size,
                     self.num_aie_channels,
+                    self.num_invocations,
                 ),
-                self.kwargs,
+                callback_kwargs,
             ),
         )
 
@@ -87,6 +98,6 @@ class StridedCopy(MLIROperator):
 
     def get_arg_spec(self):
         return [
-            AIERuntimeArgSpec("in", self.input_buffer_size),
-            AIERuntimeArgSpec("out", self.output_buffer_size),
+            AIERuntimeArgSpec("in", (self.input_buffer_size,)),
+            AIERuntimeArgSpec("out", (self.output_buffer_size,)),
         ]

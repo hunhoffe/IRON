@@ -18,6 +18,10 @@ def my_rms_norm(
     num_channels,
     tile_size,
     trace_size,
+    num_invocations,
+    func_prefix="",
+    input_fusion_group=None,
+    output_fusion_group=None,
 ):
     per_tile_elements = 8192 if tile_size > 8192 else tile_size
     total_cores = num_columns * num_channels
@@ -36,14 +40,18 @@ def my_rms_norm(
 
     fifodepth = 1 if tile_size > 4096 else 2
 
-    # AIE-array data movement with object fifos
+    # AIE-array data movement with object fifos.
+    # Only pass fusion_group kwarg when set, so design works against ObjectFifo
+    # implementations that don't accept it (e.g., wheels-installed mlir-aie).
+    fg_in = {"fusion_group": input_fusion_group} if input_fusion_group is not None else {}
+    fg_out = {"fusion_group": output_fusion_group} if output_fusion_group is not None else {}
     of_in1s = [
-        ObjectFifo(tile_ty, name=f"in1_{i}_{j}", depth=fifodepth)
+        ObjectFifo(tile_ty, name=f"{func_prefix}in1_{i}_{j}", depth=fifodepth, **fg_in)
         for i in range(num_columns)
         for j in range(num_channels)
     ]
     of_outs = [
-        ObjectFifo(tile_ty, name=f"out_{i}_{j}", depth=fifodepth)
+        ObjectFifo(tile_ty, name=f"{func_prefix}out_{i}_{j}", depth=fifodepth, **fg_out)
         for i in range(num_columns)
         for j in range(num_channels)
     ]
@@ -55,13 +63,14 @@ def my_rms_norm(
 
     # Define a task that will run on a compute tile
     def core_body(of_in1, of_out, rms_norm_kernel):
-        # Number of sub-vector "tile" iterations
-        for _ in range_(N_div_n):
-            elem_in1 = of_in1.acquire(1)
-            elem_out = of_out.acquire(1)
-            rms_norm_kernel(elem_in1, elem_out, per_tile_elements)
-            of_in1.release(1)
-            of_out.release(1)
+        for _ in range_(num_invocations):
+            # Number of sub-vector "tile" iterations
+            for _ in range_(N_div_n):
+                elem_in1 = of_in1.acquire(1)
+                elem_out = of_out.acquire(1)
+                rms_norm_kernel(elem_in1, elem_out, per_tile_elements)
+                of_in1.release(1)
+                of_out.release(1)
 
     # Create a worker to run the task on a compute tile
     my_workers = [
@@ -72,6 +81,7 @@ def my_rms_norm(
                 of_outs[i * num_channels + j].prod(),
                 rms_norm_kernel,
             ],
+            while_true=False,
         )
         for i in range(num_columns)
         for j in range(num_channels)

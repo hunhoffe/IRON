@@ -29,8 +29,11 @@ def softmax(
     tile_size,
     rtp_vector_size=None,
     mask_patch_value=0,
+    num_invocations=1,
     func_prefix="",
     kernel_obj_file="softmax.o",
+    input_fusion_group=None,
+    output_fusion_group=None,
 ):
     per_tile_elements = tile_size
     if rtp_vector_size is None:
@@ -49,14 +52,18 @@ def softmax(
     tensor_ty = np.ndarray[(num_elements,), np.dtype[dtype]]
     tile_ty = np.ndarray[(per_tile_elements,), np.dtype[dtype]]
 
-    # AIE-array data movement with object fifos
+    # AIE-array data movement with object fifos.
+    # Only pass fusion_group kwarg when set, so design works against ObjectFifo
+    # implementations that don't accept it (e.g., wheels-installed mlir-aie).
+    fg_in = {"fusion_group": input_fusion_group} if input_fusion_group is not None else {}
+    fg_out = {"fusion_group": output_fusion_group} if output_fusion_group is not None else {}
     of_in1s = [
-        ObjectFifo(tile_ty, name=f"in1_{i}_{j}")
+        ObjectFifo(tile_ty, name=f"{func_prefix}in1_{i}_{j}", **fg_in)
         for i in range(num_aie_columns)
         for j in range(num_channels)
     ]
     of_outs = [
-        ObjectFifo(tile_ty, name=f"out_{i}_{j}")
+        ObjectFifo(tile_ty, name=f"{func_prefix}out_{i}_{j}", **fg_out)
         for i in range(num_aie_columns)
         for j in range(num_channels)
     ]
@@ -77,7 +84,7 @@ def softmax(
     def core_body(of_in1, of_out, softmax_kernel, mask_kernel, rtp, barrier):
         barrier.wait_for_value(1)
         vector_size = rtp[0]
-        for _ in range_(N_div_n):
+        for _ in range_(num_invocations * N_div_n):
             elem_in1 = of_in1.acquire(1)
             elem_out = of_out.acquire(1)
             mask_kernel(elem_in1, vector_size, per_tile_elements)
@@ -88,7 +95,7 @@ def softmax(
     rtps = [
         Buffer(
             np.ndarray[(1,), np.dtype[np.int32]],
-            name=f"rtp_{i}_{j}",
+            name=f"{func_prefix}rtp_{i}_{j}",
             use_write_rtp=True,
         )
         for i in range(num_aie_columns)
@@ -111,7 +118,7 @@ def softmax(
         barriers[i * num_channels + j],
     ]
     my_workers = [
-        Worker(core_body, worker_args(i, j))
+        Worker(core_body, worker_args(i, j), while_true=False)
         for i in range(num_aie_columns)
         for j in range(num_channels)
     ]

@@ -35,6 +35,6 @@ class LeakyReLU(ChanneledUnaryOperator):
             DesignGenerator(
                 self.operator_dir / "design.py",
                 self.callback_fn,
-                tuple(self._mlir_callback_args()),
+                tuple(self._mlir_callback_args() + [self.num_invocations]),
             ),
         )

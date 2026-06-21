@@ -33,7 +33,11 @@ def rope(
     num_aie_columns=1,
     trace_size=0,
     method_type=None,
+    num_invocations=1,
     func_prefix="",
+    input_fusion_group=None,
+    lut_fusion_group=None,
+    output_fusion_group=None,
 ):
     dtype = bfloat16
 
@@ -64,13 +68,18 @@ def rope(
     tensor_tile_ty = np.ndarray[(1, cols), np.dtype[dtype]]
     angle_tile_ty = np.ndarray[(1, cols), np.dtype[dtype]]
 
-    # AIE-array data movement with object fifos (one per column, not per channel)
-    of_in = [ObjectFifo(tensor_tile_ty, name=f"in_{i}") for i in range(num_aie_columns)]
+    # AIE-array data movement with object fifos (one per column, not per channel).
+    # Only pass fusion_group kwarg when set, so design works against ObjectFifo
+    # implementations that don't accept it (e.g., wheels-installed mlir-aie).
+    fg_in = {"fusion_group": input_fusion_group} if input_fusion_group is not None else {}
+    fg_lut = {"fusion_group": lut_fusion_group} if lut_fusion_group is not None else {}
+    fg_out = {"fusion_group": output_fusion_group} if output_fusion_group is not None else {}
+    of_in = [ObjectFifo(tensor_tile_ty, name=f"{func_prefix}in_{i}", **fg_in) for i in range(num_aie_columns)]
     of_lut = [
-        ObjectFifo(angle_tile_ty, name=f"lut_{i}") for i in range(num_aie_columns)
+        ObjectFifo(angle_tile_ty, name=f"{func_prefix}lut_{i}", **fg_lut) for i in range(num_aie_columns)
     ]
     of_out = [
-        ObjectFifo(tensor_tile_ty, name=f"out_{i}") for i in range(num_aie_columns)
+        ObjectFifo(tensor_tile_ty, name=f"{func_prefix}out_{i}", **fg_out) for i in range(num_aie_columns)
     ]
 
     # AIE Core Function declaration
@@ -82,16 +91,17 @@ def rope(
 
     # Define a task that will run on a compute tile
     def core_body(of_in, of_lut, of_out, rope_kernel):
-        # Number of sub-vector "tile" iterations
-        for _ in range_(angle_rows_per_aie_column):
-            elem_lut = of_lut.acquire(1)
-            for _ in range_(tensor_rows_per_angle_row):
-                elem_in = of_in.acquire(1)
-                elem_out = of_out.acquire(1)
-                rope_kernel(elem_in, elem_lut, elem_out, cols)
-                of_in.release(1)
-                of_out.release(1)
-            of_lut.release(1)
+        for _ in range_(num_invocations):
+            # Number of sub-vector "tile" iterations
+            for _ in range_(angle_rows_per_aie_column):
+                elem_lut = of_lut.acquire(1)
+                for _ in range_(tensor_rows_per_angle_row):
+                    elem_in = of_in.acquire(1)
+                    elem_out = of_out.acquire(1)
+                    rope_kernel(elem_in, elem_lut, elem_out, cols)
+                    of_in.release(1)
+                    of_out.release(1)
+                of_lut.release(1)
 
     # Create a worker to run the task on a compute tile (one per column)
     my_workers = [
@@ -103,6 +113,7 @@ def rope(
                 of_out[i].prod(),
                 rope_kernel,
             ],
+            while_true=False,
         )
         for i in range(num_aie_columns)
     ]

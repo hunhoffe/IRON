@@ -23,18 +23,28 @@ class Repeat(MLIROperator):
     repeat: int
     transfer_size: int | None = None
     dtype: object = field(default=bfloat16, repr=False)
+    num_invocations: int = 1
+    input_fusion_group: str | None = None
     context: object = field(default=None, repr=False)
 
     _name_aliases: ClassVar[Dict[str, str]] = {
         **MLIROperator._name_aliases,
         "repeat": "by",
         "transfer_size": "ts",
+        "input_fusion_group": "ifg",
     }
 
     def __post_init__(self):
+        if self.num_invocations < 1:
+            raise ValueError(
+                f"num_invocations must be >= 1, got {self.num_invocations}"
+            )
         MLIROperator.__init__(self, context=self.context)
 
     def get_mlir_artifact(self):
+        callback_kwargs = {}
+        if self.input_fusion_group is not None:
+            callback_kwargs["input_fusion_group"] = self.input_fusion_group
         return PythonGeneratedMLIRArtifact(
             f"{self.name}.mlir",
             DesignGenerator(
@@ -47,7 +57,9 @@ class Repeat(MLIROperator):
                     self.cols,
                     self.repeat,
                     self.transfer_size,
+                    self.num_invocations,
                 ),
+                callback_kwargs,
             ),
         )
 

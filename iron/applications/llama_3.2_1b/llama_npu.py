@@ -11,6 +11,7 @@
 # [ ] Patching of operators (instantiating new xrt::elf for each token) is slow; find quicker way of patching instruction sequence in-memory
 # [ ] Spatial fusion of operators
 
+import os
 import torch
 import math
 from pathlib import Path
@@ -66,8 +67,11 @@ class AIEDecodeOperations:
 
 class AIELlamaOperators:
 
-    def __init__(self, config, prompt_len):
-        self.context = AIEContext()
+    def __init__(self, config, prompt_len, use_conduit=False):
+        self.context = AIEContext(
+            use_conduit=use_conduit,
+            mlir_aie_install_dir=os.environ["CONDUIT_INSTALL"] if use_conduit else None,
+        )
         self.context.build_dir.mkdir(parents=True, exist_ok=True)
 
         self.prefill = AIEPrefillOperations()
@@ -83,6 +87,7 @@ class AIELlamaOperators:
                 num_channels=1,  # weighted=True with 8 columns needs 9 ShimDMA fills/channel; max 16 total forces num_channels=1
                 tile_size=config.emb_dim,
                 weighted=True,
+                num_invocations=33,  # 2/layer × 16 layers + 1 final
                 context=self.context,
             )
             .compile()
@@ -90,7 +95,11 @@ class AIELlamaOperators:
         )
 
         self.prefill.residual_add = (
-            ElementwiseAdd(size=prompt_len * config.emb_dim, tile_size=config.emb_dim)
+            ElementwiseAdd(
+                size=prompt_len * config.emb_dim,
+                tile_size=config.emb_dim,
+                num_invocations=32,  # 2/layer × 16 layers (attn + FFN residuals)
+            )
             .compile()
             .get_callable()
         )
@@ -108,6 +117,7 @@ class AIELlamaOperators:
             tile_n=64,
             b_col_maj=True,
             separate_c_tiles=True,
+            num_invocations=4,  # vocab_partitions
             context=self.context,
         ).compile()
         self.prefill.out_head = self.prefill.gemv_out_head_compilable.get_callable()
@@ -124,6 +134,7 @@ class AIELlamaOperators:
                 tile_k=64,
                 tile_n=64,
                 b_col_maj=False,  # exceeds stride dimensions otherwise; just transpose weights
+                num_invocations=32,  # 2/layer × 16 layers (gate + up)
                 context=self.context,
             )
             .compile()
@@ -140,6 +151,7 @@ class AIELlamaOperators:
                 tile_k=64,
                 tile_n=64,
                 b_col_maj=False,  # exceeds stride dimensions otherwise; just transpose weights
+                num_invocations=16,  # 1/layer × 16 layers
                 context=self.context,
             )
             .compile()
@@ -151,6 +163,7 @@ class AIELlamaOperators:
                 size=prompt_len * config.hidden_dim,
                 tile_size=config.hidden_dim,
                 num_aie_columns=8,
+                num_invocations=16,  # 1/layer × 16 layers
                 context=self.context,
             )
             .compile()
@@ -162,6 +175,7 @@ class AIELlamaOperators:
                 size=prompt_len * config.hidden_dim,
                 tile_size=config.hidden_dim,
                 num_aie_columns=8,
+                num_invocations=16,  # 1/layer × 16 layers
                 context=self.context,
             )
             .compile()
@@ -175,6 +189,7 @@ class AIELlamaOperators:
                 size=config.n_heads * prompt_len * prompt_len,
                 tile_size=prompt_len,
                 num_aie_columns=8,
+                num_invocations=16,  # 1/layer × 16 layers
                 context=self.context,
             )
             .compile()
@@ -190,6 +205,7 @@ class AIELlamaOperators:
                 rows=prompt_len * config.n_heads,
                 cols=config.head_dim,
                 angle_rows=prompt_len,
+                num_invocations=16,  # 1/layer × 16 layers
                 context=self.context,
             )
             .compile()
@@ -201,6 +217,7 @@ class AIELlamaOperators:
                 rows=prompt_len * config.n_kv_groups,
                 cols=config.head_dim,
                 angle_rows=prompt_len,
+                num_invocations=16,  # 1/layer × 16 layers
                 context=self.context,
             )
             .compile()
@@ -219,6 +236,7 @@ class AIELlamaOperators:
                 tile_k=64,
                 tile_n=64,
                 b_col_maj=False,
+                num_invocations=16,  # 1/layer × 16 layers
                 context=self.context,
             )
             .compile()
@@ -236,6 +254,7 @@ class AIELlamaOperators:
                 tile_k=64,
                 tile_n=64,
                 b_col_maj=False,
+                num_invocations=16,  # 1/layer × 16 layers
                 context=self.context,
             )
             .compile()
@@ -253,6 +272,7 @@ class AIELlamaOperators:
                 tile_k=64,
                 tile_n=64,
                 b_col_maj=False,
+                num_invocations=16,  # 1/layer × 16 layers
                 context=self.context,
             )
             .compile()
@@ -271,6 +291,7 @@ class AIELlamaOperators:
                 tile_k=64,
                 tile_n=64,
                 b_col_maj=False,
+                num_invocations=512,  # n_heads(32) × 16 layers
                 context=self.context,
             )
             .compile()
@@ -280,7 +301,11 @@ class AIELlamaOperators:
         # Decode operator (everything temporally fused)
         # ##################################################################
 
-        elf_ctx = AIEContext(build_dir="build_elf")
+        elf_ctx = AIEContext(
+            use_conduit=use_conduit,
+            mlir_aie_install_dir=os.environ["CONDUIT_INSTALL"] if use_conduit else None,
+            build_dir=os.environ.get("CONDUIT_BUILD_DIR", "build_elf"),
+        )
 
         gemv_attn_query_op = GEMV(
             M=config.n_heads * config.head_dim,
@@ -288,6 +313,7 @@ class AIELlamaOperators:
             num_aie_columns=8,
             tile_size_input=4,
             tile_size_output=config.head_dim // 2,
+            num_invocations=16,  # 1/layer × 16 layers
             context=elf_ctx,
         )
 
@@ -297,21 +323,28 @@ class AIELlamaOperators:
             num_aie_columns=8,
             tile_size_input=4,
             tile_size_output=config.head_dim // 2,
+            num_invocations=32,  # key + value, 1 each/layer × 16 layers
             context=elf_ctx,
         )
 
         # decode processes 1 query token at a time
         rope_queries_op = RoPE(
-            rows=config.n_heads, cols=config.head_dim, angle_rows=1, context=elf_ctx
+            rows=config.n_heads,
+            cols=config.head_dim,
+            angle_rows=1,
+            num_invocations=16,  # 1/layer × 16 layers
+            context=elf_ctx,
         )
 
         rope_keys_op = RoPE(
             rows=config.n_kv_groups,
             cols=config.head_dim,
             angle_rows=1,
+            num_invocations=16,  # 1/layer × 16 layers
             context=elf_ctx,
         )
 
+        # TODO(Phase D): StridedCopy still needs num_invocations support (num_invocations=32; extends MLIROperator directly, not a Phase A base)
         strided_copy_cache_magic = 0xDEADBEE0
         strided_copy_cache_op = StridedCopy(
             input_sizes=(config.n_kv_groups, config.head_dim),
@@ -336,6 +369,7 @@ class AIELlamaOperators:
             tile_size_input=4,
             tile_size_output=prompt_len // 8,
             num_batches=config.n_heads,
+            num_invocations=16,  # 1/layer × 16 layers (batched over n_heads=32)
             context=elf_ctx,
         )
 
@@ -343,6 +377,7 @@ class AIELlamaOperators:
             size=config.n_heads * prompt_len,
             tile_size=prompt_len // 8,
             num_aie_columns=8,
+            num_invocations=16,  # 1/layer × 16 layers
             context=elf_ctx,
         )
 
@@ -355,6 +390,7 @@ class AIELlamaOperators:
             num_channels=1,
             rtp_vector_size=prompt_len,  # Compile with max size
             mask_patch_value=softmax_magic,  # Magic value for patching
+            num_invocations=16,  # 1/layer × 16 layers
             context=elf_ctx,
         )
 
@@ -367,6 +403,7 @@ class AIELlamaOperators:
             m=256,
             n=32,
             s=8,
+            num_invocations=512,  # n_heads(32) × 16 layers
             context=elf_ctx,
         )
 
@@ -378,6 +415,7 @@ class AIELlamaOperators:
             tile_size_input=4,
             tile_size_output=4,
             num_batches=config.n_heads,
+            num_invocations=16,  # 1/layer × 16 layers
             context=elf_ctx,
         )
 
@@ -387,6 +425,7 @@ class AIELlamaOperators:
             num_aie_columns=8,
             tile_size_input=4,
             tile_size_output=config.emb_dim // 8,
+            num_invocations=16,  # 1/layer × 16 layers
             context=elf_ctx,
         )
 
@@ -396,6 +435,7 @@ class AIELlamaOperators:
             num_channels=1,
             tile_size=config.emb_dim,
             weighted=True,
+            num_invocations=33,  # 2/layer × 16 layers + 1 final
             context=elf_ctx,
         )
 
@@ -405,6 +445,7 @@ class AIELlamaOperators:
             num_aie_columns=8,
             tile_size_input=4,
             tile_size_output=config.hidden_dim // 8,
+            num_invocations=32,  # 2/layer × 16 layers (gate + up)
             context=elf_ctx,
         )
 
@@ -414,6 +455,7 @@ class AIELlamaOperators:
             num_aie_columns=8,
             tile_size_input=1,
             tile_size_output=config.emb_dim // 8,
+            num_invocations=16,  # 1/layer × 16 layers
             context=elf_ctx,
         )
 
@@ -421,6 +463,7 @@ class AIELlamaOperators:
             size=config.hidden_dim,
             tile_size=config.hidden_dim // 8,
             num_aie_columns=8,
+            num_invocations=16,  # 1/layer × 16 layers
             context=elf_ctx,
         )
 
@@ -428,13 +471,18 @@ class AIELlamaOperators:
             size=config.hidden_dim,
             tile_size=config.hidden_dim // 8,
             num_aie_columns=8,
+            num_invocations=16,  # 1/layer × 16 layers
             context=elf_ctx,
         )
 
         residual_add_op = ElementwiseAdd(
-            size=config.emb_dim, tile_size=config.emb_dim // 8, context=elf_ctx
+            size=config.emb_dim,
+            tile_size=config.emb_dim // 8,
+            num_invocations=32,  # 2/layer × 16 layers (attn + FFN residuals)
+            context=elf_ctx,
         )
 
+        # TODO(Phase D): Repeat still needs num_invocations support (num_invocations=32; extends MLIROperator directly, not a Phase A base)
         repeat_interleave_op = Repeat(
             rows=config.n_kv_groups,
             cols=prompt_len * config.head_dim,  # Max context length
@@ -449,6 +497,7 @@ class AIELlamaOperators:
             num_aie_columns=8,
             tile_size_input=4,
             tile_size_output=32,
+            num_invocations=1,  # final output head, once per launch
             context=self.context,
         )
 
@@ -1313,7 +1362,7 @@ def main():
 
     config, state = harness.init(args.weights_path, args.tokenizer_path, prompt=prompt)
 
-    aie_ops = AIELlamaOperators(config, max_seq_len)
+    aie_ops = AIELlamaOperators(config, max_seq_len, use_conduit=args.use_conduit)
     aie_buffers = AIELlamaBuffers(config, max_seq_len, aie_ops)
 
     print(prompt, end="", flush=True)

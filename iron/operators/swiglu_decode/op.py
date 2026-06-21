@@ -51,6 +51,11 @@ class SwiGLUDecode(CompositeOperator):
             num_aie_columns=n_cols,
             tile_size_input=4,
             tile_size_output=self.hidden_dim // n_cols,
+            # gemv_1 callable is invoked twice in swiglu_base.__call__
+            # (once for gate / weights_1, once for up / weights_2);
+            # core's outer loop must size for both invocations or
+            # the second matmul_1_callable() call hangs at use_lock.
+            num_invocations=2,
         )
         self.gemv_1 = gemv_1
 

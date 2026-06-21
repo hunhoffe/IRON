@@ -24,6 +24,10 @@ class RoPE(MLIROperator):
     angle_rows: int | None = None
     num_aie_columns: int = 1
     method_type: int = 0
+    num_invocations: int = 1
+    input_fusion_group: str | None = None
+    lut_fusion_group: str | None = None
+    output_fusion_group: str | None = None
     context: object = field(default=None, repr=False)
 
     _name_aliases: ClassVar[Dict[str, str]] = {
@@ -31,9 +35,17 @@ class RoPE(MLIROperator):
         "num_aie_columns": "col",
         "angle_rows": "arows",
         "method_type": "m",
+        "num_invocations": "ni",
+        "input_fusion_group": "ifg",
+        "lut_fusion_group": "lfg",
+        "output_fusion_group": "ofg",
     }
 
     def __post_init__(self):
+        if self.num_invocations < 1:
+            raise ValueError(
+                f"num_invocations must be >= 1, got {self.num_invocations}"
+            )
         if self.angle_rows is None:
             self.angle_rows = self.rows
 
@@ -67,7 +79,13 @@ class RoPE(MLIROperator):
                     self.num_aie_columns,
                     0,
                     self.method_type,
+                    self.num_invocations,
                 ),
+                {
+                    "input_fusion_group": self.input_fusion_group,
+                    "lut_fusion_group": self.lut_fusion_group,
+                    "output_fusion_group": self.output_fusion_group,
+                },
             ),
         )
 

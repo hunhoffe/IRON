@@ -10,7 +10,20 @@ from aie.helpers.taplib.tap import TensorAccessPattern
 from aie.iron.controlflow import range_
 
 
-def shuffle_transpose(dev, M, N, num_columns, num_channels, m, n, s, func_prefix=""):
+def shuffle_transpose(
+    dev,
+    M,
+    N,
+    num_columns,
+    num_channels,
+    m,
+    n,
+    s,
+    num_invocations,
+    func_prefix="",
+    input_fusion_group=None,
+    output_fusion_group=None,
+):
     num_elements = M * N
     per_tile_elements = m * n
     dtype = bfloat16
@@ -78,21 +91,27 @@ def shuffle_transpose(dev, M, N, num_columns, num_channels, m, n, s, func_prefix
         for j in range(num_channels)
     ]
 
-    # AIE-array data movement with object fifos
+    # AIE-array data movement with object fifos.
+    # Only pass fusion_group kwarg when set, so design works against ObjectFifo
+    # implementations that don't accept it (e.g., wheels-installed mlir-aie).
+    # of_in1s_L2L1 is the internal L2->L1 forward fifo and is intentionally not
+    # exposed for fusion tagging (forward chain endpoint, see Pattern E).
+    fg_in = {"fusion_group": input_fusion_group} if input_fusion_group is not None else {}
+    fg_out = {"fusion_group": output_fusion_group} if output_fusion_group is not None else {}
     of_in1s_L3L2 = [
-        ObjectFifo(tile_ty, name=f"of_in1s_L3L2_{i}_{j}", depth=fifodepth)
+        ObjectFifo(tile_ty, name=f"{func_prefix}of_in1s_L3L2_{i}_{j}", depth=fifodepth, **fg_in)
         for i in range(num_columns)
         for j in range(num_channels)
     ]
     of_in1s_L2L1 = [
         of_in1s_L3L2[i * num_channels + j]
         .cons(dims_from_stream=taps_in_L2L1[i * num_channels + j].transformation_dims)
-        .forward(obj_type=tile_ty, name=f"of_in1s_L2L1_{i}_{j}", depth=fifodepth)
+        .forward(obj_type=tile_ty, name=f"{func_prefix}of_in1s_L2L1_{i}_{j}", depth=fifodepth)
         for i in range(num_columns)
         for j in range(num_channels)
     ]
     of_outs = [
-        ObjectFifo(tile_ty, name=f"out_{i}_{j}", depth=fifodepth)
+        ObjectFifo(tile_ty, name=f"{func_prefix}out_{i}_{j}", depth=fifodepth, **fg_out)
         for i in range(num_columns)
         for j in range(num_channels)
     ]
@@ -106,14 +125,15 @@ def shuffle_transpose(dev, M, N, num_columns, num_channels, m, n, s, func_prefix
 
     # Define a task that will run on a compute tile
     def core_body(of_in1, of_out, transpose_kernel):
-        # Number of sub-matrix "tile" iterations
-        for _ in range_(N // n // num_columns):
-            for _ in range_(M // m // num_channels):
-                elem_in1 = of_in1.acquire(1)
-                elem_out = of_out.acquire(1)
-                transpose_kernel(elem_in1, elem_out)
-                of_out.release(1)
-                of_in1.release(1)
+        for _ in range_(num_invocations):
+            # Number of sub-matrix "tile" iterations
+            for _ in range_(N // n // num_columns):
+                for _ in range_(M // m // num_channels):
+                    elem_in1 = of_in1.acquire(1)
+                    elem_out = of_out.acquire(1)
+                    transpose_kernel(elem_in1, elem_out)
+                    of_out.release(1)
+                    of_in1.release(1)
 
     # Create a worker to run the task on a compute tile
     my_workers = [
@@ -124,6 +144,7 @@ def shuffle_transpose(dev, M, N, num_columns, num_channels, m, n, s, func_prefix
                 of_outs[i * num_channels + j].prod(),
                 transpose_kernel,
             ],
+            while_true=False,
         )
         for i in range(num_columns)
         for j in range(num_channels)

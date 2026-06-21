@@ -38,6 +38,10 @@ class GEMM(MLIROperator):
     dtype_out: str = field(default="bf16", repr=False)
     use_scalar: bool = field(default=False, repr=False)
     separate_c_tiles: bool = field(default=False, repr=False)
+    num_invocations: int = 1
+    input_fusion_group_a: str | None = None
+    input_fusion_group_b: str | None = None
+    output_fusion_group: str | None = None
     context: object = field(default=None, repr=False)
 
     _name_aliases: ClassVar[Dict[str, str]] = {
@@ -47,9 +51,16 @@ class GEMM(MLIROperator):
         "tile_n": "tn",
         "b_col_maj": "bc",
         "c_col_maj": "cc",
+        "input_fusion_group_a": "ifga",
+        "input_fusion_group_b": "ifgb",
+        "output_fusion_group": "ofg",
     }
 
     def __post_init__(self):
+        if self.num_invocations < 1:
+            raise ValueError(
+                f"num_invocations ({self.num_invocations}) must be >= 1"
+            )
         num_aie_rows = 4
         min_M = self.tile_m * num_aie_rows
         min_K = self.tile_k
@@ -103,9 +114,13 @@ class GEMM(MLIROperator):
                     "emulate_bf16_mmul_with_bfp16": self.emulate_bf16_mmul_with_bfp16,
                     "prio_accuracy": self.prio_accuracy,
                     "separate_c_tiles": int(self.separate_c_tiles),
+                    "num_invocations": self.num_invocations,
                     "trace_size": 0,
                     "generate_taps": False,
                     "kernel_object": f"gemm_{self.tile_m}x{self.tile_k}x{self.tile_n}_{int(self.b_col_maj)}_{int(self.c_col_maj)}{self._kernel_flags_suffix}.o",
+                    "input_fusion_group_a": self.input_fusion_group_a,
+                    "input_fusion_group_b": self.input_fusion_group_b,
+                    "output_fusion_group": self.output_fusion_group,
                 },
             ),
         )

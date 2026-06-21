@@ -189,6 +189,11 @@ def parse_args():
         default=40,
         help="Number of tokens to generate (default: 40)",
     )
+    parser.add_argument(
+        "--use-conduit",
+        action="store_true",
+        help="Lower through conduit (reads CONDUIT_INSTALL env)",
+    )
     return parser.parse_args()
 
 

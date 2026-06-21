@@ -18,7 +18,11 @@ def my_weighted_rms_norm(
     num_channels,
     weight_length,
     trace_size,
+    num_invocations,
     func_prefix="",
+    input_fusion_group=None,
+    weight_fusion_group=None,
+    output_fusion_group=None,
 ):
     per_tile_elements = weight_length
     total_cores = num_columns * num_channels
@@ -38,24 +42,31 @@ def my_weighted_rms_norm(
     # Set fifodepth based on weight_length
     fifodepth = 1 if weight_length > 4096 else 2
 
-    # AIE-array data movement with object fifos
+    # AIE-array data movement with object fifos.
+    # Only pass fusion_group kwarg when set, so design works against ObjectFifo
+    # implementations that don't accept it (e.g., wheels-installed mlir-aie).
+    # of_out1s is the internal pipeline fifo between the rms-norm core and the
+    # eltwise-mul core; it is intentionally not exposed for fusion tagging.
+    fg_in = {"fusion_group": input_fusion_group} if input_fusion_group is not None else {}
+    fg_w = {"fusion_group": weight_fusion_group} if weight_fusion_group is not None else {}
+    fg_out = {"fusion_group": output_fusion_group} if output_fusion_group is not None else {}
     of_in1s = [
-        ObjectFifo(tile_ty, name=f"in1_{i}_{j}", depth=fifodepth)
+        ObjectFifo(tile_ty, name=f"{func_prefix}in1_{i}_{j}", depth=fifodepth, **fg_in)
         for i in range(num_columns)
         for j in range(num_channels)
     ]
     # One weight ObjectFifo per channel, shared across columns in that channel
     of_in2s = [
-        ObjectFifo(weights_ty, name=f"in2_weights_{j}", depth=fifodepth)
+        ObjectFifo(weights_ty, name=f"{func_prefix}in2_weights_{j}", depth=fifodepth, **fg_w)
         for j in range(num_channels)
     ]
     of_out1s = [
-        ObjectFifo(tile_ty, name=f"out1_{i}_{j}", depth=fifodepth)
+        ObjectFifo(tile_ty, name=f"{func_prefix}out1_{i}_{j}", depth=fifodepth)
         for i in range(num_columns)
         for j in range(num_channels)
     ]
     of_out2s = [
-        ObjectFifo(tile_ty, name=f"out2_{i}_{j}", depth=fifodepth)
+        ObjectFifo(tile_ty, name=f"{func_prefix}out2_{i}_{j}", depth=fifodepth, **fg_out)
         for i in range(num_columns)
         for j in range(num_channels)
     ]
@@ -74,23 +85,26 @@ def my_weighted_rms_norm(
 
     # Define a task that will run on a compute tile
     def core_body_norm(of_in1, of_out1, rms_norm):
-        # Number of sub-vector "tile" iterations
-        for _ in range_(N_div_n):
-            elem_in1 = of_in1.acquire(1)
-            elem_out = of_out1.acquire(1)
-            rms_norm(elem_in1, elem_out, per_tile_elements)
-            of_in1.release(1)
-            of_out1.release(1)
+        for _ in range_(num_invocations):
+            # Number of sub-vector "tile" iterations
+            for _ in range_(N_div_n):
+                elem_in1 = of_in1.acquire(1)
+                elem_out = of_out1.acquire(1)
+                rms_norm(elem_in1, elem_out, per_tile_elements)
+                of_in1.release(1)
+                of_out1.release(1)
 
     def core_body_mul(of_in1, of_in2, of_out2, eltwise_mul):
-        # Number of sub-vector "tile" iterations
+        # Acquire weight ONCE before outer loop
         elem_in2 = of_in2.acquire(1)
-        for _ in range_(N_div_n):
-            elem_in1 = of_in1.acquire(1)
-            elem_out = of_out2.acquire(1)
-            eltwise_mul(elem_in1, elem_in2, elem_out, per_tile_elements)
-            of_in1.release(1)
-            of_out2.release(1)
+        for _ in range_(num_invocations):
+            # Number of sub-vector "tile" iterations
+            for _ in range_(N_div_n):
+                elem_in1 = of_in1.acquire(1)
+                elem_out = of_out2.acquire(1)
+                eltwise_mul(elem_in1, elem_in2, elem_out, per_tile_elements)
+                of_in1.release(1)
+                of_out2.release(1)
         of_in2.release(1)
 
     # Create workers to run the task on compute tiles,
@@ -107,6 +121,7 @@ def my_weighted_rms_norm(
                         of_out1s[idx].prod(),
                         rms_norm_kernel,
                     ],
+                    while_true=False,
                 )
             )
     for i in range(num_columns):
@@ -121,6 +136,7 @@ def my_weighted_rms_norm(
                         of_out2s[idx].prod(),
                         eltwise_mul_kernel,
                     ],
+                    while_true=False,
                 )
             )
 

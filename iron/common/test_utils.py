@@ -154,6 +154,9 @@ def run_test(
     if not isinstance(operator, AIEOperatorBase):
         raise ValueError("run_test only supports AIEOperatorBase subclasses")
 
+    if hasattr(operator, "num_invocations"):
+        operator.num_invocations = warmup_iters + timed_iters
+
     operator.compile()
     op_func = operator.get_callable()
 

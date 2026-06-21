@@ -16,8 +16,12 @@ def binary_elementwise_design(
     num_columns,
     tile_size,
     trace_size,
+    num_invocations,
     kernel_fn_name,
     kernel_obj_file,
+    input_fusion_group_a=None,
+    input_fusion_group_b=None,
+    output_fusion_group=None,
     func_prefix="",
 ):
     per_tile_elements = 4096 if tile_size > 4096 else tile_size
@@ -35,9 +39,18 @@ def binary_elementwise_design(
     tile_ty = np.ndarray[(per_tile_elements,), np.dtype[dtype]]
 
     # AIE-array data movement with object fifos (one per column, not per channel)
-    of_in1s = [ObjectFifo(tile_ty, name=f"in1_{i}") for i in range(num_columns)]
-    of_in2s = [ObjectFifo(tile_ty, name=f"in2_{i}") for i in range(num_columns)]
-    of_outs = [ObjectFifo(tile_ty, name=f"out_{i}") for i in range(num_columns)]
+    # Only pass fusion_group kwarg when set, so design works against ObjectFifo
+    # implementations that don't accept it (e.g., wheels-installed mlir-aie
+    # without the fusion_group kwarg restoration).
+    def _of(name, fg):
+        kw = {"name": name}
+        if fg is not None:
+            kw["fusion_group"] = fg
+        return ObjectFifo(tile_ty, **kw)
+
+    of_in1s = [_of(f"{func_prefix}in1_{i}", input_fusion_group_a) for i in range(num_columns)]
+    of_in2s = [_of(f"{func_prefix}in2_{i}", input_fusion_group_b) for i in range(num_columns)]
+    of_outs = [_of(f"{func_prefix}out_{i}", output_fusion_group) for i in range(num_columns)]
 
     # AIE Core Function declaration
     eltwise_kernel = Kernel(
@@ -48,14 +61,15 @@ def binary_elementwise_design(
 
     # Define a task that will run on a compute tile
     def core_body(of_in1, of_in2, of_out, eltwise_fn):
-        for _ in range_(N_div_n):
-            elem_in1 = of_in1.acquire(1)
-            elem_in2 = of_in2.acquire(1)
-            elem_out = of_out.acquire(1)
-            eltwise_fn(elem_in1, elem_in2, elem_out, per_tile_elements)
-            of_in1.release(1)
-            of_in2.release(1)
-            of_out.release(1)
+        for _ in range_(num_invocations):
+            for _ in range_(N_div_n):
+                elem_in1 = of_in1.acquire(1)
+                elem_in2 = of_in2.acquire(1)
+                elem_out = of_out.acquire(1)
+                eltwise_fn(elem_in1, elem_in2, elem_out, per_tile_elements)
+                of_in1.release(1)
+                of_in2.release(1)
+                of_out.release(1)
 
     # Create a worker to run the task on a compute tile (one per column)
     my_workers = [
@@ -67,6 +81,7 @@ def binary_elementwise_design(
                 of_outs[i].prod(),
                 eltwise_kernel,
             ],
+            while_true=False,
         )
         for i in range(num_columns)
     ]

@@ -82,8 +82,7 @@ class FusedMLIROperator(AIEOperatorBase):
         ]
         for idx, op in enumerate(unique_operators):
             mlir_artifact = op.get_mlir_artifact()
-            if len(op.get_kernel_artifacts()) > 0:
-                mlir_artifact.generator.kwargs["func_prefix"] = f"op{idx}_"
+            mlir_artifact.generator.kwargs["func_prefix"] = f"op{idx}_"
             op_name = f"op{idx}_{op.__class__.__name__}"
             op_names[id(op)] = op_name
             operator_mlir_map[op_name] = mlir_artifact

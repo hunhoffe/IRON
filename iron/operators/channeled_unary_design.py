@@ -17,9 +17,12 @@ def channeled_unary_design(
     num_channels,
     tile_size,
     trace_size,
+    num_invocations,
     kernel_fn_name,
     kernel_obj_file,
     tile_cap=4096,
+    input_fusion_group=None,
+    output_fusion_group=None,
     func_prefix="",
 ):
     xfr_dtype = bfloat16
@@ -43,13 +46,23 @@ def channeled_unary_design(
     chunk = size // num_columns // num_channels
 
     # Dataflow with ObjectFifos
+    # Only pass fusion_group kwarg when set, so design works against ObjectFifo
+    # implementations that don't accept it (e.g., wheels-installed mlir-aie).
+    fg_in = {"fusion_group": input_fusion_group} if input_fusion_group is not None else {}
+    fg_out = {"fusion_group": output_fusion_group} if output_fusion_group is not None else {}
     of_ins = [
-        ObjectFifo(line_type, name=f"in{i}_{j}", **fifo_kwargs)
+        ObjectFifo(
+            line_type, name=f"{func_prefix}in{i}_{j}", **fg_in,
+            **fifo_kwargs,
+        )
         for i in range(num_columns)
         for j in range(num_channels)
     ]
     of_outs = [
-        ObjectFifo(line_type, name=f"out{i}_{j}", **fifo_kwargs)
+        ObjectFifo(
+            line_type, name=f"{func_prefix}out{i}_{j}", **fg_out,
+            **fifo_kwargs,
+        )
         for i in range(num_columns)
         for j in range(num_channels)
     ]
@@ -63,12 +76,13 @@ def channeled_unary_design(
 
     # Task for the core to perform
     def core_fn(of_in, of_out, kernel_line):
-        for _ in range_(N_div_n):
-            elem_in = of_in.acquire(1)
-            elem_out = of_out.acquire(1)
-            kernel_line(elem_in, elem_out, line_size)
-            of_in.release(1)
-            of_out.release(1)
+        for _ in range_(num_invocations):
+            for _ in range_(N_div_n):
+                elem_in = of_in.acquire(1)
+                elem_out = of_out.acquire(1)
+                kernel_line(elem_in, elem_out, line_size)
+                of_in.release(1)
+                of_out.release(1)
 
     # Create a worker to perform the task
     my_workers = [
@@ -79,6 +93,7 @@ def channeled_unary_design(
                 of_outs[i * num_channels + j].prod(),
                 kernel_fcn,
             ],
+            while_true=False,
         )
         for i in range(num_columns)
         for j in range(num_channels)
