@@ -48,6 +48,8 @@ from functools import partial
 from typing import Any, Callable
 import sys
 
+import aie.utils.config as aie_config
+
 from iron.common.device_utils import get_kernel_dir
 
 # Global Functions
@@ -484,6 +486,9 @@ class GenerateMLIRFromPythonCompilationRule(CompilationRule):
 class AieccCompilationRule(CompilationRule):
     def __init__(self, build_dir, peano_dir, mlir_aie_dir, *args, **kwargs):
         self.build_dir = build_dir
+        # Replace with aie.utils.config.aiecc_path() once requirements.txt pins
+        # a wheel carrying it; that helper owns the same path and adds the
+        # platform suffix handling this line lacks.
         self.aiecc_path = Path(mlir_aie_dir) / "bin" / "aiecc"
         self.peano_dir = peano_dir
         super().__init__(*args, **kwargs)
@@ -604,7 +609,13 @@ class AieccXclbinInstsCompilationRule(AieccCompilationRule):
 
 
 def _find_tool(name, peano_dir, mlir_aie_dir):
-    """Locate an LLVM tool by name, trying peano_dir, mlir_aie_dir, then system PATH."""
+    """Locate an LLVM tool by name, trying peano_dir, mlir_aie_dir, then system PATH.
+
+    For llvm-objcopy specifically, mlir-aie now exposes
+    ``aie.utils.config.objcopy_path()``; switch that call site over once
+    requirements.txt pins a wheel carrying it.  llvm-ar has no upstream
+    equivalent, so this stays for that one.
+    """
     candidates = [
         Path(peano_dir) / "bin" / name,
         Path(mlir_aie_dir) / "bin" / name,
@@ -634,8 +645,12 @@ class PeanoCompilationRule(CompilationRule):
         return any(artifacts.get_worklist(KernelObjectArtifact))
 
     def compile(self, artifacts):
-        clang_path = Path(self.peano_dir) / "bin" / "clang++"
-        include_path = Path(self.mlir_aie_dir) / "include"
+        # mlir-aie locates its own compiler and headers; asking it means this
+        # rule does not carry a second copy of the wheel's directory layout,
+        # and picks up the platform handling (the .exe suffix on Windows) and
+        # the "not found" diagnostics that come with it.
+        clang_path = aie_config.peano_cxx_path()
+        include_path = aie_config.cxx_header_path()
         worklist = artifacts.get_worklist(KernelObjectArtifact)
         commands = []
 

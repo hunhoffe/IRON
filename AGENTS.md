@@ -141,10 +141,43 @@ reuse lint
    - `base.py`: Base classes (`AIEOperatorBase`, `MLIROperator`, `CompositeOperator`)
    - `compilation/`: Compilation artifact system (MLIR → xclbin)
    - `fusion.py`: Operator fusion framework (`FusedMLIROperator`)
-   - `device_manager.py`: XRT device initialization and management (singleton pattern)
    - `context.py`: `AIEContext` for operator compilation/execution
-   - `utils.py`: Helper functions (`torch_to_numpy`, `numpy_to_torch`)
-   - `test_utils.py`: Test utilities (`verify_buffer`, `nearly_equal`)
+   - `device_utils.py`: Device queries (`get_kernel_dir`)
+   - `utils.py`: Helper functions (`get_shim_dma_limit`, `float_to_name`, `XRTSubBuffer`)
+   - `test_utils.py`: Test utilities (`verify_buffer`, `run_test`)
+
+   Several helpers here exist only because the pinned mlir-aie wheel predates
+   the upstream equivalent; each carries a comment naming what it should
+   become. See "Deduplication with mlir-aie" below.
+
+### Deduplication with mlir-aie
+
+IRON is a downstream consumer of mlir-aie, so anything general enough to be
+mlir-aie's job belongs there rather than here. Several helpers in
+`iron/common/` are private copies of things mlir-aie has since grown, and they
+stay copies only because `requirements.txt` pins a wheel that predates the
+upstream version:
+
+| IRON | Upstream replacement | In the pinned wheel? |
+| --- | --- | --- |
+| `utils.XRTSubBuffer` | `NpuTensor.subview()` | no |
+| `utils.get_shim_dma_limit` | `Device.num_shim_dma_channels()` | no |
+| `device_utils.get_kernel_dir` | `aie.utils.compile.utils.resolve_target_arch` | no |
+| `test_utils.verify_buffer` tolerance math | `aie.utils.verify.nearly_equal` | no |
+| `test_utils.run_test` warmup/timed loop | `aie.utils.benchmark.run_iters` | no |
+| `test_utils` torch→numpy conversion | `aie.utils.hostruntime.torch_to_numpy` | no |
+| `compilation.base._find_tool("llvm-objcopy")` | `aie.utils.config.objcopy_path()` | no |
+| `compilation.base` aiecc path | `aie.utils.config.aiecc_path()` | no |
+| Peano compiler / header paths | `aie.utils.config.peano_cxx_path()` / `cxx_header_path()` | yes — already used |
+
+Each site carries a comment naming its replacement. **Adopting any of the "no"
+rows requires bumping the `mlir_aie==` pin first**, and that bump is not
+mechanical: the pinned wheel predates the removal of `aie.iron.placers` (which
+`iron/operators/` imports) and the slimming of `Device`, so it is a migration
+that needs a run against real hardware, not a version-string edit.
+
+When adding a helper here, check `aie.utils` and `aie.iron` first — and if the
+right home for it is mlir-aie, put it there instead.
 
 ### Key Concepts
 

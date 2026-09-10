@@ -10,6 +10,12 @@ def get_shim_dma_limit(dev) -> int:
 
     Each shim tile exposes a fixed number of DMA source connections; summing
     across all shim tiles gives the device-wide ShimDMA budget.
+
+    Replace with ``dev.num_shim_dma_channels()`` once requirements.txt pins an
+    mlir-aie wheel carrying it.  That method answers the same question from the
+    target model directly, and the ``Device.get_shim_tiles`` /
+    ``Device.get_num_connections`` pair this is built on no longer exists
+    upstream, so this body only works against the currently pinned wheel.
     """
     return sum(dev.get_num_connections(t, output=True) for t in dev.get_shim_tiles())
 
@@ -40,6 +46,12 @@ class XRTSubBuffer(XRTTensor):
     Bypasses XRTTensor.__init__ to avoid allocating a new buffer object.
 
     The parent XRTTensor must remain alive as long as this sub-buffer is in use.
+
+    mlir-aie has since grown ``NpuTensor.subview(offset, shape, dtype)``, which
+    does this for every backend rather than only XRT, keeps the view inside the
+    parent's coherence tracking, and rejects out-of-bounds or
+    cache-line-straddling regions instead of producing them.  Delete this class
+    in favour of it once requirements.txt pins a wheel that has it.
     """
 
     def __init__(self, parent_bo, offset_bytes, size_bytes, shape, dtype):
@@ -52,9 +64,11 @@ class XRTSubBuffer(XRTTensor):
             dtype: numpy dtype for interpreting the buffer contents.
         """
         # Skip XRTTensor.__init__ (which would allocate a new bo); set base attrs directly.
+        # Note this deliberately bypasses the tensor's host/device coherence
+        # tracking, which is why NpuTensor.subview (see from_parent) is the
+        # better answer as soon as it is available.
         self.device = "npu"
         self.dtype = np.dtype(dtype)
-        # TODO: replace with XRTTensor.__getitem__ slice support when available upstream
         self._bo = _pyxrt.bo(parent_bo, size_bytes, offset_bytes)
         self._shape = tuple(shape)
         ptr = self._bo.map()
@@ -77,8 +91,9 @@ class XRTSubBuffer(XRTTensor):
         """Create an XRTSubBuffer into a sub-region of a parent XRTTensor.
 
         Accepts element-count offsets/lengths and converts to bytes internally.
-        XRTTensor has no built-in slice API; use this until mlir-aie gains
-        XRTTensor.__getitem__ slice support.
+        The upstream replacement, ``NpuTensor.subview``, takes a byte offset
+        instead, so callers migrating to it need ``offset_elements *
+        dtype.itemsize`` and pass ``shape`` unchanged.
         """
         itemsize = np.dtype(dtype).itemsize
         return cls(

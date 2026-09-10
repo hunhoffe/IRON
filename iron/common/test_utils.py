@@ -6,7 +6,6 @@ from __future__ import annotations
 import numpy as np
 import torch
 import aie.utils as aie_utils
-from ml_dtypes import bfloat16
 from .base import AIEOperatorBase
 from aie.utils.hostruntime.xrtruntime.tensor import XRTTensor
 
@@ -19,33 +18,13 @@ torch_dtype_map = {
     "i32": torch.int32,
 }
 
-# TODO: Consider upstreaming generic buffer utilities to mlir-aie once operator abstractions stabilize.
-
-
-def nearly_equal(
-    a: float,
-    b: float,
-    rel_tol: float = 128 * np.finfo(np.float32).eps,
-    abs_tol: float = np.finfo(np.float32).tiny,
-) -> bool:
-    """
-    Compare two floating point numbers for approximate equality.
-
-    Adapted from Stack Overflow, License CC BY-SA 4.0
-    Original author: P-Gn
-    Source: https://stackoverflow.com/a/32334103
-    """
-    if np.finfo(np.float32).eps > rel_tol:
-        raise ValueError(f"rel_tol {rel_tol!r} must be >= machine epsilon")
-    if rel_tol >= 1.0:
-        raise ValueError(f"rel_tol {rel_tol!r} must be < 1.0")
-
-    if a == b:
-        return True
-
-    diff = abs(float(a) - float(b))
-    norm = min(abs(float(a)) + abs(float(b)), np.finfo(np.float32).max)
-    return diff < max(abs_tol, rel_tol * norm)
+# The comparison verify_buffer performs below is the same
+# |a - b| < max(abs_tol, rel_tol * (|a| + |b|)) rule that mlir-aie ships as
+# aie.utils.verify.nearly_equal / count_mismatches, in vectorized form.  Once
+# requirements.txt pins an mlir-aie wheel that carries aie/utils/verify.py,
+# the tolerance arithmetic here should call that instead of restating it, and
+# this module should keep only the parts that are actually IRON's: the
+# per-buffer reporting and the max_error_rate budget.
 
 
 def verify_buffer(
@@ -73,6 +52,8 @@ def verify_buffer(
     """
     errors = []
 
+    # aie.utils.hostruntime.torch_to_numpy does exactly this; call it instead
+    # once requirements.txt pins a wheel carrying it.
     def _to_numpy(x):
         if isinstance(x, torch.Tensor):
             t = x.detach().cpu().contiguous()
@@ -198,7 +179,10 @@ def run_test(
         else:
             raise ValueError(f"Unsupported direction: {spec.direction}")
 
-    # Run warmup iterations
+    # Run warmup iterations.
+    # This warmup/timed loop, including pulling npu_time off the result, is
+    # what aie.utils.benchmark.run_iters does; call that instead once
+    # requirements.txt pins a wheel carrying aie/utils/benchmark.py.
     for _ in range(warmup_iters):
         op_func(*args)
 
