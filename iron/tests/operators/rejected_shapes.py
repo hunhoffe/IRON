@@ -96,12 +96,9 @@ def test_the_default_column_count_is_the_most_that_leave_whole_tiles():
     its shape divides over, rather than the whole shim budget and a refusal.
     """
     from iron.operators.gemm.op import GEMM
-    from iron.operators.relu import ReLU
     from iron.operators.softmax import Softmax
 
     npu2, npu1 = from_name("npu2", n_cols=8), from_name("npu1", n_cols=4)
-    assert ReLU(size=1024).resolved(npu2).num_aie_columns == 4  # 4 x 256
-    assert ReLU(size=8192).resolved(npu2).num_aie_columns == 8
     assert GEMM(M=256, K=64, N=256).resolved(npu2).num_aie_columns == 4
     assert GEMM(M=256, K=64, N=512).resolved(npu1).num_aie_columns == 4
     assert Transpose(M=64, N=64).resolved(npu2).num_aie_columns == 1
@@ -109,7 +106,3 @@ def test_the_default_column_count_is_the_most_that_leave_whole_tiles():
     # Nothing fits: one column, and compatible() names the rule.
     with pytest.raises(Incompatible, match=r"rows \(16\) must be a multiple of the 3"):
         Softmax(rows=16, cols=16, num_channels=3).resolved(npu2)
-    with pytest.raises(
-        Incompatible, match="do not divide into whole 256-element lines"
-    ):
-        ReLU(size=1000).resolved(npu2)

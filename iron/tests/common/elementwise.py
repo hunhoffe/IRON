@@ -23,8 +23,6 @@ def test_a_knob_free_operator_takes_the_widest_split_that_leaves_whole_lines():
 
 
 def test_the_refusals_name_what_to_change():
-    with pytest.raises(Unresolvable, match="tile_size=8192 exceeds the 4096"):
-        ReLU(size=8192, tile_size=8192).resolved(NPU2)
     with pytest.raises(Incompatible, match="give a tile_size= or num_aie_columns="):
         ReLU(size=1000).resolved(NPU2)
     with pytest.raises(Unresolvable, match="none is bound and none was given"):
@@ -51,4 +49,3 @@ def test_an_operator_written_by_inheritance_inherits_the_sweep():
     assert Neg.test is not None
     cases = Neg.test.resolve(Neg)
     assert all(c.kwargs["tile_size"] <= Neg.tile_cap for c in cases)
-    assert {c.kwargs["num_aie_columns"] for c in cases} == {1, 2, 4, 8}  # divide 2^n

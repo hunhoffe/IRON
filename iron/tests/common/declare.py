@@ -144,17 +144,14 @@ def test_dataclass_constructor_is_typed_by_real_fields():
 # --------------------------------------------------------------------------
 
 
-def test_a_knob_in_a_buffer_shape_is_rejected():
+def test_a_knob_may_name_a_tile_but_not_a_buffer_shape():
+    assert MV.A.stream is not None and MV.A.stream.dims[0] is MV.tile_out
     with pytest.raises(DeclarationError, match="host shape may not depend on tuning"):
 
         class Bad(Operator):
             M: int = param()
             t: int = auto(64)
             A = In(M, t)
-
-
-def test_a_knob_in_a_tile_is_allowed():
-    assert MV.A.stream is not None and MV.A.stream.dims[0] is MV.tile_out
 
 
 def test_plain_defaulted_field_in_a_shape_is_its_literal():
@@ -229,13 +226,10 @@ def test_buffers_resolve_shape_dtype_and_direction():
     assert [b.name for b in op.outputs] == ["C"]
 
 
-def test_optional_leading_dim_is_omitted_when_one():
+def test_an_optional_dim_is_omitted_when_one_and_may_sit_anywhere():
     assert MV(M=64, K=256).A.shape == (64, 256)
-    assert MV(M=64, K=256, num_batches=3).A.shape == (3, 64, 256)
     assert MV(M=64, K=256, num_batches=3).C.shape == (3, 64)
 
-
-def test_an_optional_dim_may_sit_anywhere_and_an_operand_of_either_rank_binds_it():
     class Stack(Operator):
         rows: int = param()
         cols: int = param()
@@ -378,15 +372,6 @@ def test_shim_pins_declare():
 # --------------------------------------------------------------------------
 
 
-def test_infer_binds_the_fields_from_operands():
-    assert infer(MV, (1024, 256), (256,)) == {"M": 1024, "K": 256, "num_batches": 1}
-    assert infer(MV, (3, 1024, 256), (3, 256)) == {
-        "num_batches": 3,
-        "M": 1024,
-        "K": 256,
-    }
-
-
 def test_infer_reports_conflicts_naming_both_operands():
     with pytest.raises(
         ValueError, match=r"K is 128 from B.shape\[0\] but 256 from A.shape\[1\]"
@@ -426,12 +411,6 @@ def test_from_spec_builds_an_operator_from_literal_shapes():
 # --------------------------------------------------------------------------
 
 
-def test_the_array_tier_is_what_the_tiles_name_and_what_says_so():
-    assert MV._array_fields == ("K", "columns", "tile_out", "epilogue")
-    assert MV._param_fields == ("M", "K", "num_batches", "epilogue")
-    assert MV._auto_fields == ("columns", "tile_out", "vec")
-
-
 def test_an_operand_with_a_tile_is_its_own_stream():
     op = MV(M=1024, K=128).resolved(FakeDev(cols=8))
     assert {k: (s.count, s.shape) for k, s in op.streams.items()} == {
@@ -453,26 +432,20 @@ def test_a_derived_value_is_written_once_per_build():
     assert op.resident_values() == {"count": 2}
 
 
-def test_a_value_a_graph_binds_is_per_call():
+def test_a_value_a_graph_binds_is_per_call_and_no_longer_a_resident():
     @iron.graph
-    def g(a, b, *, pos: Scratchpad[np.int32]):
+    def g(a, b, *, pos: Scratchpad[np.int32], n: Scratchpad[np.int32]):
         # A per-call value at a call site is not a field a checker knows (yet).
-        return MV(a, b, columns=8, start=pos)  # pyright: ignore[reportCallIssue]
+        return MV(
+            a, b, columns=8, start=pos, count=n
+        )  # pyright: ignore[reportCallIssue]
 
     t = g.trace(a=(1024, 128), b=(128,))
     (op,) = t.operators
-    assert op.uses_value("start") and [v.name for v in op.values] == ["start"]
-    assert [b.member.name for b in t.bindings] == ["start"]
-
-
-def test_a_derived_value_a_graph_binds_is_per_call_and_no_longer_a_resident():
-    @iron.graph
-    def g(a, b, *, n: Scratchpad[np.int32]):
-        return MV(a, b, columns=8, count=n)  # pyright: ignore[reportCallIssue]
-
-    (op,) = g.trace(a=(1024, 128), b=(128,)).operators
-    assert [v.name for v in op.values] == ["count"] and op.residents == {}
-    assert op.resident_values() == {}  # the preamble writes nothing for it
+    assert op.uses_value("start") and op.uses_value("count")
+    assert [v.name for v in op.values] == ["count", "start"] and op.residents == {}
+    assert [b.member.name for b in t.bindings] == ["start", "count"]  # call order
+    assert op.resident_values() == {}  # the preamble writes nothing for count
     # What an instance binds per call is part of its identity: an array
     # reading the value from the scratchpad is not the one reading a resident.
     assert op.design_key() != MV(M=1024, K=128, columns=8).design_key()
@@ -652,6 +625,7 @@ def test_inference_binds_the_fields_from_the_operands():
     )
     assert (op.M, op.K, op.num_batches) == (1024, 128, 3)
     assert op.A.shape == (3, 1024, 128)
+    assert MV.from_operands((1024, 128), (128,)).num_batches == 1
 
 
 # --------------------------------------------------------------------------

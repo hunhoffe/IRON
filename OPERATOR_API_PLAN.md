@@ -290,6 +290,40 @@ today**.
 
 ## Progress
 
+- `(this commit)` Tests right-sized from coverage data. Per-test line
+  coverage of `iron/tests/common` (161 tests, 4588 library lines reached)
+  and per-file coverage of the toolchain suite, each test's reach compared
+  with its siblings'. Coverage overlaps heavily by construction (every
+  class-creation test runs the same `declare()`), so the data picked the
+  candidates and the assertions decided: a test went only when a sibling
+  reached the same lines and made the same claim. Five tests in
+  `iron/tests/common/declare.py` folded into the ones that subsumed them
+  (the knob-in-tile case into the knob-in-shape rejection, the leading
+  optional dimension into the any-position test, `infer()` on tuples into
+  `from_operands`, the two graph-bound-value tests into one, the private
+  field-tuple check dropped for the array-key test that prints the same
+  tier). The ReLU lines `iron/tests/common/elementwise.py` and
+  `iron/tests/operators/rejected_shapes.py` both carried live in the
+  template's file only; the tile-cap and column-set assertions the new
+  files repeated from `rejected_shapes.py` and `testing.py` are gone.
+  `array_identity.py` compiles RMSNorm no more, since it shares ReLU's
+  template and array. Kept, with the numbers: the three new files
+  (`elementwise`, `harness`, `testing`) reach 45 lines nothing else does
+  and run in under a second; `test_llama_names_only_the_knobs_that_matter`
+  and `test_two_spellings_of_one_array_are_one_design` are the two
+  load-bearing gates and reach 55 lines of their own; the toolchain suite
+  reaches 754 lines the device-free suite cannot (the operators' `array()`
+  bodies), `array_identity.py` costing 60 of its 260 seconds for two lines
+  of its own and the one claim no other test makes. Tests: 283 functions
+  and 7195 lines at `26ce43f`, 305 and 7811 now, against a library that
+  held flat (20535 to 20492 lines). Both suites identical to baseline.
+- `5f414d3` Prose pass. Every docstring, comment and Markdown paragraph
+  the branch changed, read as a person would: history narration replaced
+  by the present, connective flourishes and section-number
+  cross-references into this plan cut, the plan's Decisions, API,
+  Resolution and Progress sections shorter with every fact and commit id
+  kept. No code, error message, test assertion or SPDX header changed.
+
 - `9d59de7` Audit, batch E: docs and tests. README names paths that
   exist (`iron/operators/test.py -k AXPY`, the packages under
   `iron/common`). AGENTS states the elementwise divisibility rule with the

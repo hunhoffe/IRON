@@ -41,12 +41,6 @@ PAIRS = [
     ("softmax", "Softmax", dict(cols=64, num_aie_columns=2), ("rows", 16)),
     ("rope.op", "RoPE", dict(cols=64, num_aie_columns=2), ("rows", 16)),
     (
-        "rms_norm",
-        "RMSNorm",
-        dict(num_aie_columns=1, num_channels=1, tile_size=256),
-        ("rows", 4),
-    ),
-    (
         "gemv.op",
         "GEMV",
         dict(K=64, num_aie_columns=2, tile_size_input=2, tile_size_output=2),
