@@ -52,7 +52,17 @@ from aie.iron.controlflow import range_
 from aie.iron.kernel import ExternalFunction
 from aie.utils.verify import Tolerance
 
-from .declare import In, Incompatible, Operator, Out, Unresolvable, Value, auto, param
+from .declare import (
+    Extent,
+    In,
+    Incompatible,
+    Operator,
+    Out,
+    Unresolvable,
+    Value,
+    auto,
+    param,
+)
 from .testing import Testing, binary_elementwise_cases, channeled_unary_cases
 from .tiling import fifo_depth
 
@@ -84,8 +94,11 @@ class Elementwise(Operator):
     tile_size: int = auto()
 
     # The lines each core processes: written once per build, before the
-    # first transfer, so the array does not depend on the extent.
-    count = Value(np.int32, derive=lambda op: op.lines // op.cores)
+    # first transfer, so the array does not depend on the extent; per call
+    # when a graph bounds the extent (``x[:n]``), read by each core.
+    count = Value(
+        np.int32, derive=lambda op: op.valid_elements // (op.cores * op.tile_size)
+    )
 
     default_tile: ClassVar[int] = DEFAULT_TILE
     tile_cap: ClassVar[int] = 4096
@@ -127,6 +140,14 @@ class Elementwise(Operator):
         """How many lines the operands hold; each core streams an equal share."""
         (out,) = self.outputs
         return out.elements // self.tile_size
+
+    @property
+    def valid_elements(self) -> int:
+        """The elements a call processes: the whole operand, or the bounded
+        extent's worth (the templates read their ``Extent``).
+        """
+        (out,) = self.outputs
+        return out.elements
 
     # -- the kernel --------------------------------------------------------
 
@@ -178,7 +199,14 @@ class Elementwise(Operator):
         of_outs = [
             fifos(s, f"out{i}" if len(outs) > 1 else "out") for i, s in enumerate(outs)
         ]
-        counts = [target.rtp(_I32, name=f"count_{slot(k)}") for k in range(cores)]
+        # The trip count: written once per build into an RTP, or, when a
+        # graph bounds the extent, a scratchpad word each core reads per call.
+        dynamic = self.uses_value("count") and target.image == "elf"
+        counts = (
+            [self.count.param] * cores
+            if dynamic
+            else [target.rtp(_I32, name=f"count_{slot(k)}") for k in range(cores)]
+        )
         barriers = [target.barrier() for _ in range(cores)]
 
         def core_fn(*args):
@@ -186,7 +214,8 @@ class Elementwise(Operator):
             fifos_out = args[n_in : n_in + len(outs)]
             kernel_fn, count, barrier = args[-3:]
             barrier.wait_for_value(1)
-            for _ in range_(count[0]):
+            n = count.read() if dynamic else count[0]
+            for _ in range_(n):
                 elements = [f.acquire(1) for f in fifos_in + fifos_out]
                 self.kernel_call(kernel_fn, *elements)
                 for f in fifos_in + fifos_out:
@@ -206,7 +235,8 @@ class Elementwise(Operator):
                 stream[k].bind(of[k].prod())
             for stream, of in zip(outs, of_outs):
                 stream[k].bind(of[k].cons())
-        self.count.bind(counts)
+        if not dynamic:
+            self.count.bind(counts)
         return workers
 
 
@@ -220,6 +250,7 @@ class UnaryElementwise(Elementwise):
 
     test = Testing(channeled_unary_cases())
     size: int = param()
+    valid = Extent(size)  # size, or fewer per call: x[:n] in a graph
 
     x = In(
         size,
@@ -232,6 +263,10 @@ class UnaryElementwise(Elementwise):
         per=(Elementwise.num_aie_columns, Elementwise.num_channels),
     )
 
+    @property
+    def valid_elements(self) -> int:
+        return self.valid
+
 
 class BinaryElementwise(Elementwise):
     """Two flat buffers in, one of the same size out. Each core's two input
@@ -241,6 +276,7 @@ class BinaryElementwise(Elementwise):
 
     test = Testing(binary_elementwise_cases())
     size: int = param()
+    valid = Extent(size)
 
     a = In(
         size,
@@ -257,3 +293,7 @@ class BinaryElementwise(Elementwise):
         tile=(Elementwise.tile_size,),
         per=(Elementwise.num_aie_columns, Elementwise.num_channels),
     )
+
+    @property
+    def valid_elements(self) -> int:
+        return self.valid

@@ -29,6 +29,7 @@ from typing import (
 )
 
 import aie.utils as aie_utils
+import numpy as np
 from aie.utils.npukernel import NPUKernel
 from aie.utils.verify import Tolerance
 
@@ -157,6 +158,29 @@ class _ArrayView:
 # listed: pyright reads a specifier's default only from a ``default=`` keyword,
 # and ``auto(2)`` passes it positionally. Unlisted, an ``auto()`` field is one
 # with a default of type Any, which is accurate.
+class _ExtentWord(Value):
+    """The tiles per lane of one operand under a bound: the word its
+    transfers are patched with, derived from the extent as a ``Value`` is.
+    """
+
+    def __init__(self, owner: type, extent: Extent, buffer: str, axis: int) -> None:
+        super().__init__(np.int32, derive=self._tiles)
+        self.owner = owner
+        self.name = f"{extent.name}_{buffer}"
+        self.extent, self.buffer, self.axis = extent, buffer, axis
+
+    def _tiles(self, op) -> int:
+        b = op.value_buffer(self.buffer)
+        lanes = 1 if b.lanes.replicate else b.lanes.count
+        rank, tile_shape = len(b.shape), b.lanes.shape
+        k = self.axis - (rank - len(tile_shape))
+        tile_rows = tile_shape[k] if k >= 0 else 1
+        return getattr(op, self.extent.name) // (lanes * tile_rows)
+
+    def __repr__(self) -> str:
+        return f"<tiles per lane of {self.buffer} under {self.extent.name}>"
+
+
 @dataclass_transform(kw_only_default=True, field_specifiers=(param,))
 @dataclasses.dataclass(eq=False, repr=True)
 class Operator(metaclass=_OperatorMeta):
@@ -449,9 +473,7 @@ class Operator(metaclass=_OperatorMeta):
     def values(self) -> list[BoundValue]:
         """The per-call values this instance uses (see :meth:`uses_value`)."""
         return [
-            self._bound[m.name]
-            for m in self._members
-            if isinstance(m, _Value) and self.uses_value(m.name)
+            self._bound[m.name] for m in self._value_members if self.uses_value(m.name)
         ]
 
     @property
@@ -486,7 +508,7 @@ class Operator(metaclass=_OperatorMeta):
         its derivation reads a bound extent; an operator whose values are
         optional (a copy with or without a patched offset) overrides this.
         """
-        member = next((m for m in self._members if m.name == name), None)
+        member = next((m for m in self._value_members if m.name == name), None)
         if isinstance(member, Extent):
             return name in self.used_values
         if isinstance(member, Value) and member.derive is not None:
@@ -508,7 +530,7 @@ class Operator(metaclass=_OperatorMeta):
         if not self.bound_extents:
             return frozenset()
         out = set()
-        for m in self._members:
+        for m in self._value_members:
             if not (isinstance(m, Value) and m.derive is not None):
                 continue
             reads: set[str] = set()
@@ -527,7 +549,7 @@ class Operator(metaclass=_OperatorMeta):
         """The value ``name``'s derivation with the extents at the given
         bounds: the word the host writes for one call.
         """
-        member = next((m for m in self._members if m.name == name), None)
+        member = next((m for m in self._value_members if m.name == name), None)
         if not (isinstance(member, Value) and member.derive is not None):
             raise TypeError(f"{type(self).__name__}.{name} is not a derived value")
         unknown = set(extents) - {
@@ -541,7 +563,14 @@ class Operator(metaclass=_OperatorMeta):
         vars(at)["_extents"] = {**self.__dict__.get("_extents", {}), **extents}
         return member.derive(at)
 
-    def value(self, name: str) -> "BoundValue":
+    def value_buffer(self, name: str) -> BoundBuffer:
+        """The bound operand ``name``."""
+        b = self._bound.get(name)
+        if not isinstance(b, BoundBuffer):
+            raise TypeError(f"{type(self).__name__} declares no operand {name!r}")
+        return b
+
+    def value(self, name: str) -> BoundValue:
         """The device word of the value member ``name`` (an ``Extent`` reads
         as an integer on the instance, so this is how a sequence names its
         word).
@@ -608,6 +637,28 @@ class Operator(metaclass=_OperatorMeta):
             elif isinstance(m, _Value):
                 bound[m.name] = BoundValue(m, self)
         self._bound = bound
+        # One word per (extent, operand it sizes): the tiles per lane a
+        # bounded transfer is patched with. Made here, so a build finds it
+        # among the values; per call only once the extent is bound.
+        words = []
+        for e in self._members:
+            if not isinstance(e, Extent):
+                continue
+            for b in self._members:
+                if isinstance(b, _Buffer) and b.stream is not None:
+                    axis = bound[b.name].extent_axis(e)
+                    if axis is not None:
+                        word = _ExtentWord(type(self), e, b.name, axis)
+                        bound[word.name] = BoundValue(word, self)
+                        words.append(word)
+        self._extent_words = tuple(words)
+
+    @property
+    def _value_members(self) -> list[_Value]:
+        """The declared value members and the extent words made with them."""
+        return [m for m in self._members if isinstance(m, _Value)] + list(
+            self.__dict__.get("_extent_words", ())
+        )
 
     # -- construction from operand shapes ----------------------------------
 
@@ -799,9 +850,9 @@ class Operator(metaclass=_OperatorMeta):
             f"  sequence, the host's alone: {spell(sequence)}",
         ]
         per_call_derived = self._per_call_derived()
-        for m in self._members:
-            if not isinstance(m, _Value):
-                continue
+        for m in self._value_members:
+            if isinstance(m, _ExtentWord) and m.name not in per_call_derived:
+                continue  # a word only a bounded extent needs
             if isinstance(m, Extent):
                 bound = self.bound_extents.get(m.name)
                 how = (

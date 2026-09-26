@@ -669,3 +669,47 @@ def test_a_size_patch_needs_the_toolchain_kind_or_the_dispatch_path():
     rt = Sequence(op, {"x": "dx", "y": "dy"})
     rt.fill(op.x.lane(0), acc, size_by={2: op.value("count")})
     assert log == [("fill", "dx", [1, 1, "<n>", 8], 0)]
+
+
+def test_a_bounded_operand_goes_round_robin_over_the_lanes():
+    """Under a bound each lane reads every ``lanes``-th tile from a fixed
+    offset, so one patched count serves every lane; the descriptor is built
+    for the full extent.
+    """
+    from iron.common.design.runtime import bounded_transfers
+    from iron.tests.common.declare import Rows
+
+    op = Rows(rows=64, cols=8).resolved(FakeDev())
+    plan = bounded_transfers(op.x, op.streams["x"], 0)
+    assert [(slot.index, acc, dim) for slot, acc, dim in plan] == [
+        (0, Access(512, 0, (1, 32, 1, 8), (0, 16, 0, 1)), 1),
+        (1, Access(512, 8, (1, 32, 1, 8), (0, 16, 0, 1)), 1),
+    ]
+    # A leading batch axis is the outer repeat; the tile count keeps its slot.
+    batched = MV(M=256, K=128, num_batches=3).resolved(FakeDev())
+    (slot, acc, dim), *_ = bounded_transfers(batched.A, batched.streams["A"], 1)
+    # The 64 x 128 tile is a run past one wrap, so it takes the two inner
+    # slots as 8 x 1024; the tile count sits above them.
+    assert acc == Access(
+        3 * 256 * 128, 0, (3, 2, 8, 1024), (256 * 128, 2 * 64 * 128, 1024, 1)
+    )
+    assert dim == 1 and (batched.M // (2 * 64)) == 2
+
+
+def test_the_derived_sequence_patches_a_bounded_operand():
+    log = []
+    op = _bounded_unary()
+    for name in ("valid_x", "valid_y"):
+        op.value(name).param = f"<{name}>"
+    for s in op.streams.values():
+        for i in range(s.count):
+            s.bind(_SizedHandle(log), i)
+    rt = Sequence(op, {"x": "dx", "y": "dy"})
+    rt._derived()
+    assert log == [
+        ("fill", "dx", None, {1: "<valid_x>"}),
+        ("fill", "dx", None, {1: "<valid_x>"}),
+        ("drain", "dy", None, {1: "<valid_y>"}),
+        ("drain", "dy", None, {1: "<valid_y>"}),
+    ]
+    assert op.derived_at("valid_x", valid=16) == 8  # the word: 16 rows over 2 lanes

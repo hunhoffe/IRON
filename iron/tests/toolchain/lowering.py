@@ -78,3 +78,34 @@ def test_operator_lowers_to_instructions(device, module, cls_name, kwargs, tmp_p
     except (ValueError, Unresolvable, Incompatible) as e:
         pytest.skip(f"not for {device.resolve().name}: {e}")
     lower(op, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "module,cls_name,kwargs,bound",
+    [
+        ("relu", "ReLU", dict(size=4096, tile_size=256, num_aie_columns=2), "valid"),
+        ("rms_norm", "RMSNorm", dict(rows=64, tile_size=256), "valid"),
+        ("softmax", "Softmax", dict(rows=64, cols=64, num_aie_columns=2), "valid"),
+        ("rope.op", "RoPE", dict(rows=64, cols=64, num_aie_columns=2), "valid"),
+    ],
+    ids=lambda v: v if isinstance(v, str) and "." not in v else "",
+)
+def test_a_bounded_operator_lowers_or_waits_for_the_size_kind(
+    device, module, cls_name, kwargs, bound, tmp_path
+):
+    """An operator with a bounded extent builds its array against the
+    per-call words (each core reads its count from the scratchpad) and
+    asks the toolchain to patch its descriptors' sizes. Until mlir-aie has
+    the size-kind parameter that is a skip naming it, not a failure.
+    """
+    cls = getattr(importlib.import_module(f"iron.operators.{module}"), cls_name)
+    try:
+        op = cls(**kwargs).resolved(device)
+    except (ValueError, Unresolvable, Incompatible) as e:
+        pytest.skip(f"not for {device.resolve().name}: {e}")
+    op.use_value(bound, "n")  # what x[:n] in a graph does
+    try:
+        lower(op, tmp_path)
+    except NotImplementedError as e:
+        assert "size-kind scratchpad parameter" in str(e)
+        pytest.skip(str(e))

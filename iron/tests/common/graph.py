@@ -635,7 +635,10 @@ def test_the_words_a_call_writes_come_from_the_bound(npu2):
     t = g.trace(x=(64, 8))
     (op,) = t.operators
     words = {symbol: word for symbol, _, word in _words(t)}
-    assert set(words) == {f"{op.name}_valid_n", f"{op.name}_count"}
+    assert set(words) == {
+        f"{op.name}_{w}" for w in ("valid_n", "count", "valid_x", "valid_y")
+    }
     call = {"n": 16}
     assert words[f"{op.name}_valid_n"](call) == 16 * 8  # the reshape's scale
     assert words[f"{op.name}_count"](call) == 16 * 8 // 2  # derived: valid // lanes
+    assert words[f"{op.name}_valid_x"](call) == 16 * 8 // 2  # tiles per lane

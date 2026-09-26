@@ -717,7 +717,10 @@ def test_a_bounded_operand_binds_the_extent_and_what_derives_from_it(npu2):
         assert op.uses_value("valid") and op.uses_value("count")
         assert not op.uses_value("width")  # still written once per build
         assert set(op.residents) == {"width"}
-        assert [v.name for v in op.values] == ["valid", "count"]
+        # The extent, what derives from it, and one word of tiles per lane
+        # for each operand it sizes.
+        assert [v.name for v in op.values] == ["valid", "count", "valid_x", "valid_y"]
+        assert op.derived_at("valid_x", valid=16) == 8  # 16 rows over 2 lanes
     assert [(bd.member.name, bd.value.name) for bd in t.bindings] == [
         ("valid", "n"),
         ("valid", "n"),

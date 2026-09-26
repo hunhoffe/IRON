@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import inspect
 from contextlib import contextmanager
+from math import prod
 from typing import Any
 
 from aie.extras.dialects import arith
@@ -26,7 +27,16 @@ from ..declare.bound import (
     BufferView,
     _StreamSlot,
 )
-from ..tiling import Access, encode, legalize, split, whole
+from ..tiling import (
+    Access,
+    _pack_exact,
+    encode,
+    granule_elements,
+    legalize,
+    split,
+    split_run,
+    whole,
+)
 from .target import Target
 
 
@@ -68,13 +78,35 @@ class Transfers:
     def _derived(self) -> None:
         with self.group() as tg:
             for buf in self.op.inputs:
-                for slot, accesses in transfers(buf, self._stream_of(buf)):
-                    for acc in accesses:
-                        self.fill(slot, (buf, acc), group=tg)
+                for slot, acc, size_by in self._plan(buf):
+                    self.fill(slot, (buf, acc), group=tg, size_by=size_by)
             for buf in self.op.outputs:
-                for slot, accesses in transfers(buf, self._stream_of(buf)):
-                    for acc in accesses:
-                        self.drain(slot, (buf, acc), group=tg, wait=True)
+                for slot, acc, size_by in self._plan(buf):
+                    self.drain(slot, (buf, acc), group=tg, wait=True, size_by=size_by)
+
+    def _plan(self, buf: BoundBuffer) -> list[tuple[Any, Access, dict | None]]:
+        """``(slot, access, size_by)`` per transfer of ``buf``: the declared
+        split, or the round-robin one with its patched dimension under a bound.
+        """
+        stream = self._stream_of(buf)
+        bounded = buf.bounded
+        if bounded is None:
+            return [
+                (slot, acc, None)
+                for slot, accesses in transfers(buf, stream)
+                for acc in accesses
+            ]
+        extent, axis, word = bounded
+        if axis != buf.batch_axes:
+            raise ValueError(
+                f"{type(self.op).__name__}.{buf.name}: {extent.name} bounds axis "
+                f"{axis}, but the derived sequence splits axis {buf.batch_axes}; "
+                f"override sequence(rt) to bound another axis"
+            )
+        return [
+            (slot, acc, {dim: word})
+            for slot, acc, dim in bounded_transfers(buf, stream, axis)
+        ]
 
     def _stream_of(self, buf: BoundBuffer) -> BoundStream:
         if buf.lanes is None:
@@ -373,6 +405,61 @@ def transfers(
             f"{stream.name!r}: {e}. Check {type(buffer._op).__name__}.compatible()"
         ) from None
     return [(stream[b.slot], encode(b, buffer.elements, buffer.dtype)) for b in blocks]
+
+
+def bounded_transfers(
+    buffer: BoundBuffer, stream: BoundStream, axis: int
+) -> list[tuple[Any, Access, int]]:
+    """How ``buffer`` moves through ``stream`` when ``axis`` is bounded per
+    call: ``[(slot, access, dim), ...]``, ``dim`` the descriptor dimension a
+    call patches with the tiles per lane.
+
+    The tiles along ``axis`` go round-robin over the lanes: lane ``k`` takes
+    tiles ``k, k + lanes, k + 2*lanes, ...``, so every lane has one fixed
+    offset, one fixed stride and the one patched count. Axes before it are
+    repeats. The descriptor is built for the full extent; a call shortens it.
+    """
+    shape, dtype = buffer.shape, buffer.dtype
+    lanes = 1 if stream.replicate else stream.count
+    inner = prod(shape[axis + 1 :]) if axis + 1 < len(shape) else 1
+    tile_shape = stream.shape
+    k = axis - (len(shape) - len(tile_shape))
+    tile_rows = tile_shape[k] if k >= 0 else 1
+    if shape[axis] % (lanes * tile_rows):
+        raise ValueError(
+            f"{buffer.name} {shape}: axis {axis} does not divide into {tile_rows}-row "
+            f"tiles over {lanes} lanes"
+        )
+    tiles = shape[axis] // (lanes * tile_rows)
+    run = tile_rows * inner
+    leading = [(shape[i], prod(shape[i + 1 :])) for i in range(axis)]
+    gran = granule_elements(dtype)
+    halves = split_run(run, gran)
+    if halves is None:
+        raise ValueError(
+            f"{buffer.name}: a {run}-element tile does not fit one descriptor"
+        )
+    hi, lo = halves
+    run_dims = ([(hi, lo)] if hi != 1 else [(1, 0)]) + [(lo, 1)]
+    dims = leading + [(tiles, lanes * run)] + run_dims
+    if len(dims) > 4:
+        raise ValueError(
+            f"{buffer.name} {shape}: bounding axis {axis} needs {len(dims)} "
+            f"descriptor dimensions; a descriptor has four"
+        )
+    dim = 4 - len(run_dims) - 1  # where the tile count lands once padded to four
+    out = []
+    for lane in range(lanes):
+        acc = _pack_exact(buffer.elements, lane * run, dims, gran)
+        if acc is None:
+            raise ValueError(
+                f"{buffer.name} {shape}: the round-robin split over {lanes} lanes "
+                f"does not fit one descriptor per lane"
+            )
+        slots = range(stream.count) if stream.replicate else [lane]
+        for s in slots:
+            out.append((stream[s] if stream.count > 1 else stream, acc, dim))
+    return out
 
 
 def _buffer_of(stream) -> BoundBuffer | None:

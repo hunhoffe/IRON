@@ -10,7 +10,7 @@ from aie.iron.controlflow import range_
 from aie.iron.kernels import eltwise, norm
 from aie.utils.verify import Tolerance
 
-from iron.common import Elementwise, In, Out, auto, param
+from iron.common import Elementwise, Extent, In, Out, auto, param
 from iron.common.device import bound_device
 from iron.common.testing import Case, Testing
 from iron.common.tiling import fifo_depth
@@ -57,6 +57,7 @@ class RMSNorm(Elementwise):
     test = Testing(_cases, tolerance=Tolerance.relative(0.04, 1e-6))
 
     rows: int = param()
+    valid = Extent(rows)  # rows, or fewer per call
     # Required here, though the base defaults it: every field is keyword-only.
     tile_size: int = param()  # pyright: ignore
     # One core by default: a core normalizes whole rows, and the row count is
@@ -90,6 +91,10 @@ class RMSNorm(Elementwise):
     @property
     def weighted(self) -> bool:
         return False
+
+    @property
+    def valid_elements(self) -> int:
+        return self.valid * self.tile_size
 
     def kernel(self, target):
         return norm.rms_norm_eps(self.tile_size)
@@ -167,13 +172,18 @@ class WeightedRMSNorm(RMSNorm):
             for j in range(chans)
         ]
         n_cores = cols * chans
-        counts = [target.rtp(_I32, name=f"count_{k}") for k in range(2 * n_cores)]
+        dynamic = self.uses_value("count") and target.image == "elf"
+        counts = (
+            [self.count.param] * (2 * n_cores)
+            if dynamic
+            else [target.rtp(_I32, name=f"count_{k}") for k in range(2 * n_cores)]
+        )
         barriers = [target.barrier() for _ in range(2 * n_cores)]
         tile_size, epsilon = self.tile_size, self.epsilon
 
         def core_norm(of_in, of_out, rms, count, barrier):
             barrier.wait_for_value(1)
-            n = count[0]
+            n = count.read() if dynamic else count[0]
             for _ in range_(n):
                 elem_in = of_in.acquire(1)
                 elem_out = of_out.acquire(1)
@@ -183,7 +193,7 @@ class WeightedRMSNorm(RMSNorm):
 
         def core_mul(of_in, of_w, of_out, mul, count, barrier):
             barrier.wait_for_value(1)
-            n = count[0]
+            n = count.read() if dynamic else count[0]
             elem_w = of_w.acquire(1)
             for _ in range_(n):
                 elem_in = of_in.acquire(1)
@@ -230,7 +240,8 @@ class WeightedRMSNorm(RMSNorm):
             self.y.lane(k).bind(of_outs[k].cons())
         for j in range(chans):
             self.w.lane(j).bind(of_ws[j].prod())
-        self.count.bind(counts)
+        if not dynamic:
+            self.count.bind(counts)
         return workers
 
 

@@ -18,7 +18,7 @@ from aie.utils import bfp
 
 from ..tiling import view
 from .field import DeclarationError, DimRef, Incompatible, _Optional, _Select
-from .member import Shim, _Buffer, _Stream, _Value
+from .member import Extent, Shim, _Buffer, _Stream, _Value
 
 if TYPE_CHECKING:
     from .operator import Operator
@@ -265,6 +265,38 @@ class BoundBuffer:
             if _resolve_dim(d.ref, self._op) > 1:
                 n += 1
         return n
+
+    def extent_axis(self, extent: Extent) -> int | None:
+        """The axis of this operand that ``extent``'s field sizes, or None."""
+        axis = 0
+        for d in self.member.dims:
+            if isinstance(d, _Optional):
+                if _resolve_dim(d.ref, self._op) <= 1:
+                    continue  # omitted at this rank
+                d = d.ref
+            if isinstance(d, _Select):
+                branch = d.when_true if _flag_value(d.flag, self._op) else d.when_false
+                axis += len(_resolve_shape(branch, self._op))
+                continue
+            if isinstance(d, DimRef) and d.name == extent.field.name:
+                return axis
+            axis += 1
+        return None
+
+    @property
+    def bounded(self) -> tuple[Extent, int, "BoundValue"] | None:
+        """``(extent, axis, word)`` when a bound extent sizes an axis of this
+        operand: the extent, the axis, and the per-call word of tiles per
+        lane the derived sequence patches its descriptors with.
+        """
+        op = self._op
+        for name in op.bound_extents:
+            extent = op.value(name).member
+            assert isinstance(extent, Extent)
+            axis = self.extent_axis(extent)
+            if axis is not None:
+                return extent, axis, op.value(f"{name}_{self.name}")
+        return None
 
     def __getitem__(self, index) -> "BufferView":
         """A basic slice of this buffer, for ``rt.fill``/``rt.drain`` in an override.

@@ -11,6 +11,7 @@ from aie.utils.verify import Tolerance
 from ml_dtypes import bfloat16
 
 from iron.common import (
+    Extent,
     In,
     Incompatible,
     Operator,
@@ -83,10 +84,13 @@ class RoPE(Operator):
     x = In(rows, cols, tile=(1, cols), per=(num_aie_columns,))
     angles = In(angle_rows, cols, tile=(1, cols), per=(num_aie_columns,))
     y = Out(rows, cols, tile=(1, cols), per=(num_aie_columns,))
+    # Either row count may be bounded per call: x[:n] and angles[:m].
+    valid = Extent(rows)
+    valid_angles = Extent(angle_rows)
     # Angle rows each core consumes, and input rows per angle row: the
-    # core's trip counts, written once per build.
-    lut_rows = Value(np.int32, derive=lambda op: op.angle_rows // op.num_aie_columns)
-    rows_per_lut = Value(np.int32, derive=lambda op: op.rows // op.angle_rows)
+    # core's trip counts, written once per build, or per call under a bound.
+    lut_rows = Value(np.int32, derive=lambda op: op.valid_angles // op.num_aie_columns)
+    rows_per_lut = Value(np.int32, derive=lambda op: op.valid // op.valid_angles)
 
     def validate(self) -> None:
         if not (self.cols % 32 == 0 and self.cols >= 32):
@@ -123,15 +127,38 @@ class RoPE(Operator):
         of_in = [ObjectFifo(tile, name=f"in_{i}") for i in range(n)]
         of_lut = [ObjectFifo(self.angles.tile, name=f"lut_{i}") for i in range(n)]
         of_out = [ObjectFifo(tile, name=f"out_{i}") for i in range(n)]
-        i32x2 = np.ndarray[(2,), np.dtype[np.int32]]
-        counts = [target.rtp(i32x2, name=f"counts_{i}") for i in range(n)]
+        # The two trip counts in an RTP, less any a graph bounds, which each
+        # core reads from the scratchpad per call.
+        elf = target.image == "elf"
+        dyn_lut = self.uses_value("lut_rows") and elf
+        dyn_rows = self.uses_value("rows_per_lut") and elf
+        static = [
+            nm for nm, d in (("lut_rows", dyn_lut), ("rows_per_lut", dyn_rows)) if not d
+        ]
+        rtp_ty = np.ndarray[(max(1, len(static)),), np.dtype[np.int32]]
+        counts = [target.rtp(rtp_ty, name=f"counts_{i}") for i in range(n)]
+        params = [
+            p
+            for p, d in (
+                (self.lut_rows.param, dyn_lut),
+                (self.rows_per_lut.param, dyn_rows),
+            )
+            if d
+        ]
         barriers = [target.barrier() for _ in range(n)]
         cols = self.cols
 
-        def core_body(of_in, of_lut, of_out, rope_kernel, counts, barrier):
+        def core_body(of_in, of_lut, of_out, rope_kernel, counts, barrier, *words):
             barrier.wait_for_value(1)
-            lut_rows = counts[0]
-            rows_per_lut = counts[1]
+            words = list(words)
+            lut_rows = (
+                words.pop(0).read() if dyn_lut else counts[static.index("lut_rows")]
+            )
+            rows_per_lut = (
+                words.pop(0).read()
+                if dyn_rows
+                else counts[static.index("rows_per_lut")]
+            )
             for _ in range_(lut_rows):
                 elem_lut = of_lut.acquire(1)
                 for _ in range_(rows_per_lut):
@@ -152,7 +179,8 @@ class RoPE(Operator):
                     kernel,
                     counts[i],
                     barriers[i],
-                ],
+                ]
+                + params,
             )
             for i in range(n)
         ]
@@ -160,8 +188,10 @@ class RoPE(Operator):
             self.x.lane(i).bind(of_in[i].prod())
             self.angles.lane(i).bind(of_lut[i].prod())
             self.y.lane(i).bind(of_out[i].cons())
-        self.lut_rows.bind(counts, 0)
-        self.rows_per_lut.bind(counts, 1)
+        if not dyn_lut:
+            self.lut_rows.bind(counts, static.index("lut_rows"))
+        if not dyn_rows:
+            self.rows_per_lut.bind(counts, static.index("rows_per_lut"))
         return workers
 
     def reference(self, x, angles):

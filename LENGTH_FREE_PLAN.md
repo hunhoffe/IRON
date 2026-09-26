@@ -141,6 +141,24 @@ sets), pyright and ruff clean, and a Progress entry.
 
 ## Progress
 
+- `(this commit)` Step 2, the derived sequence under a bound. For each
+  Extent and each operand its field sizes, the operator makes one word of
+  tiles per lane (`valid_x`, `valid_y`), derived from the extent like any
+  `Value`, so it is per call the moment the extent is and a build finds it
+  among the values. `bounded_transfers` splits the bounded axis round-robin
+  by tile: lane `k` takes tiles `k, k + lanes, ...` from a fixed offset with
+  a fixed stride, the count in one descriptor slot that every lane patches
+  with the same word; leading batch axes stay repeats, and a tile past one
+  wrap takes the two inner slots as before. The derived sequence plans a
+  bounded operand that way and the declared way otherwise, so unbounded
+  instruction streams do not move. The elementwise templates, RMSNorm,
+  Softmax and RoPE declare their extents (`valid = Extent(size)`, of
+  `rows`, and RoPE's `valid_angles` too), their trip counts derive from
+  them, and their arrays read a per-call count from the scratchpad where a
+  graph bounds it and from the RTP otherwise. A bounded ReLU, RMSNorm,
+  Softmax and RoPE build their arrays against the words and stop at the
+  size patch with the contract's name, which the lowering test records as
+  a skip. Both suites identical to baseline; eight skips more.
 - `e5e84d9` Step 1, the vocabulary. `Extent(field)` is a value
   member that reads as its field until a graph bounds it; `x[:n]` puts a
   bound on a handle, carried through `reshape` (rescaled by the merged or

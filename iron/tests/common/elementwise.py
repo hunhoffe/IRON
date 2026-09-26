@@ -3,9 +3,11 @@
 
 """The elementwise template: what an operator that names one kernel gets."""
 
+import numpy as np
 import pytest
 from aie.iron.device import from_name
 
+import iron
 from iron.common import Incompatible, UnaryElementwise, Unresolvable
 from iron.operators.elementwise_add import ElementwiseAdd
 from iron.operators.relu import ReLU
@@ -49,3 +51,29 @@ def test_an_operator_written_by_inheritance_inherits_the_sweep():
     assert Neg.test is not None
     cases = Neg.test.resolve(Neg)
     assert all(c.kwargs["tile_size"] <= Neg.tile_cap for c in cases)
+
+
+def test_a_bounded_operand_makes_the_trip_count_per_call():
+    """``x[:n]`` bounds the template's extent: the count each core reads
+    and the tiles each lane moves become words the host writes per call.
+    """
+    from iron.common import Scratchpad
+
+    @iron.graph
+    def g(x, *, n: Scratchpad[np.int32]):
+        return ReLU(x[:n], tile_size=256, num_aie_columns=2)
+
+    t = g.trace(x=(4096,))
+    (op,) = t.operators
+    assert op.bound_extents == {"valid": "n"}
+    assert [v.name for v in op.values] == ["valid", "count", "valid_x", "valid_y"]
+    assert op.derived_at("count", valid=1024) == 1024 // (2 * 256)
+    assert op.derived_at("valid_x", valid=1024) == 1024 // (2 * 256)
+    assert op.resident_values() == {}  # nothing is written once per build
+    lines = op.explain().splitlines()
+    assert "  valid: per call, bounds size (graph value n)" in lines
+    assert "  count: per call, derived from a bounded extent" in lines
+    # Unbounded, the same class is what it was: one resident, no words.
+    plain = ReLU(size=4096, tile_size=256, num_aie_columns=2).resolved(NPU2)
+    assert plain.valid == 4096 and plain.resident_values() == {"count": 8}
+    assert [v.name for v in plain.values] == []

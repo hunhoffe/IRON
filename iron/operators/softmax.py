@@ -3,7 +3,6 @@
 
 
 import dataclasses
-from typing import Any
 
 import ml_dtypes
 import numpy as np
@@ -13,6 +12,7 @@ from aie.iron.kernels import activation
 from aie.utils.verify import Tolerance
 
 from iron.common import (
+    Extent,
     In,
     Incompatible,
     Operator,
@@ -68,9 +68,11 @@ class Softmax(Operator):
     num_aie_columns: int = auto()
     num_channels: int = auto(1)
 
+    valid = Extent(rows)  # rows, or fewer per call
+
     x = In(rows, cols, tile=(cols,), per=(num_aie_columns, num_channels))
     y = Out(rows, cols, tile=(cols,), per=(num_aie_columns, num_channels))
-    count = Value(np.int32, derive=lambda op: op.rows // op.cores)  # rows per core
+    count = Value(np.int32, derive=lambda op: op.valid // op.cores)  # rows per core
     vector_size = Value(np.int32, derive=lambda op: op.cols)  # valid elements per row
 
     def validate(self) -> None:
@@ -127,31 +129,39 @@ class Softmax(Operator):
             for i in range(cols)
             for j in range(chans)
         ]
-        # [count, vector_size] per core, or [count] when vector_size is a
-        # per-call value the core reads from the scratchpad. On an image
-        # without a scratchpad the per-call value is written into [1] by the
-        # sequence instead.
-        dynamic = self.uses_value("vector_size") and target.image == "elf"
-        rtp_ty = np.ndarray[(1 if dynamic else 2,), np.dtype[np.int32]]
+        # [count, vector_size] per core in an RTP, less whichever is a
+        # per-call value the core reads from the scratchpad instead (the
+        # count when a graph bounds the rows, the mask length when it binds
+        # it). On an image without a scratchpad the sequence writes the
+        # per-call values into the RTP.
+        elf = target.image == "elf"
+        dyn_count = self.uses_value("count") and elf
+        dyn_vs = self.uses_value("vector_size") and elf
+        static = [
+            n for n, d in (("count", dyn_count), ("vector_size", dyn_vs)) if not d
+        ]
+        rtp_ty = np.ndarray[(max(1, len(static)),), np.dtype[np.int32]]
         rtps = [target.rtp(rtp_ty, name=f"rtp_{k}") for k in range(n_cores)]
         barriers = [target.barrier() for _ in range(n_cores)]
         per_tile = self.cols
-        param = self.vector_size.param if dynamic else None
+        params = [
+            p
+            for p, d in (
+                (self.count.param, dyn_count),
+                (self.vector_size.param, dyn_vs),
+            )
+            if d
+        ]
 
-        def core_body(
-            of_in,
-            of_out,
-            softmax_kernel,
-            mask_kernel,
-            rtp,
-            barrier,
-            vector_size_src: Any = None,
-        ):
+        def core_body(of_in, of_out, softmax_kernel, mask_kernel, rtp, barrier, *words):
             barrier.wait_for_value(1)
-            n = rtp[0]
-            # `dynamic` is a compile-time constant, so only one of these is
-            # emitted: a scratchpad parameter read or a write-RTP buffer load.
-            vector_size = vector_size_src.read() if dynamic else rtp[1]
+            # dyn_count/dyn_vs are compile-time constants, so each value is
+            # emitted once: a scratchpad parameter read or an RTP load.
+            words = list(words)
+            n = words.pop(0).read() if dyn_count else rtp[static.index("count")]
+            vector_size = (
+                words.pop(0).read() if dyn_vs else rtp[static.index("vector_size")]
+            )
             for _ in range_(n):
                 elem_in = of_in.acquire(1)
                 elem_out = of_out.acquire(1)
@@ -171,16 +181,17 @@ class Softmax(Operator):
                     rtps[k],
                     barriers[k],
                 ]
-                + ([param] if dynamic else []),
+                + params,
             )
             for k in range(n_cores)
         ]
         for k in range(n_cores):
             self.x.lane(k).bind(of_ins[k].prod())
             self.y.lane(k).bind(of_outs[k].cons())
-        self.count.bind(rtps, 0)
-        if not dynamic:
-            self.vector_size.bind(rtps, 1)
+        if not dyn_count:
+            self.count.bind(rtps, static.index("count"))
+        if not dyn_vs:
+            self.vector_size.bind(rtps, static.index("vector_size"))
         return workers
 
     def reference(self, x, vector_size=None):
