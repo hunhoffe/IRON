@@ -3,16 +3,17 @@
 
 """Field specifiers and the dimension references a class body writes.
 
-A dimension is a dataclass field declared with :func:`dim`, a tuning knob one
-declared with :func:`tunable`. Naming either in a shape expression yields a
-:class:`DimRef`, which the decorator resolves against the class it lands on.
+A compile-time parameter is a dataclass field declared with :func:`param`, a
+knob the library resolves one declared with :func:`auto`. Naming either in a
+shape expression yields a :class:`DimRef`, which class creation resolves
+against the class it lands on.
 """
 
 from __future__ import annotations
 
 import dataclasses
 from dataclasses import MISSING, Field
-from typing import Any
+from typing import Any, Callable
 
 
 class Untunable(ValueError):
@@ -32,38 +33,62 @@ class DeclarationError(TypeError):
     """A class body violates the declaration rules; raised at class creation."""
 
 
-_TIER = "iron.tier"  # dataclass Field.metadata key: "dim" | "tunable"
+_TIER = "iron.tier"  # dataclass Field.metadata key: "param" | "auto"
+_CHOICES = "iron.choices"
+_LEGAL = "iron.legal"
 
 
-def dim(default: Any = MISSING, *, repr: bool = True, init: bool = True) -> Any:
-    """Declare a compile-time dimension field.
+def param(*, default: Any = MISSING, repr: bool = True, init: bool = True) -> Any:
+    """Declare a compile-time parameter: given by the caller or inferred from
+    the operands, and fixed from then on.
 
-    A ``dim()`` field may appear in a shape. On an overlay it is overlay-tier
+    A ``param()`` may appear in a shape. On an overlay it is array-tier
     (changing it rebuilds the array); on an operator it is sequence-tier
-    (changing it rebuilds the instruction stream only).
+    (changing it rebuilds the instruction stream only). ``default`` is
+    keyword-only so a checker reads it: a ``param()`` without one is a
+    required constructor argument.
     """
-    return _specifier("dim", default, repr, init)
+    return _specifier("param", default, repr, init)
 
 
-def tunable(default: Any = MISSING, *, repr: bool = True, init: bool = True) -> Any:
-    """Declare a tuning knob: a field :meth:`Overlay.tuning` may set.
+def auto(
+    default: Any = None,
+    /,
+    *,
+    choices: tuple | None = None,
+    legal: Callable[..., bool] | None = None,
+    repr: bool = True,
+    init: bool = True,
+) -> Any:
+    """Declare a knob the library resolves for the device when the caller
+    does not: a compile-time value that starts at ``default`` (``None``:
+    tuning must fill it) and that :meth:`Overlay.tuning` may replace.
 
-    A tunable never appears in a shape. ``None`` as the default means "tuning
-    fills it from the device". ``init=False`` fixes a subclass's value of an
-    inherited field (a kernel that only works with one channel per column).
+    An ``auto()`` never appears in a host shape (inference would cycle
+    through tuning); a stream tile may name one. ``choices`` and ``legal``
+    describe the knob for a tuner and are recorded, not yet read.
+    ``init=False`` fixes a subclass's value of an inherited knob (a kernel
+    that only works with one channel per column).
     """
-    return _specifier("tunable", default, repr, init)
+    return _specifier("auto", default, repr, init, choices=choices, legal=legal)
 
 
-def _specifier(tier: str, default: Any, repr_: bool, init: bool = True) -> Field:
-    kwargs: dict[str, Any] = {"metadata": {_TIER: tier}, "repr": repr_, "init": init}
+def _specifier(
+    tier: str, default: Any, repr_: bool, init: bool = True, **extra: Any
+) -> Field:
+    metadata: dict[str, Any] = {_TIER: tier}
+    if extra.get("choices") is not None:
+        metadata[_CHOICES] = tuple(extra["choices"])
+    if extra.get("legal") is not None:
+        metadata[_LEGAL] = extra["legal"]
+    kwargs: dict[str, Any] = {"metadata": metadata, "repr": repr_, "init": init}
     if default is not MISSING:
         kwargs["default"] = default
     else:
         # Keyword-only, so a field with no default may follow one with a
         # default -- which is what a subclass does when it pins an inherited
-        # tunable to a shape-bearing dimension of its own. Every declared
-        # field is passed by keyword anyway; only ``ov`` is positional.
+        # knob to a shape-bearing parameter of its own. Every declared field
+        # is passed by keyword anyway; only ``ov`` is positional.
         kwargs["kw_only"] = True
     return dataclasses.field(**kwargs)
 
@@ -78,7 +103,7 @@ def _tier_of(f: Field) -> str | None:
 
 
 class DimRef:
-    """A reference to a ``dim()`` field of a declared class.
+    """A reference to a ``param()`` or ``auto()`` field of a declared class.
 
     As a class is created, each field is re-attached to the
     class as a ``DimRef``, so ``GEMVOverlay.K`` names the dimension from

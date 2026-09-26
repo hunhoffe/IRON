@@ -17,9 +17,9 @@ from iron.common.declare import (
     Overlay,
     StreamIn,
     StreamOut,
-    dim,
+    param,
     optional,
-    tunable,
+    auto,
 )
 from iron.common.tiling import Access
 from iron.common.tiling import DMA_BD_MAX_WRAP
@@ -41,12 +41,12 @@ class GEMVOverlay(Overlay):
     - tile_size_output: rows of C stored on each core per acquire (chunk size of C)
     """
 
-    K: int = dim()
-    num_aie_columns: int = tunable(1)
-    tile_size_input: int = tunable(2)
-    tile_size_output: int | None = tunable(None)
+    K: int = param()
+    num_aie_columns: int = auto(1)
+    tile_size_input: int = auto(2)
+    tile_size_output: int | None = auto()
     # None picks the widest legal size for K (see validate).
-    kernel_vector_size: int | None = tunable(None, repr=False)
+    kernel_vector_size: int | None = auto(repr=False)
     # Optional fused activation applied to each output tile in the producing core.
     # "none" (default) leaves the output unchanged; "gelu" applies GELU(tanh approx).
     # repr=False keeps operator/artifact names stable for the default path.
@@ -249,8 +249,8 @@ class GEMVOverlay(Overlay):
 class GEMV(Operator[GEMVOverlay]):
     """AIE-accelerated General Matrix-Vector/Vector-Matrix Multiplication layer"""
 
-    M: int = dim()
-    num_batches: int = dim(1)
+    M: int = param()
+    num_batches: int = param(default=1)
 
     # A single batch carries no batch dimension at all, rather than one of
     # extent 1, so the unbatched shapes stay exactly as they were.

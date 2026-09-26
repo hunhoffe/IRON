@@ -37,9 +37,9 @@ from iron.common.declare import (
     StreamIn,
     StreamOut,
     Untunable,
-    dim,
+    param,
     select,
-    tunable,
+    auto,
 )
 from iron.common.kernels import lut_sources
 from iron.common.tiling import Access
@@ -113,12 +113,12 @@ class FLMGEMMOverlay(Overlay):
 
     # n tile width. 64 halves the mmul's accumulator traffic per mac; 128
     # halves A fetches instead. See README.md.
-    tile_n: int | None = tunable(None)
+    tile_n: int | None = auto()
     # A-tile rows, decoupled from the accumulator's M_TILE (asymmetric tile
     # buffering). None resolves to whatever L1 affords.
-    tile_ma: int | None = tunable(None)
+    tile_ma: int | None = auto()
     # Row-blocks folded into one B fetch. None resolves from tile_n.
-    m_chunk: int | None = tunable(None)
+    m_chunk: int | None = auto()
     # The activations the epilogue can select between at run time. Each one
     # compiled in costs program memory, so a deployment that dispatches two
     # should compile two.
@@ -126,17 +126,17 @@ class FLMGEMMOverlay(Overlay):
     # Rounding for every f32->bf16 conversion; see Rounding in design.py.
     rounding: Rounding = Rounding.CONV_EVEN
     # Filled by tuning, from the device: the grid, B's storage, the L2 tiles.
-    rows: int | None = tunable(None, repr=False)
-    cols: int | None = tunable(None, repr=False)
-    bfp16_b: bool | None = tunable(None, repr=False)
+    rows: int | None = auto(repr=False)
+    cols: int | None = auto(repr=False)
+    bfp16_b: bool | None = auto(repr=False)
     # B's element type, on the array and in DDR alike; the host holds a
     # block-float B as bytes (BoundBuffer.host_dtype).
-    b_dtype: object = tunable(None, repr=False)
-    l1_b_depth: int | None = tunable(None, repr=False)
-    shim_bds: int | None = tunable(None, repr=False)
-    a_l2: int | None = tunable(None, repr=False)
-    b_l2: int | None = tunable(None, repr=False)
-    c_l2: int | None = tunable(None, repr=False)
+    b_dtype: object = auto(repr=False)
+    l1_b_depth: int | None = auto(repr=False)
+    shim_bds: int | None = auto(repr=False)
+    a_l2: int | None = auto(repr=False)
+    b_l2: int | None = auto(repr=False)
+    c_l2: int | None = auto(repr=False)
 
     # The k order pack_B writes within a block: the port's kernel's, or the
     # shipped binary's own (see shipped.py).
@@ -592,16 +592,16 @@ class GEMM(Operator[FLMGEMMOverlay]):
     shape on one configuration shares an xclbin.
     """
 
-    M: int = dim()
-    K: int = dim()
-    N: int = dim()
+    M: int = param()
+    K: int = param()
+    N: int = param()
     # Activation fused into the C drain, selected at run time from the
     # overlay's compiled-in modes.
     epilogue: Epilogue = Epilogue.NONE
     # Optional (min, max) applied after the activation.
     clamp: tuple | None = None
     # B's packed block count on AIE2P; filled by validate() from K and N.
-    packed_blocks: int | None = dim(None, repr=False)
+    packed_blocks: int | None = param(default=None, repr=False)
 
     A = In(M, K, to=FLMGEMMOverlay.a)
     # On AIE2P B is quantized to bfp16ebs8, so it is declared as a count of

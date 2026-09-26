@@ -22,9 +22,9 @@ from iron.common.declare import (
     Resident,
     StreamIn,
     StreamOut,
-    dim,
+    auto,
     optional,
-    tunable,
+    param,
 )
 from iron.common.design import Sequence, transfers
 from iron.common.tiling import Access
@@ -63,9 +63,9 @@ class FakeDev:
 
 
 class UnaryOverlay(Overlay):
-    tile: int = tunable(1024)
-    cols: int = tunable(None)
-    chans: int = tunable(2)
+    tile: int = auto(1024)
+    cols: int = auto()
+    chans: int = auto(2)
 
     x = StreamIn(tile, per=(cols, chans))
     y = StreamOut(tile, per=(cols, chans))
@@ -77,23 +77,23 @@ class UnaryOverlay(Overlay):
 
 
 class Unary(Operator[UnaryOverlay]):
-    size: int = dim()
+    size: int = param()
     A = In(size, to=UnaryOverlay.x)
     B = Out(size, from_=UnaryOverlay.y)
 
 
 class MVOverlay(Overlay):
-    K: int = dim()
-    cols: int = tunable(2)
-    tile_out: int = tunable(64)
+    K: int = param()
+    cols: int = auto(2)
+    tile_out: int = auto(64)
     a = StreamIn(tile_out, K, per=cols)
     b = StreamIn(K, broadcast=True)
     c = StreamOut(tile_out, per=cols)
 
 
 class MV(Operator[MVOverlay]):
-    M: int = dim()
-    num_batches: int = dim(1)
+    M: int = param()
+    num_batches: int = param(default=1)
     A = In(optional(num_batches), M, MVOverlay.K, to=MVOverlay.a)
     B = In(optional(num_batches), MVOverlay.K, to=MVOverlay.b)
     C = Out(optional(num_batches), M, from_=MVOverlay.c)
@@ -149,7 +149,7 @@ def test_derived_sequence_issues_fills_then_waited_drains():
 
 def test_derived_sequence_names_a_buffer_without_a_stream():
     class NoStream(Operator[MVOverlay]):
-        M: int = dim()
+        M: int = param()
         A = In(M, MVOverlay.K)
         C = Out(M, from_=MVOverlay.c)
 
@@ -163,7 +163,7 @@ def test_derived_sequence_names_a_buffer_without_a_stream():
 
 def test_override_slices_and_issues_through_the_same_sequence():
     class Custom(Operator[MVOverlay]):
-        M: int = dim()
+        M: int = param()
         A = In(M, MVOverlay.K, to=MVOverlay.a)
         B = In(MVOverlay.K, to=MVOverlay.b)
         C = Out(M, from_=MVOverlay.c)
@@ -193,12 +193,12 @@ def test_override_slices_and_issues_through_the_same_sequence():
 
 def test_preamble_writes_residents_and_rejects_missing_ones():
     class Counted(Overlay):
-        tile: int = tunable(64)
+        tile: int = auto(64)
         count = Resident(np.int32)
         s = StreamIn(tile)
 
     class Op(Operator[Counted]):
-        n: int = dim()
+        n: int = param()
         A = In(n, to=Counted.s)
 
         def residents(self):
@@ -220,7 +220,7 @@ def test_preamble_writes_residents_and_rejects_missing_ones():
     assert rtps == [{0: 10}, {0: 10}]
 
     class Forgetful(Operator[Counted]):
-        n: int = dim()
+        n: int = param()
         A = In(n, to=Counted.s)
 
     with pytest.raises(ValueError, match="does not supply it"):

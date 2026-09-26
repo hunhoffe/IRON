@@ -17,8 +17,8 @@ from iron.common.declare import (
     Resident,
     StreamIn,
     StreamOut,
-    dim,
-    tunable,
+    param,
+    auto,
 )
 from iron.common.testing import Case, Testing, device_columns
 
@@ -35,8 +35,8 @@ class RoPEOverlay(Overlay):
     - method_type: 0 = two-halves (HF), 1 = interleaved/Llama
     """
 
-    cols: int = dim()
-    num_aie_columns: int = tunable(1)
+    cols: int = param()
+    num_aie_columns: int = auto(1)
     method_type: int = 0
 
     x = StreamIn(1, cols, per=num_aie_columns)
@@ -145,8 +145,8 @@ class RoPE(Operator[RoPEOverlay]):
 
     test = Testing(_cases, tolerance=Tolerance.relative(0.05), draw=_angles)
 
-    rows: int = dim()
-    angle_rows: int | None = dim(None)
+    rows: int = param()
+    angle_rows: int | None = param(default=None)
 
     x = In(rows, RoPEOverlay.cols, to=RoPEOverlay.x)
     angles = In(angle_rows, RoPEOverlay.cols, to=RoPEOverlay.lut)

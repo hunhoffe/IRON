@@ -16,8 +16,8 @@ from iron.common.declare import (
     Overlay,
     StreamIn,
     StreamOut,
-    dim,
-    tunable,
+    param,
+    auto,
 )
 from iron.common.tiling import Access, granule_elements
 from iron.common.testing import Case, Testing
@@ -32,8 +32,8 @@ class RepeatOverlay(Overlay):
     the pass-through and is therefore overlay-tier.
     """
 
-    cols: int = dim()
-    transfer_size: int | None = tunable(None, repr=False)
+    cols: int = param()
+    transfer_size: int | None = auto(repr=False)
     dtype: object = field(default=bfloat16, repr=False)
 
     s = StreamIn(transfer_size, dtype=dtype)
@@ -80,10 +80,10 @@ class Repeat(Operator[RepeatOverlay]):
         tolerance=Tolerance.exact(),
     )
 
-    rows: int = dim()
-    repeat: int = dim()
+    rows: int = param()
+    repeat: int = param()
     # rows * repeat; derived unless given, since a shape may not be an expression.
-    out_rows: int | None = dim(None, repr=False)
+    out_rows: int | None = param(default=None, repr=False)
 
     x = In(rows, RepeatOverlay.cols, dtype=RepeatOverlay.dtype, to=RepeatOverlay.s)
     y = Out(

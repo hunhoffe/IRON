@@ -15,8 +15,8 @@ from iron.common.declare import (
     Operator,
     Out,
     StreamIn,
-    dim,
-    tunable,
+    param,
+    auto,
 )
 import aie.utils as aie_utils
 from aie.iron.kernels import eltwise, norm
@@ -73,10 +73,10 @@ class RMSNormOverlay(ChanneledUnaryOverlay):
     the template declares.
     """
 
-    tile_size: int = dim()
+    tile_size: int = param()
     # One core by default: a core normalizes whole rows, and how many rows
     # there are is the extent. Call sites with many rows spread them.
-    num_aie_columns: int = tunable(1)
+    num_aie_columns: int = auto(1)
     epsilon: float = 1e-5  # RMSNorm eps; Llama 1e-5 (default), Gemma 1e-6
 
     tile_cap: ClassVar[int] = 8192
@@ -208,7 +208,7 @@ class RMSNorm(Operator[RMSNormOverlay]):
 
     test = Testing(_cases(weighted=False), tolerance=Tolerance.relative(0.04, 1e-6))
 
-    rows: int = dim()
+    rows: int = param()
 
     x = In(rows, RMSNormOverlay.tile_size, to=RMSNormOverlay.x)
     y = Out(rows, RMSNormOverlay.tile_size, from_=RMSNormOverlay.y)

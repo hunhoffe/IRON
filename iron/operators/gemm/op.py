@@ -20,9 +20,9 @@ from iron.common.declare import (
     StreamIn,
     StreamOut,
     Untunable,
-    dim,
+    param,
     select,
-    tunable,
+    auto,
 )
 
 
@@ -49,10 +49,10 @@ class GEMMOverlay(Overlay):
     residents the sequence writes.
     """
 
-    tile_m: int = tunable(64)
-    tile_k: int = tunable(64)
-    tile_n: int = tunable(64)
-    num_aie_columns: int = tunable(8)
+    tile_m: int = auto(64)
+    tile_k: int = auto(64)
+    tile_n: int = auto(64)
+    num_aie_columns: int = auto(8)
     b_col_maj: bool = False
     c_col_maj: bool = False
     emulate_bf16_mmul_with_bfp16: bool = field(default=True, repr=False)
@@ -62,10 +62,10 @@ class GEMMOverlay(Overlay):
     dtype_out: object = field(default=bfloat16, repr=False)
     use_scalar: bool = field(default=False, repr=False)
     # Filled by tuning: the L2 tile of each stream and how many shims carry A.
-    n_shim_mem_a: int | None = tunable(None, repr=False)
-    a_l2: int | None = tunable(None, repr=False)
-    b_l2: int | None = tunable(None, repr=False)
-    c_l2: int | None = tunable(None, repr=False)
+    n_shim_mem_a: int | None = auto(repr=False)
+    a_l2: int | None = auto(repr=False)
+    b_l2: int | None = auto(repr=False)
+    c_l2: int | None = auto(repr=False)
 
     a = StreamIn(a_l2, dtype=dtype_in, per=n_shim_mem_a)
     b = StreamIn(b_l2, dtype=dtype_in, per=num_aie_columns)
@@ -443,9 +443,9 @@ class GEMMOverlay(Overlay):
 class GEMM(Operator[GEMMOverlay]):
     """AIE-accelerated General Matrix Multiplication (GEMM) layer"""
 
-    M: int = dim()
-    K: int = dim()
-    N: int = dim()
+    M: int = param()
+    K: int = param()
+    N: int = param()
     # A @ B = C, with either operand optionally stored column-major. The
     # layout flags transpose a declared shape rather than resize it.
     A = In(M, K, dtype=GEMMOverlay.dtype_in, to=GEMMOverlay.a)

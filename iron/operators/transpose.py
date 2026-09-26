@@ -20,9 +20,9 @@ from iron.common.declare import (
     StreamIn,
     StreamOut,
     Untunable,
-    dim,
+    param,
     optional,
-    tunable,
+    auto,
 )
 from iron.common.testing import Case, Testing, device_columns
 from iron.common.tiling import Access
@@ -37,11 +37,11 @@ class TransposeOverlay(Overlay):
     """
 
     # Defaults: 64 x 64 tiles of 8 x 8 sub-tiles, every column, one channel.
-    m: int = tunable(64)
-    n: int = tunable(64)
-    s: int = tunable(8)
-    num_aie_columns: int | None = tunable(None)
-    num_channels: int = tunable(1)
+    m: int = auto(64)
+    n: int = auto(64)
+    s: int = auto(8)
+    num_aie_columns: int | None = auto()
+    num_channels: int = auto(1)
 
     x = StreamIn(m, n, per=(num_aie_columns, num_channels))
     y = StreamOut(m, n, per=(num_aie_columns, num_channels))
@@ -214,9 +214,9 @@ class Transpose(Operator[TransposeOverlay]):
     # of wrong permutation, so gate it exactly.
     test = Testing(_cases, tolerance=Tolerance.exact())
 
-    M: int = dim()
-    N: int = dim()
-    num_batches: int = dim(1)
+    M: int = param()
+    N: int = param()
+    num_batches: int = param(default=1)
 
     x = In(optional(num_batches), M, N, to=TransposeOverlay.x)
     y = Out(optional(num_batches), N, M, from_=TransposeOverlay.y)

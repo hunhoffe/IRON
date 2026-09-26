@@ -123,10 +123,10 @@ share a device is **unverified** (O5) and is not counted until it is.
 class GEMVOverlay(Overlay):
     """Array configuration for C = A @ B. Row-blocks of A per column, B broadcast."""
 
-    K: int = dim()                       # baked into the kernel: -DDIM_K
-    cols: int = tunable(None)               # None: tuning fills it from the device
-    tile_out: int = tunable(64)             # rows of C one core produces per acquire
-    vec: int = tunable(None)                # kernel vector width
+    K: int = param()                       # baked into the kernel: -DDIM_K
+    cols: int = auto()               # None: tuning fills it from the device
+    tile_out: int = auto(64)             # rows of C one core produces per acquire
+    vec: int = auto()                # kernel vector width
 
     a = StreamIn(tile_out, K, per_column=True)
     b = StreamIn(K, broadcast=True)
@@ -166,7 +166,7 @@ def _core(of_a, of_b, of_c, matvec, K, tile_out):
         of_c.release(1); of_a.release(1); of_b.release(1)
 ```
 
-**`dim()` and `tunable()`** return dataclass field specifiers. Pyright sees
+**`param()` and `auto()`** return dataclass field specifiers. Pyright sees
 `K: int` as a required constructor argument and `cols: int` as optional. In the
 class body the name `K` is bound to the specifier, so the stream declarations
 below it use the bare name. As the class is built, its base re-attaches
@@ -211,8 +211,8 @@ hashing. Two overlays with equal keys are one build.
 class GEMV(Operator[GEMVOverlay]):
     """C = A @ B, optionally batched."""
 
-    M: int = dim()
-    num_batches: int = dim(1)
+    M: int = param()
+    num_batches: int = param(default=1)
 
     A = In(num_batches, M, GEMVOverlay.K, to=GEMVOverlay.a)
     B = In(num_batches, GEMVOverlay.K,    to=GEMVOverlay.b)
@@ -293,7 +293,7 @@ Two markers, author-named, declared in the class body beside the buffers:
 
 ```python
 class StridedCopy(Operator[CopyOverlay]):
-    n: int = dim()
+    n: int = param()
     src = In(n, to=CopyOverlay.s)
     dst = Out(MAX, from_=CopyOverlay.d)
 
@@ -321,11 +321,11 @@ call sites is explicit sharing. Binding different handles to one instance is
 an error.
 
 **Shapes never reference a per-call value**, a `tunable`, or anything but a
-`dim()` or an integer. A per-dispatch extent is a `DispatchTime` member next
+`param()` or an integer. A per-dispatch extent is a `DispatchTime` member next
 to a buffer declared at its maximum:
 
 ```python
-    max_rows: int = dim()
+    max_rows: int = param()
     x = In(max_rows, tile, to=...)
     n_rows = DispatchTime(np.int32)         # how much of x is live on this call
 ```
@@ -371,7 +371,7 @@ error.
 
 ## 7. The shape rule, and inference
 
-**A shape dimension is a `dim()` field or an integer literal.** A conditional
+**A shape dimension is a `param()` field or an integer literal.** A conditional
 may only test a field that has a default or is passed explicitly, never one
 being inferred. GEMM's layout flags are the only conditional in the tree:
 
@@ -381,7 +381,7 @@ being inferred. GEMM's layout flags are the only conditional in the tree:
 
 An operator whose host shape is genuinely an expression of its fields
 re-expresses itself with the expression's result as the field. RMSNorm's
-`(size // tile_size, tile_size)` becomes `rows: int = dim()` with `size`
+`(size // tile_size, tile_size)` becomes `rows: int = param()` with `size`
 derived. That is priority 9's un-flattening, and it is a constructor change
 for every such operator, listed in §14.
 
@@ -567,9 +567,9 @@ does. Its config-versus-shape split is what §3 was modelled on:
 
 ```python
 class FLMGEMMOverlay(Overlay):
-    K: int = dim()
-    N: int = dim()
-    b_format: str = tunable("bfp16ebs8")
+    K: int = param()
+    N: int = param()
+    b_format: str = auto("bfp16ebs8")
 
     a = StreamIn(64, K)
     b = StreamIn(K, 64, dtype=b_format)
@@ -577,7 +577,7 @@ class FLMGEMMOverlay(Overlay):
 
 
 class FLMGEMM(Operator[FLMGEMMOverlay]):
-    M: int = dim()
+    M: int = param()
     A = In(M, FLMGEMMOverlay.K, to=FLMGEMMOverlay.a)
     B = In(FLMGEMMOverlay.K, FLMGEMMOverlay.N, dtype=FLMGEMMOverlay.b_format, to=FLMGEMMOverlay.b)
     C = Out(M, FLMGEMMOverlay.N, from_=FLMGEMMOverlay.c)
@@ -1228,7 +1228,7 @@ transposes and `Overlay.device()` its NPU1 column variants. mha's four
 per-worker RTP words are four residents bound at an index into the same
 buffers, and its `legalize_tas` hack is `tiling.legalize` through a slice.
 The snapshot test, run under the stub for the first time, caught two
-losses: SiLU's fixed single channel (`tunable(1, init=False)` now) and a
+losses: SiLU's fixed single channel (`auto(1, init=False)` now) and a
 StridedCopy case the old design would have asserted on (now a real
 gather).
 

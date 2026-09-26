@@ -79,10 +79,10 @@ def _check_dim_ref(
 ) -> None:
     """The shape rule.
 
-    A host buffer's dimension is a ``dim()`` field or an integer: never a
-    tunable (inference would cycle through tuning) and never an expression.
-    A stream's tile dimension may also be a tunable, since choosing the tile
-    is what tuning is for; inference never reads a stream.
+    A host buffer's dimension is a ``param()`` field or an integer: never an
+    ``auto()`` (inference would cycle through tuning) and never an expression.
+    A stream's tile dimension may also be an ``auto()``, since choosing the
+    tile is what tuning is for; inference never reads a stream.
     """
     if isinstance(spec, _Optional):
         _check_dim_ref(cls, member, spec.ref, what, allow_tunable=allow_tunable)
@@ -98,20 +98,20 @@ def _check_dim_ref(
     if isinstance(spec, (int, np.integer)):
         return
     if isinstance(spec, DimRef):
-        allowed = ("dim", "tunable") if allow_tunable else ("dim",)
+        allowed = ("param", "auto") if allow_tunable else ("param",)
         if spec.tier not in allowed:
             why = (
-                "a tunable; a host shape may not depend on tuning"
-                if spec.tier == "tunable"
-                else "not declared with dim()"
+                "an auto(); a host shape may not depend on tuning"
+                if spec.tier == "auto"
+                else "not declared with param()"
             )
             raise DeclarationError(
                 f"{cls.__name__}.{member.name}: {what} {spec!r} is {why}. A "
-                f"shape dimension is a dim() field or an integer literal"
+                f"shape dimension is a param() field or an integer literal"
             )
         return
     raise DeclarationError(
-        f"{cls.__name__}.{member.name}: {what} {spec!r} is not a dim() field or an "
+        f"{cls.__name__}.{member.name}: {what} {spec!r} is not a param() field or an "
         f"integer. Expressions are not allowed in shapes; declare the result as a field"
     )
 
@@ -163,12 +163,10 @@ def declare(cls: type, *, repr: bool) -> None:
             for ref in per:
                 if not isinstance(ref, DimRef) or ref.tier is None:
                     raise DeclarationError(
-                        f"{cls.__name__}.{m.name}: per={ref!r} must be a dim() or tunable() field"
+                        f"{cls.__name__}.{m.name}: per={ref!r} must be a param() or auto() field"
                     )
             m.per = per
 
     cls._members = tuple(members)  # type: ignore[attr-defined]
-    cls._dim_fields = tuple(f.name for f in fields.values() if _tier_of(f) == "dim")  # type: ignore[attr-defined]
-    cls._tunable_fields = tuple(
-        f.name for f in fields.values() if _tier_of(f) == "tunable"
-    )  # type: ignore[attr-defined]
+    cls._param_fields = tuple(f.name for f in fields.values() if _tier_of(f) == "param")  # type: ignore[attr-defined]
+    cls._auto_fields = tuple(f.name for f in fields.values() if _tier_of(f) == "auto")  # type: ignore[attr-defined]

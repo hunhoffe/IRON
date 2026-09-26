@@ -19,8 +19,8 @@ from iron.common.declare import (
     StreamIn,
     StreamOut,
     Untunable,
-    dim,
-    tunable,
+    param,
+    auto,
 )
 from iron.common.image.artifacts import Artifacts, Design, Step
 from iron.common.image.jit_compile import insts_design, xclbin_design
@@ -62,12 +62,12 @@ class FLMDequantOverlay(Overlay):
     # The n tile width the packed output is written for. It has to match the
     # tile_n flm.GEMM reads B at, or the GEMM reads the right bytes in the
     # wrong order.
-    tile_n: int | None = tunable(None)
+    tile_n: int | None = auto()
     # cols follows the device. ROWS is structural -- it is baked into the
     # split offsets and the join -- so it is not a field; halves is, because
     # a stream's replication count has to be declared to be indexed.
-    cols: int | None = tunable(None, repr=False)
-    halves: int = tunable(HALVES, repr=False)
+    cols: int | None = auto(repr=False)
+    halves: int = auto(HALVES, repr=False)
 
     # One q4nx block per core, delivered as one per-column object the cores
     # split; one packed half-tile out per (column, n-half), joined from the
@@ -168,20 +168,20 @@ class DequantBFP(Operator[FLMDequantOverlay]):
     README.md for the layout, the parameters and the constraints.
     """
 
-    K: int = dim()
-    N: int = dim()
+    K: int = param()
+    N: int = param()
     # A projection interleaved with another in the same buffer: this one
     # occupies ``run_out_features`` of every ``run_period_out_features``.
-    run_out_features: int | None = dim(None)
-    run_period_out_features: int | None = dim(None)
+    run_out_features: int | None = param(default=None)
+    run_period_out_features: int | None = param(default=None)
     # Each buffer is declared in the unit its transfers count in. The q4nx
     # input is bytes, because a block interleaves three tables at 5 bits per
     # weight and the fill walks it bytewise. The output is bfp16ebs8 blocks,
     # because that is what the drains index -- declaring it in its 9-byte
     # equivalent would make every offset and length address a ninth of what
     # it names. Filled by validate() from K, N and the interleave.
-    quantized_bytes: int | None = dim(None, repr=False)
-    packed_blocks: int | None = dim(None, repr=False)
+    quantized_bytes: int | None = param(default=None, repr=False)
+    packed_blocks: int | None = param(default=None, repr=False)
 
     qw = In(quantized_bytes, dtype=np.uint8, to=FLMDequantOverlay.qw)
     out = Out(packed_blocks, dtype=v8bfp16ebs8, from_=FLMDequantOverlay.out)

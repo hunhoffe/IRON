@@ -32,11 +32,11 @@ from iron.common.declare import (
     StreamIn,
     StreamOut,
     Untunable,
-    dim,
+    auto,
     from_spec,
     infer,
     optional,
-    tunable,
+    param,
 )
 
 
@@ -54,10 +54,10 @@ class FakeDev:
 
 
 class MVOverlay(Overlay):
-    K: int = dim()
-    num_aie_columns: int = tunable(None)
-    tile_size_output: int = tunable(64)
-    vec: int = tunable(None, repr=False)
+    K: int = param()
+    num_aie_columns: int = auto()
+    tile_size_output: int = auto(64)
+    vec: int = auto(repr=False)
 
     a = StreamIn(tile_size_output, K, per=num_aie_columns)
     b = StreamIn(K, broadcast=True)
@@ -75,8 +75,8 @@ class MVOverlay(Overlay):
 
 
 class MV(Operator[MVOverlay]):
-    M: int = dim()
-    num_batches: int = dim(1)
+    M: int = param()
+    num_batches: int = param(default=1)
 
     A = In(optional(num_batches), M, MVOverlay.K, to=MVOverlay.a)
     B = In(optional(num_batches), MVOverlay.K, to=MVOverlay.b)
@@ -98,9 +98,9 @@ class MV(Operator[MVOverlay]):
 
 def test_fields_are_reattached_as_dim_refs():
     assert isinstance(MVOverlay.K, DimRef)
-    assert MVOverlay.K.name == "K" and MVOverlay.K.tier == "dim"
+    assert MVOverlay.K.name == "K" and MVOverlay.K.tier == "param"
     assert isinstance(MVOverlay.tile_size_output, DimRef)
-    assert MVOverlay.tile_size_output.tier == "tunable"
+    assert MVOverlay.tile_size_output.tier == "auto"
     assert isinstance(MV.M, DimRef) and MV.M.owner is MV
 
 
@@ -134,7 +134,7 @@ def test_tunable_in_a_buffer_shape_is_rejected():
     with pytest.raises(DeclarationError, match="host shape may not depend on tuning"):
 
         class Bad(Operator[MVOverlay]):
-            M: int = dim()
+            M: int = param()
             A = In(M, MVOverlay.tile_size_output, to=MVOverlay.a)
 
 
@@ -145,7 +145,7 @@ def test_tunable_in_a_stream_tile_is_allowed():
 def test_plain_defaulted_field_in_a_shape_is_its_literal():
     # A plain field with a default is bound to that default in the class
     # body, so a shape written against it captures the literal, not the
-    # field. This is why anything a shape names must be declared with dim().
+    # field. This is why anything a shape names must be declared with param().
     class Plain(Overlay):
         n: int = 4
         s = StreamIn(n)
@@ -159,10 +159,10 @@ def test_plain_field_reference_from_outside_is_rejected():
         n: int = 4
         s = StreamIn(4)
 
-    with pytest.raises(DeclarationError, match="not declared with dim"):
+    with pytest.raises(DeclarationError, match="not declared with param"):
 
         class Bad(Operator[Plain]):
-            M: int = dim()
+            M: int = param()
             A = In(M, Plain.n, to=Plain.s)
 
 
@@ -170,7 +170,7 @@ def test_expression_in_a_shape_is_rejected():
     with pytest.raises(DeclarationError, match="Expressions are not allowed"):
 
         class Bad(Overlay):
-            n: int = dim()
+            n: int = param()
             s = StreamIn("n // 2")
 
 
@@ -178,7 +178,7 @@ def test_annotated_member_is_rejected():
     with pytest.raises(DeclarationError, match="without an annotation"):
 
         class Bad(Operator[MVOverlay]):
-            M: int = dim()
+            M: int = param()
             A: In = In(M, to=MVOverlay.a)
 
 
@@ -188,7 +188,7 @@ def test_buffers_on_an_overlay_are_rejected():
     ):
 
         class Bad(Overlay):
-            n: int = dim()
+            n: int = param()
             x = In(n)
 
 
@@ -196,19 +196,19 @@ def test_streams_on_an_operator_are_rejected():
     with pytest.raises(DeclarationError, match="streams and residents belong"):
 
         class Bad(Operator[MVOverlay]):
-            n: int = dim()
+            n: int = param()
             s = StreamIn(n)
 
 
 def test_stream_of_another_overlay_is_rejected():
     class Other(Overlay):
-        n: int = dim()
+        n: int = param()
         s = StreamIn(n)
 
     with pytest.raises(DeclarationError, match="belongs to Other"):
 
         class Bad(Operator[MVOverlay]):
-            M: int = dim()
+            M: int = param()
             A = In(M, to=Other.s)
 
 
@@ -216,7 +216,7 @@ def test_wrong_stream_direction_is_rejected():
     with pytest.raises(DeclarationError, match="to= must be a StreamIn"):
 
         class Bad(Operator[MVOverlay]):
-            M: int = dim()
+            M: int = param()
             A = In(M, to=MVOverlay.c)
 
 
@@ -311,7 +311,7 @@ def test_stream_binding_slots():
 
 def test_per_call_values_bind_on_the_operator():
     class Copy(Operator[MVOverlay]):
-        n: int = dim()
+        n: int = param()
         src = In(n, to=MVOverlay.b)
         off = Scratchpad(np.int32)
         live = DispatchTime(np.int32)
@@ -340,8 +340,8 @@ def test_untunable_is_raised_not_defaulted():
 
 def test_tuning_that_leaves_a_tunable_unset_is_an_error():
     class Lazy(Overlay):
-        n: int = dim()
-        t: int = tunable(None)
+        n: int = param()
+        t: int = auto()
         s = StreamIn(n)
 
     with pytest.raises(Untunable, match=r"left \['t'\] unset"):
@@ -354,7 +354,7 @@ def test_for_extent_is_a_distinct_specialised_overlay():
     assert spec.specialised and not base.specialised
     assert spec != base and hash(spec) != hash(base)
     assert MVOverlay(K=256).tuned(FakeDev()) == base  # equal by design_key
-    with pytest.raises(TypeError, match="non-tunable"):
+    with pytest.raises(TypeError, match="non-auto"):
         base.for_extent(K=128)
 
 
@@ -409,7 +409,7 @@ def test_classic_construction_splits_overlay_fields():
 
 def test_wrong_overlay_type_is_rejected():
     class Other(Overlay):
-        n: int = dim()
+        n: int = param()
         s = StreamIn(n)
 
     with pytest.raises(TypeError, match="declared against MVOverlay"):
@@ -418,12 +418,12 @@ def test_wrong_overlay_type_is_rejected():
 
 def test_inout_and_shim_pins_declare():
     class Pinned(Overlay):
-        n: int = dim()
+        n: int = param()
         s = StreamIn(n, via=Shim(col=1, channel=0))
         d = StreamOut(n, via=[Shim(col=c, channel=0) for c in range(2)], per=n)
 
     class Inplace(Operator[Pinned]):
-        n: int = dim()
+        n: int = param()
         x = InOut(n, to=Pinned.s, from_=Pinned.d)
 
     ov = Pinned(n=2)

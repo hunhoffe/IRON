@@ -125,9 +125,9 @@ def infer_kwargs(cls, kwargs) -> dict[str, Any]:
     """The part of ``kwargs`` that :func:`infer` takes: both layers' dimension
     fields and the flags that select a buffer's shape.
     """
-    names = set(cls._dim_fields)
+    names = set(cls._param_fields)
     if cls._overlay_class:
-        names.update(cls._overlay_class._dim_fields)
+        names.update(cls._overlay_class._param_fields)
     for m in cls._members:
         if isinstance(m, _Buffer):
             names.update(d.flag.name for d in m.dims if isinstance(d, _Select))

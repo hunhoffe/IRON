@@ -26,7 +26,7 @@ from aie.utils.verify import Tolerance
 
 from .bound import BoundResident, BoundStream, BoundValue
 from .creation import declare
-from .field import DeclarationError, Untunable
+from .field import DeclarationError, Untunable, param
 from .member import DispatchTime, Resident, Xclbin, _Buffer, _Member, _Stream, _Value
 from .naming import label_parts
 
@@ -50,27 +50,26 @@ def get_shim_dma_limit(dev) -> int:
     )
 
 
-# ``field_specifiers`` is empty on purpose: pyright reads a specifier's default
-# only from a ``default=`` keyword, and ``dim(1)``/``tunable(1)`` pass it
-# positionally, so listing them would make every defaulted field look required.
-# Unlisted, a checker sees each ``dim()``/``tunable()`` as a field with a default
-# of type Any: a call passing an unknown field is still an error; a missing
-# extent is not.
-@dataclass_transform()
+# ``param`` is a field specifier, so a checker sees a ``param()`` without a
+# ``default=`` as a required constructor argument. ``auto`` is not listed: it
+# always has a default, but pyright reads a specifier's default only from a
+# ``default=`` keyword, and ``auto(2)`` gives it positionally; unlisted, an
+# ``auto()`` field is one with a default of type Any, which is what it is.
+@dataclass_transform(field_specifiers=(param,))
 @dataclasses.dataclass(eq=False)
 class Overlay:
     """What configures the array. Subclass it.
 
-    Declare ``dim()`` and ``tunable()`` fields, streams, and residents in the
-    class body; implement :meth:`tuning` to fill tunables from the device and
+    Declare ``param()`` and ``auto()`` fields, streams, and residents in the
+    class body; implement :meth:`tuning` to fill the knobs from the device and
     :meth:`design` to build the array and bind each stream to a fifo's shim
     end. See the module docstring for the shape. Every subclass is a
     dataclass and is checked as its body finishes (:mod:`.creation`).
     """
 
     _members: ClassVar[tuple[_Member, ...]] = ()
-    _dim_fields: ClassVar[tuple[str, ...]] = ()
-    _tunable_fields: ClassVar[tuple[str, ...]] = ()
+    _param_fields: ClassVar[tuple[str, ...]] = ()
+    _auto_fields: ClassVar[tuple[str, ...]] = ()
     _external: ClassVar[Xclbin | None] = None
 
     def __init_subclass__(cls, **kwargs) -> None:
@@ -244,7 +243,7 @@ class Overlay:
                 f"{type(self).__name__}.tuning() must return a {type(self).__name__}, "
                 f"got {type(new).__name__}"
             )
-        missing = [n for n in self._tunable_fields if getattr(new, n) is None]
+        missing = [n for n in self._auto_fields if getattr(new, n) is None]
         if missing:
             raise Untunable(
                 f"{type(self).__name__}.tuning() left {missing} unset for {dev}"
@@ -257,9 +256,9 @@ class Overlay:
 
     def for_extent(self, **overrides) -> Self:
         """A specialised copy: tunables set for one extent, at the cost of sharing."""
-        bad = [k for k in overrides if k not in self._tunable_fields]
+        bad = [k for k in overrides if k not in self._auto_fields]
         if bad:
-            raise TypeError(f"for_extent() sets non-tunable fields {bad}")
+            raise TypeError(f"for_extent() sets non-auto fields {bad}")
         new = dataclasses.replace(self, **overrides)
         new._specialised = {**self._specialised, **overrides}
         new._tuned = self._tuned

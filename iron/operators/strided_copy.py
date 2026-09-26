@@ -16,8 +16,8 @@ from iron.common.declare import (
     Scratchpad,
     StreamIn,
     StreamOut,
-    dim,
-    tunable,
+    param,
+    auto,
 )
 from iron.common.testing import Case, Testing
 from iron.common.tiling import legalize
@@ -34,8 +34,8 @@ class StridedCopyOverlay(Overlay):
     """
 
     # Derived from input_sizes by the constructor (per-channel share).
-    transfer_size: int | None = tunable(None)
-    num_aie_channels: int = tunable(1)
+    transfer_size: int | None = auto()
+    num_aie_channels: int = auto(1)
     dtype: object = field(default=bfloat16, repr=False)
 
     s = StreamIn(transfer_size, dtype=dtype, per=num_aie_channels, depth=1)
@@ -128,8 +128,8 @@ class StridedCopy(Operator[StridedCopyOverlay]):
         tolerance=Tolerance.exact(),
     )
 
-    input_buffer_size: int = dim(repr=False)
-    output_buffer_size: int = dim(repr=False)
+    input_buffer_size: int = param(repr=False)
+    output_buffer_size: int = param(repr=False)
     input_sizes: tuple = ()
     input_strides: tuple = ()
     input_offset: int = 0

@@ -23,7 +23,7 @@ from ..kernels import kernels_dir
 from ..testing import Testing
 from .bound import BoundBuffer, BoundValue
 from .creation import declare
-from .field import DeclarationError, DimRef, _Optional
+from .field import DeclarationError, DimRef, _Optional, param
 from .infer import infer, infer_kwargs
 from .member import Resident, _Buffer, _Member, _Stream, _Value
 from .naming import label_parts
@@ -60,12 +60,12 @@ def _overlay_class_of(cls: type) -> type | None:
     return None
 
 
-@dataclass_transform()  # no field_specifiers, for the reason given on Overlay
+@dataclass_transform(field_specifiers=(param,))  # auto unlisted: see Overlay
 @dataclasses.dataclass(eq=False, repr=True)
 class Operator(Generic[OV], metaclass=_OperatorMeta):
     """A host ABI declared against an overlay. Subclass it.
 
-    Declare ``dim()`` fields and buffers (``In``/``Out``/``InOut`` naming their
+    Declare ``param()`` fields and buffers (``In``/``Out``/``InOut`` naming their
     streams) in the class body. Implement :meth:`reference`; optionally
     :meth:`compatible` and :meth:`design` (an override for a sequence the
     library cannot derive). Every subclass is a dataclass and is checked as
@@ -75,8 +75,8 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
     ov: OV
 
     _members: ClassVar[tuple[_Member, ...]] = ()
-    _dim_fields: ClassVar[tuple[str, ...]] = ()
-    _tunable_fields: ClassVar[tuple[str, ...]] = ()
+    _param_fields: ClassVar[tuple[str, ...]] = ()
+    _auto_fields: ClassVar[tuple[str, ...]] = ()
     _overlay_class: ClassVar[type | None] = None
     # The cases iron/operators/test.py runs this operator at; None for an
     # operator tested by its own test.py, or not on its own.

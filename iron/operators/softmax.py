@@ -19,8 +19,8 @@ from iron.common.declare import (
     Scratchpad,
     StreamIn,
     StreamOut,
-    dim,
-    tunable,
+    param,
+    auto,
 )
 from iron.common.testing import Case, Testing, device_columns
 
@@ -33,9 +33,9 @@ class SoftmaxOverlay(Overlay):
     (``rtp_vector_size``, default the full row).
     """
 
-    cols: int = dim()
-    num_aie_columns: int = tunable(1)
-    num_channels: int = tunable(1)
+    cols: int = param()
+    num_aie_columns: int = auto(1)
+    num_channels: int = auto(1)
     rtp_vector_size: int | None = None
 
     x = StreamIn(cols, per=(num_aie_columns, num_channels))
@@ -163,7 +163,7 @@ class Softmax(Operator[SoftmaxOverlay]):
 
     test = Testing(_cases, tolerance=Tolerance.relative(0.04, 1e-6))
 
-    rows: int = dim()
+    rows: int = param()
 
     x = In(rows, SoftmaxOverlay.cols, to=SoftmaxOverlay.x)
     y = Out(rows, SoftmaxOverlay.cols, from_=SoftmaxOverlay.y)

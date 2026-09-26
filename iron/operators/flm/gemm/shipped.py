@@ -41,7 +41,7 @@ from iron.common.declare import (
     StreamOut,
     Untunable,
     Xclbin,
-    tunable,
+    auto,
 )
 from iron.common.tiling import Access
 from iron.common.external import External
@@ -89,18 +89,18 @@ class Shipped(External, FLMGEMMOverlay):
 
     # The port's tunables, fixed by the binary. B is bf16 (no bfp16 on this
     # image), one row-block per B fetch, and the whole of K in one slice.
-    tile_n: int = tunable(N_TILE, repr=False)
-    tile_ma: int = tunable(M_TILE, repr=False)
-    m_chunk: int = tunable(1, repr=False)
-    rows: int = tunable(ROWS, repr=False)
-    cols: int = tunable(COLS, repr=False)
-    bfp16_b: bool = tunable(False, repr=False)
-    b_dtype: object = tunable(bfloat16, repr=False)
-    l1_b_depth: int = tunable(QUEUE_DEPTH, repr=False)
-    shim_bds: int = tunable(16, repr=False)
-    a_l2: int = tunable(M_TILE * K_TILE, repr=False)
-    b_l2: int = tunable(K_TILE * N_TILE, repr=False)
-    c_l2: int = tunable(ROWS * M_TILE * N_TILE, repr=False)
+    tile_n: int = auto(N_TILE, repr=False)
+    tile_ma: int = auto(M_TILE, repr=False)
+    m_chunk: int = auto(1, repr=False)
+    rows: int = auto(ROWS, repr=False)
+    cols: int = auto(COLS, repr=False)
+    bfp16_b: bool = auto(False, repr=False)
+    b_dtype: object = auto(bfloat16, repr=False)
+    l1_b_depth: int = auto(QUEUE_DEPTH, repr=False)
+    shim_bds: int = auto(16, repr=False)
+    a_l2: int = auto(M_TILE * K_TILE, repr=False)
+    b_l2: int = auto(K_TILE * N_TILE, repr=False)
+    c_l2: int = auto(ROWS * M_TILE * N_TILE, repr=False)
     b_overlay_order: ClassVar[bool] = True
 
     # A: one (M_TILE x K_TILE) block per transfer element, broadcast along

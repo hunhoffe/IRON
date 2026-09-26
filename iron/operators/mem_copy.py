@@ -34,8 +34,8 @@ from iron.common.declare import (
     StreamIn,
     StreamOut,
     Untunable,
-    dim,
-    tunable,
+    param,
+    auto,
 )
 from iron.common.testing import Case, Testing, device_columns
 from iron.common.tiling import bank_elements
@@ -56,12 +56,12 @@ class MemCopyOverlay(Overlay):
     """``num_cores`` copy paths, at most ``num_channels`` per column."""
 
     # None: one core per column, one channel, 1024-element tiles.
-    num_cores: int | None = tunable(None)
-    num_channels: int = tunable(1)
-    tile_size: int | None = tunable(None)
+    num_cores: int | None = auto()
+    num_channels: int = auto(1)
+    tile_size: int | None = auto()
     bypass: bool = False
     # min(tile_size, 8192): one 16 KB line at most; filled by tuning.
-    line_size: int | None = tunable(None, repr=False)
+    line_size: int | None = auto(repr=False)
 
     s = StreamIn(line_size, per=num_cores)
     d = StreamOut(line_size, per=num_cores)
@@ -252,7 +252,7 @@ class MemCopy(Operator[MemCopyOverlay]):
     # A copy that alters a value is a broken copy, so gate it exactly.
     test = Testing(_cases, tolerance=Tolerance.exact())
 
-    size: int = dim()
+    size: int = param()
 
     x = In(size, to=MemCopyOverlay.s)
     y = Out(size, from_=MemCopyOverlay.d)

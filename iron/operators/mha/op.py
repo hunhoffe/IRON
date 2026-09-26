@@ -36,8 +36,8 @@ from iron.common.declare import (
     StreamIn,
     StreamOut,
     Untunable,
-    dim,
-    tunable,
+    param,
+    auto,
 )
 
 _I32x4 = np.ndarray[(4,), np.dtype[np.int32]]  # type: ignore[misc]
@@ -61,14 +61,16 @@ class MHAOverlay(Overlay):
     rows per block.
     """
 
-    d: int = dim(64)  # head dimension: the width of every tile and the kernel's DIM_K
-    B_q: int = tunable(64)
-    B_kv: int = tunable(64)
-    num_of_pipelines: int = tunable(1)
+    d: int = param(
+        default=64
+    )  # head dimension: the width of every tile and the kernel's DIM_K
+    B_q: int = auto(64)
+    B_kv: int = auto(64)
+    num_of_pipelines: int = auto(1)
     emulate_bf16_mmul_with_bfp16: bool = field(default=True, repr=False)
     # Filled by tuning: how the pipelines are split across shims.
-    q_shims: int | None = tunable(None, repr=False)
-    join_rows: int | None = tunable(None, repr=False)
+    q_shims: int | None = auto(repr=False)
+    join_rows: int | None = auto(repr=False)
 
     q = StreamIn(join_rows, d, per=q_shims, via=Shim(4))
     k = StreamIn(d, B_kv, via=Shim(5))
@@ -578,15 +580,15 @@ class MHAOverlay(Overlay):
 class MHA(Operator[MHAOverlay]):
     """AIE-accelerated Multi-Head Attention operator"""
 
-    num_heads: int = dim()
+    num_heads: int = param()
     # None takes the padded length inference binds from a shape (seq_pad).
-    seq_len: int | None = dim(None)
+    seq_len: int | None = param(default=None)
     # The K/V head count: fewer than num_heads is grouped-query attention.
     # 0 or None means plain MHA (as many as num_heads); validate() fills it.
-    num_KV_heads: int | None = dim(None)
+    num_KV_heads: int | None = param(default=None)
     # seq_len rounded up to a multiple of B_q * num_of_pipelines; filled by
     # validate(), and checked against the value inference binds from a shape.
-    seq_pad: int | None = dim(None, repr=False)
+    seq_pad: int | None = param(default=None, repr=False)
     # The layout a projection GEMM produces, ``(seq, heads, d)`` with the
     # heads interleaved per token, read and written as it is: a head's block
     # is then a strided slice, and no copy reorders the heads to the front.

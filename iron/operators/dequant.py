@@ -17,8 +17,8 @@ from iron.common.declare import (
     Operator,
     Out,
     StreamIn,
-    dim,
-    tunable,
+    param,
+    auto,
 )
 from iron.common.testing import Case, Testing, device_columns
 
@@ -34,7 +34,7 @@ class DequantOverlay(ChanneledUnaryOverlay):
 
     group_size: int = field(default=32, repr=False)
     # The packed size of one tile; filled by tuning beside ``line_size``.
-    in_tile: int | None = tunable(None, repr=False)
+    in_tile: int | None = auto(repr=False)
 
     default_tile: ClassVar[int] = 4096
     tile_cap: ClassVar[int] = 16384
@@ -100,10 +100,10 @@ class Dequant(Operator[DequantOverlay]):
 
     test = Testing(_cases, draw=_packed)
 
-    size: int = dim()
+    size: int = param()
     # The packed input's length: two 4-bit values per byte plus a bf16 scale
     # and zero point per group. Derived from size unless given.
-    packed: int | None = dim(None, repr=False)
+    packed: int | None = param(default=None, repr=False)
 
     x = In(packed, dtype=np.uint8, to=DequantOverlay.x)
     y = Out(size, from_=DequantOverlay.y)

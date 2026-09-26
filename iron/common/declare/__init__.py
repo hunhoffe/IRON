@@ -13,27 +13,27 @@ ABI: the overlay's is its **streams** (in tile units), the operator's is its
 direction, dtype, tile shape and shim binding agree by construction.
 
 Declarations are class-level. A dimension is a dataclass field declared with
-:func:`dim`, a tuning knob is one declared with :func:`tunable`, and a shape is
+:func:`param`, a knob the library resolves is one declared with :func:`auto`, and a shape is
 written in the class body using the field's bare name::
 
     class GEMVOverlay(Overlay):
-        K: int = dim()
-        num_aie_columns: int = tunable(8)
-        tile_size_output: int = tunable(64)
+        K: int = param()
+        num_aie_columns: int = auto(8)
+        tile_size_output: int = auto(64)
 
         a = StreamIn(tile_size_output, K, per=num_aie_columns)
         b = StreamIn(K, broadcast=True)
         c = StreamOut(tile_size_output, per=num_aie_columns)
 
     class GEMV(Operator[GEMVOverlay]):
-        M: int = dim()
-        num_batches: int = dim(1)
+        M: int = param()
+        num_batches: int = param(default=1)
 
         A = In(optional(num_batches), M, GEMVOverlay.K, to=GEMVOverlay.a)
         B = In(optional(num_batches), GEMVOverlay.K, to=GEMVOverlay.b)
         C = Out(optional(num_batches), M, from_=GEMVOverlay.c)
 
-The shape rule: a host buffer's dimension is a ``dim()`` field or an integer
+The shape rule: a host buffer's dimension is a ``param()`` field or an integer
 literal, nothing else. Not a tunable, not a per-call value, not an
 expression. That is what makes inference a lookup (:mod:`.infer`)
 and what lets the checks in :mod:`.creation` run once, as a class body finishes.
@@ -65,10 +65,10 @@ from .field import (
     DimRef,
     Incompatible,
     Untunable,
-    dim,
+    auto,
     optional,
+    param,
     select,
-    tunable,
 )
 from .infer import infer, infer_kwargs
 from .member import (
@@ -112,12 +112,12 @@ __all__ = [
     "Untunable",
     "ValueSpec",
     "Xclbin",
-    "dim",
+    "param",
     "from_spec",
     "get_shim_dma_limit",
     "infer",
     "infer_kwargs",
     "optional",
     "select",
-    "tunable",
+    "auto",
 ]

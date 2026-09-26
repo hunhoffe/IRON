@@ -61,8 +61,8 @@ from .declare import (
     StreamIn,
     StreamOut,
     Untunable,
-    dim,
-    tunable,
+    auto,
+    param,
 )
 from .declare.member import _Stream
 from .tiling import bank_elements
@@ -89,11 +89,11 @@ class ElementwiseOverlay(Overlay):
 
     # None: every column the device's shim budget allows, one channel each,
     # DEFAULT_TILE lines.
-    num_aie_columns: int | None = tunable(None)
-    num_channels: int = tunable(1)
-    tile_size: int | None = tunable(None)
+    num_aie_columns: int | None = auto()
+    num_channels: int = auto(1)
+    tile_size: int | None = auto()
     # min(tile_size, tile_cap); filled by tuning, never set by a caller.
-    line_size: int | None = tunable(None, repr=False)
+    line_size: int | None = auto(repr=False)
 
     count = Resident(np.int32)  # lines each core processes; written per sequence
 
@@ -212,7 +212,7 @@ EO = TypeVar("EO", bound=ElementwiseOverlay)
 class ElementwiseOperator(Operator[EO]):
     """What every elementwise operator's buffers have in common."""
 
-    size: int = dim()
+    size: int = param()
 
     def compatible(self) -> None:
         ov = self.ov

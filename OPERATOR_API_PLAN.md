@@ -80,15 +80,15 @@ GEMV (rung 3):
 
 ```python
 class GEMV(Operator):
-    M: CompileTime[int]                      # sequence-tier: only in a shape
-    K: CompileTime[int]                      # array-tier: in tile=(tile_in, K)
-    batches: CompileTime[int] = 1
-    columns: CompileTime[int] = auto()       # shim budget of the device
-    tile_in: CompileTime[int] = auto(2, choices=(1, 2, 4, 8))
-    tile_out: CompileTime[int] = auto()      # largest divisor of M//columns that fits L1
-    vector_width: CompileTime[int] = auto(from_contract="vec_size")
-    epilogue: CompileTime[str] = "none"
-    bakes = ("epilogue",)                    # read by array(), named by no tiling
+    M: int = param()                          # sequence-tier: only in a shape
+    K: int = param()                          # array-tier: in tile=(tile_in, K)
+    batches: int = param(default=1)
+    columns: int = auto()                     # shim budget of the device
+    tile_in: int = auto(2, choices=(1, 2, 4, 8))
+    tile_out: int = auto()                    # largest divisor of M//columns that fits L1
+    vector_width: int = auto()                # the kernel contract's vec_size
+    epilogue: str = param(default="none")
+    bakes = ("epilogue",)                     # read by array(), named by no tiling
 
     A = In(optional(batches), M, K, tile=(tile_in, K), per=columns, depth=2)
     B = In(optional(batches), K,    tile=(K,),         per=columns, depth=1)
@@ -111,11 +111,13 @@ class GEMV(Operator):
     def reference(self, A, B): ...
 ```
 
-`CompileTime[T]` is a descriptor class, so a checker types `op.K` as `int`,
-`GEMV.K` as the field reference, and `GEMV(K="4")` as an error, with no
-field specifier at all (pyright reads a specifier's default only from a
-`default=` keyword, which is why `dim(1)`/`tunable(1)` are not listed as
-specifiers today).
+A field is declared by a specifier, not an annotation alone: `M: int` binds
+no name for a shape to use, and `In(M, K)` needs one. `param` is a field
+specifier to a checker (`default=` is keyword-only, so a `param()` without one
+is a required constructor argument, and `GEMV(K="4")` is an error); `auto` is
+not listed, since it always has a default and gives it positionally, which
+pyright does not read. Both are compile-time; a `Value` bound to a
+`DispatchTime` graph parameter is the dispatch-time side.
 
 llama decode block (46 knob kwargs → 4, 18 stride fields → 0, 13 reshapes →
 3; `cols` and `get_current_device()` leave the graph):
@@ -185,10 +187,13 @@ minimal. `pyright` and `ruff check` clean at every commit.
    nine jobs on the base hooks; `@dataclass_transform()` on both bases;
    `ABCMeta` dropped; pyright and ruff configured after mlir-aie's and run
    in the lint workflow.
-2. **Field vocabulary**: `CompileTime[T]`/`auto()`; `In(..., tile=, per=,
-   depth=, via=)` (2B); `Value` (3B); `bakes`/restricted view (1A). Landed on
-   the *existing* two-class model first as a translation layer, so every
-   operator can migrate one at a time with the suite green between.
+2. **Field vocabulary**: `param()`/`auto()` (done: a rename on the two-class
+   model, `auto(choices=, legal=)` recorded for a tuner); then `In(..., tile=,
+   per=, depth=, via=)` (2B), `Value` (3B) and `bakes`/the restricted view
+   (1A). Those three are one-class concepts (an operand's `tile=` is the
+   stream the overlay owns today), so they land with the merge, operator by
+   operator: a merged class answers as its own `ov`, so the graph, sequence
+   and image layers keep working while both forms coexist.
 3. **One resolution point** (`resolve(dev)` with extents, before
    `unique_designs()`); retire `overlay_defaults`, `tuning`, `for_extent`;
    `None`-guarded device defaults for gemv/softmax/rope/gemm. Gate: two
@@ -235,6 +240,10 @@ today**.
   (38 files, +390/−509). Failure set identical to baseline.
 - `610c926` Step 1: the bases are dataclasses to a checker; pyright in CI on
   the declare package. Members generic in their bound form; `Self` returns.
+- (this commit) Step 2a: `dim()`/`tunable()` → `param()`/`auto()`. `param`
+  is a field specifier with keyword `default=`, so a missing required field
+  is now a checker error too; `auto(choices=, legal=)` is accepted and
+  recorded. Failure set identical to baseline.
 - `e04956f` + `b9aaecb` ruff after mlir-aie's `ruff.toml` (D205/D401 off, for the codebase's
   sentence summaries); `pyrightconfig.json` after mlir-aie's; both scoped to
   all of `iron/common` and `iron/tests/common` (three tests wait on step 7),

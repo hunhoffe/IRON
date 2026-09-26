@@ -146,11 +146,11 @@ reuse lint
    - An operator module holds:
      - the operator, declared as two classes (`iron/common/declare/`,
        `OPERATOR_MODEL_PLAN.md`). The **overlay** (`XOverlay(Overlay)`) is the
-       array configuration: `tunable()` fields filled by `tuning(dev)` from the
+       array configuration: `auto()` fields filled by `tuning(dev)` from the
        device alone, `StreamIn`/`StreamOut` members in tile units, `Resident`
        values the cores read (trip counts), and `design(target)`, which builds
        ObjectFIFOs and Workers and binds each stream to a fifo's shim end. The
-       **operator** (`X(Operator[XOverlay])`) is the host side: `dim()` fields,
+       **operator** (`X(Operator[XOverlay])`) is the host side: `param()` fields,
        `In`/`Out` buffers declared by shape against the overlay's streams,
        `residents()` from the extents, and optionally `design(rt)` when the
        runtime sequence is not the derived one. External overlays (a downloaded
@@ -307,7 +307,7 @@ Data movement pattern: L3 → Shim DMA → L2 → L1 (tile local) → Compute
    if it needs more than one module: a hand-written design, its own
    reference, a README, a device test of its own)
 2. Declare the overlay (`class XOverlay(Overlay)`):
-   - `tunable()` fields with device defaults in `tuning(dev)`; `dim()` fields
+   - `auto()` fields with device defaults in `tuning(dev)`; `param()` fields
      only for what a host shape names
    - `StreamIn`/`StreamOut` members in tile units (`per=` a column count)
    - a `Resident` for every trip count the core reads, so the array never
@@ -316,7 +316,7 @@ Data movement pattern: L3 → Shim DMA → L2 → L1 (tile local) → Compute
      `target.rtp(...)`, `target.barrier()`), `range_()` for loops, and
      `self.x[i].bind(fifo.prod())` / `self.count.bind(rtps)` for every member
 3. Declare the operator (`class X(Operator[XOverlay])`):
-   - `dim()` fields; `In`/`Out` buffers with `to=`/`from_=` naming the stream
+   - `param()` fields; `In`/`Out` buffers with `to=`/`from_=` naming the stream
    - `compatible()` for divisibility against the tuned overlay, `residents()`
      for the counts
    - `design(rt)` only if the derived sequence is not the one you want

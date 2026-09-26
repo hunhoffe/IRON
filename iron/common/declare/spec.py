@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 from ml_dtypes import bfloat16
 
-from .field import dim
+from .field import param
 from .member import In, Out
 from .operator import Operator
 from .overlay import Overlay
@@ -31,7 +31,7 @@ def from_spec(
     The dynamic escape for a design whose shapes come from a file rather
     than a formula (swiglu_prefill_stream's stream-dse export). ``inputs``
     and ``outputs`` are literal shapes in argument order; ``params`` are
-    the numbers that identify the instance (they become ``dim()`` fields
+    the numbers that identify the instance (they become ``param()`` fields
     with those defaults and reach the name); ``key`` identifies the
     generated design, for sharing; ``generator`` replaces
     :meth:`Operator.generator`, since the sequence is not derived. The
@@ -43,7 +43,7 @@ def from_spec(
     def overlay_ns(ns):
         ns["__module__"] = module
         ns["__annotations__"] = {"key": str}
-        ns["key"] = dim(key, repr=False)
+        ns["key"] = param(default=key, repr=False)
 
     overlay_cls = types.new_class(f"{name}Overlay", (Overlay,), {}, overlay_ns)
 
@@ -52,7 +52,7 @@ def from_spec(
         ns["__annotations__"] = {}
         for pname, value in (params or {}).items():
             ns["__annotations__"][pname] = type(value)
-            ns[pname] = dim(value)
+            ns[pname] = param(default=value)
         for bname, shape in inputs.items():
             ns[bname] = In(*shape, dtype=dtype)
         for bname, shape in outputs.items():

@@ -23,11 +23,11 @@ from .declare import (
     StreamOut,
     Untunable,
     Xclbin,
-    dim,
+    auto,
     from_spec,
     optional,
+    param,
     select,
-    tunable,
 )
 from .design import DesignGenerator
 from .elementwise import (
@@ -65,9 +65,9 @@ __all__ = [
     "StreamOut",
     "Untunable",
     "Xclbin",
-    "dim",
+    "param",
     "from_spec",
     "optional",
     "select",
-    "tunable",
+    "auto",
 ]
