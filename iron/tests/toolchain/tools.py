@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """What the toolchain gates share: which tools are installed, the devices
-they build for, and the graph they all build."""
+they build for, and the graph they all build.
+"""
 
 import shutil
 from pathlib import Path
@@ -36,7 +37,10 @@ def requires(*tools):
     return [pytest.mark.skipif(_MISSING[t][0], reason=_MISSING[t][1]) for t in tools]
 
 
-DEVICES = {"npu2": lambda: NPU2(), "npu1": lambda: from_name("npu1", n_cols=4)}
+DEVICES = {
+    "npu2": lambda: NPU2(),  # pyright: ignore[reportCallIssue]
+    "npu1": lambda: from_name("npu1", n_cols=4),
+}
 
 
 def swiglu_decode():

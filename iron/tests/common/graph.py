@@ -9,6 +9,8 @@ checked here is the image: that is OperatorSequence's job and the
 hardware tests' job.
 """
 
+from typing import Any
+
 import aie.utils as aie_utils
 import numpy as np
 import pytest
@@ -68,9 +70,10 @@ def _ffn():
         )  # writes state; returns nothing
         return GEMV(w_down, act, num_aie_columns=8, tile_size_output=E // 8)
 
-    return ffn, dict(
+    refs: dict[str, Any] = dict(
         w_gate=w_gate, w_up=w_up, w_down=w_down, norm_w=norm_w, cache=cache
     )
+    return ffn, refs
 
 
 def test_tracing_records_the_runlist_with_names_from_roles():

@@ -29,12 +29,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 from aie.iron import ExternalFunction
-from aie.iron.device import NPU2
 from ml_dtypes import bfloat16
 
 import iron
 from iron.operators.swiglu_prefill.op import swiglu_prefill
-from iron.tests.toolchain.tools import requires, swiglu_decode
+from iron.tests.toolchain.tools import DEVICES, requires, swiglu_decode
 
 pytestmark = [*requires("aiebu", "peano"), pytest.mark.usefixtures("npu2")]
 
@@ -43,7 +42,8 @@ def build_elf(traced, name):
     """Fuse a traced graph and build its full ELF; return its record.
 
     The one build the application does: ``compile()`` builds the image into
-    the JIT cache and records what it consists of."""
+    the JIT cache and records what it consists of.
+    """
     seq = traced.sequence(name, dispatch="fused").compile()
     artifacts = seq.artifacts
     elf = Path(artifacts.image)
@@ -64,7 +64,7 @@ def _params(artifacts):
 
 def test_swiglu_decode_graph_compiles_to_a_full_elf():
     fn, E = swiglu_decode()
-    net = fn.compile(NPU2(), image=iron.ELF, x=(1, E))
+    net = fn.compile(DEVICES["npu2"](), image=iron.ELF, x=(1, E))
     assert net.plan.image == "elf" and net.plan.dispatch == "fused"
     elf = Path(net.image)
     assert elf.suffix == ".elf" and elf.stat().st_size > 0
@@ -88,9 +88,8 @@ def _assert_values_in_table(traced, artifacts):
 
 
 def test_decode_graph_builds_a_full_elf_with_its_values_in_the_table():
-    from iron.tests.common.llama_model import Config as _Config
-
     from iron.applications.llama_3_2_1b.graphs import LlamaGraph
+    from iron.tests.common.llama_model import Config as _Config
 
     cfg = _Config()
     traced = LlamaGraph(cfg, 256).trace(cfg, 1)
@@ -104,10 +103,10 @@ def test_prefill_graph_builds_a_full_elf_at_llama_size_for_one_layer():
     over 8, the 8192-wide FFN) compiles and links into one image. One layer:
     the designs are the same for sixteen, and aiecc's lowering of the fused
     sequence grows with its DMA tasks (about 1,800 per layer against decode's
-    430), past this gate's memory at the full depth."""
-    from iron.tests.common.llama_model import Llama1B
-
+    430), past this gate's memory at the full depth.
+    """
     from iron.applications.llama_3_2_1b.graphs import LlamaGraph
+    from iron.tests.common.llama_model import Llama1B
 
     cfg = Llama1B(n_layers=1)
     traced = LlamaGraph(cfg, cfg.context_length).trace(cfg, cfg.context_length)
@@ -117,9 +116,8 @@ def test_prefill_graph_builds_a_full_elf_at_llama_size_for_one_layer():
 
 
 def test_prefill_graph_builds_a_full_elf_with_its_value_in_the_table():
-    from iron.tests.common.llama_model import Config as _Config
-
     from iron.applications.llama_3_2_1b.graphs import LlamaGraph
+    from iron.tests.common.llama_model import Config as _Config
 
     cfg = _Config()
     L = cfg.context_length
@@ -136,14 +134,15 @@ def test_a_cached_build_leaves_no_kernel_for_the_next_graph_to_collide_with():
     cache key, and ``compile()`` clears the kernels that declared only when it
     generates. On a hit they stayed registered, and the next graph naming one
     of their object files with other flags -- GEMM's ``b_col_maj`` changes its
-    flags, not its object name -- raised a collision instead of building."""
+    flags, not its object name -- raised a collision instead of building.
+    """
     M, E, H = 256, 512, 512
 
     def build(b_col_maj):
         shape = (H, E) if b_col_maj else (E, H)
         z = lambda *s: np.zeros(s, dtype=bfloat16)  # noqa: E731
         fn = swiglu_prefill(z(*shape), z(*shape), z(*shape[::-1]), b_col_maj=b_col_maj)
-        return fn.compile(NPU2(), image=iron.ELF, x=(M, E))
+        return fn.compile(DEVICES["npu2"](), image=iron.ELF, x=(M, E))
 
     build(False)
     build(False)  # a hit: compile() generates nothing

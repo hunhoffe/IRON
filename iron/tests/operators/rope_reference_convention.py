@@ -21,7 +21,8 @@ from iron.operators.rope.op import reference
 
 def _block_major_expected(x, angles, rows, angle_rows):
     """Device convention spelled out row by row: row r uses angle row
-    r // (rows // angle_rows)."""
+    r // (rows // angle_rows).
+    """
     cols = x.shape[-1]
     half = cols // 2
     tensor_rows_per_angle_row = rows // angle_rows

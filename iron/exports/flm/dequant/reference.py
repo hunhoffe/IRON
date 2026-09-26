@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """CPU reference for :class:`iron.exports.flm.DequantBFP`, bit-exact against
-the device. See the operator's README.md for the layout and the rounding."""
+the device. See the operator's README.md for the layout and the rounding.
+"""
 
 import numpy as np
 
@@ -94,7 +95,8 @@ def reference(qw, K, N):
 
 def scatter_runs(qw, K, N, run_out_features, run_period_out_features, seed=0):
     """Place a matrix's column blocks at their offsets in an interleaved
-    buffer. The gaps hold noise, so an operator that reads them fails."""
+    buffer. The gaps hold noise, so an operator that reads them fails.
+    """
     cb_bytes = N_TILE * K * 5 // 8
     run_blocks = run_out_features // N_TILE
     period_blocks = run_period_out_features // N_TILE
@@ -110,7 +112,8 @@ def scatter_runs(qw, K, N, run_out_features, run_period_out_features, seed=0):
 
 def random_q4nx(K, N, seed=0):
     """A random q4nx blob. Scales and mins are bf16 in the file, so they are
-    generated there and widened."""
+    generated there and widened.
+    """
     rng = np.random.default_rng(seed)
     n_blocks = (K // K_TILE) * (N // M_TILE)
     sm = (K_TILE // GROUP) * M_TILE

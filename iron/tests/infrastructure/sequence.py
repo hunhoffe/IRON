@@ -21,20 +21,26 @@ The ``OperatorSequence`` dispatch modes covered here are:
 """
 
 import re
-
-import pytest
-import numpy as np
-from ml_dtypes import bfloat16
+from typing import Any
 
 import aie.utils as aie_utils
+import numpy as np
+import pytest
 from aie.iron.device import NPU2
 from aie.utils.verify import Tolerance
+from ml_dtypes import bfloat16
 
-from iron.common.image import OperatorSequence, build_fused_mlir
 from iron.common.harness import verify_buffer
+from iron.common.image import OperatorSequence, build_fused_mlir
 from iron.operators.elementwise_add import ElementwiseAdd
 from iron.operators.relu import ReLU
 from iron.operators.tanh import Tanh
+
+
+def _centered(rng, n) -> Any:
+    """``n`` bf16 values in [-2, 2), drawn as every test here draws them."""
+    x: Any = rng.random(n).astype(bfloat16)
+    return x * 4 - 2
 
 
 def _set_input(run, name, data):
@@ -59,7 +65,7 @@ _ADD_RELU_COLS = 4
 
 
 def _build_add_relu_sequence(dispatch, name, input_args=("a", "b")):
-    """out = relu(a + b), as a 2-step OperatorSequence."""
+    """Out = relu(a + b), as a 2-step OperatorSequence."""
     add = ElementwiseAdd(
         size=_ADD_RELU_SIZE,
         tile_size=_ADD_RELU_TILE,
@@ -92,10 +98,11 @@ def _build_add_relu_sequence(dispatch, name, input_args=("a", "b")):
 def test_auto_dispatch_selects_platform_default(size, npu_runtime):
     """``dispatch="auto"`` must resolve to the full-ELF mode on Strix and to
     the separate-xclbin mode on Phoenix, and produce the correct result on
-    whichever platform the test runs on."""
+    whichever platform the test runs on.
+    """
     rng = np.random.default_rng(0)
-    a = rng.random(size).astype(bfloat16) * 4 - 2
-    b = rng.random(size).astype(bfloat16) * 4 - 2
+    a = _centered(rng, size)
+    b = _centered(rng, size)
 
     seq = _build_add_relu_sequence("auto", "infra_auto_add_relu")
     seq.compile()
@@ -165,7 +172,7 @@ def test_fused_mlir_contains_reconfiguration(sequence, npu_runtime):
 
 
 def _run_add_relu(dispatch, a, b, name):
-    """out = relu(a + b), returned as a host bf16 tensor."""
+    """Out = relu(a + b), returned as a host bf16 tensor."""
     seq = _build_add_relu_sequence(dispatch, name)
     seq.compile()
     run = seq.get_callable()
@@ -177,16 +184,17 @@ def _run_add_relu(dispatch, a, b, name):
 
 @pytest.mark.parametrize("dispatch", ["separate", "fused", "compare"])
 def test_dispatch_modes_bit_identical(dispatch, npu_runtime):
-    """add -> relu must yield byte-for-byte identical output across every NPU
+    """Add -> relu must yield byte-for-byte identical output across every NPU
     dispatch mode: the compiled kernels are the same, so only the dispatch
     mechanism differs. The ``separate`` mode is the baseline (it runs on every
-    platform)."""
+    platform).
+    """
     if dispatch == "fused" and not isinstance(aie_utils.get_current_device(), NPU2):
         pytest.skip("fused (single-ELF) dispatch requires NPU2")
 
     rng = np.random.default_rng(0)
-    a = rng.random(_ADD_RELU_SIZE).astype(bfloat16) * 4 - 2
-    b = rng.random(_ADD_RELU_SIZE).astype(bfloat16) * 4 - 2
+    a = _centered(rng, _ADD_RELU_SIZE)
+    b = _centered(rng, _ADD_RELU_SIZE)
 
     baseline = _run_add_relu("separate", a, b, "infra_addrelu_parity_separate")
     out = _run_add_relu(dispatch, a, b, f"infra_addrelu_parity_{dispatch}")
@@ -213,7 +221,8 @@ def _build_packed_output_sequence(dispatch, name):
     """Two independent adds writing into disjoint halves of one explicitly
     sized buffer via slice notation ("packed[start:end]"). Unlike
     _build_add_relu_sequence's "temp" hand-off (a whole-buffer alias), this
-    exercises slice_info/explicit_buffer_sizes resolution directly."""
+    exercises slice_info/explicit_buffer_sizes resolution directly.
+    """
     add0 = ElementwiseAdd(size=_SLICE_SIZE, tile_size=_SLICE_SIZE, num_aie_columns=1)
     add1 = ElementwiseAdd(size=_SLICE_SIZE, tile_size=_SLICE_SIZE, num_aie_columns=1)
     return OperatorSequence(
@@ -232,12 +241,13 @@ def _build_packed_output_sequence(dispatch, name):
 def test_reference_dispatch_resolves_sliced_buffer(npu_runtime):
     """dispatch="reference" must resolve slice-notation buffers via
     subview() on the CPU backend, matching SequenceXclbinCallable's behaviour,
-    and each slice's write must be visible through the parent buffer name."""
+    and each slice's write must be visible through the parent buffer name.
+    """
     rng = np.random.default_rng(0)
-    a0 = rng.random(_SLICE_SIZE).astype(bfloat16)
-    b0 = rng.random(_SLICE_SIZE).astype(bfloat16)
-    a1 = rng.random(_SLICE_SIZE).astype(bfloat16)
-    b1 = rng.random(_SLICE_SIZE).astype(bfloat16)
+    a0: Any = rng.random(_SLICE_SIZE).astype(bfloat16)
+    b0: Any = rng.random(_SLICE_SIZE).astype(bfloat16)
+    a1: Any = rng.random(_SLICE_SIZE).astype(bfloat16)
+    b1: Any = rng.random(_SLICE_SIZE).astype(bfloat16)
 
     seq = _build_packed_output_sequence("reference", "infra_reference_sliced_packed")
     seq.compile()
@@ -272,10 +282,12 @@ def test_compare_mode_judges_each_step_by_its_tolerance(exact, npu_runtime):
     operator's ``reference()`` on the same NPU inputs. Under its kernel's
     contract the step runs cleanly (no flagged step); held to exact equality it
     makes compare mode raise on its own (``raise_on_mismatch`` defaults to
-    True)."""
+    True).
+    """
     size = 1024
     rng = np.random.default_rng(0)
-    x = rng.random(size).astype(bfloat16) * 4
+    x: Any = rng.random(size).astype(bfloat16)
+    x = x * 4
 
     op = Tanh(size=size, num_aie_columns=1, num_channels=1, tile_size=size)
     seq = OperatorSequence(
@@ -288,7 +300,7 @@ def test_compare_mode_judges_each_step_by_its_tolerance(exact, npu_runtime):
     seq.compile()
     assert seq.mode == "compare"
 
-    run = seq.get_callable()
+    run: Any = seq.get_callable()
     if exact:
         run.tolerance = Tolerance.exact()
     _set_input(run, "x", x)
@@ -315,7 +327,8 @@ def test_compare_mode_judges_each_step_by_its_tolerance(exact, npu_runtime):
 def test_non_input_buffers_sync_without_explicit_flush(dispatch, npu_runtime):
     """Host writes through get_buffer() to a non-input buffer reach the NPU at
     the next dispatch, and reads of a non-output buffer after a dispatch see
-    what the NPU wrote there, with no explicit ``to()`` from the caller."""
+    what the NPU wrote there, with no explicit ``to()`` from the caller.
+    """
     if dispatch == "fused" and not isinstance(aie_utils.get_current_device(), NPU2):
         pytest.skip("fused (single-ELF) dispatch requires NPU2")
 
@@ -328,8 +341,8 @@ def test_non_input_buffers_sync_without_explicit_flush(dispatch, npu_runtime):
 
     rng = np.random.default_rng(0)
     for rep in range(4):
-        a = rng.random(_ADD_RELU_SIZE).astype(bfloat16) * 4 - 2
-        b = rng.random(_ADD_RELU_SIZE).astype(bfloat16) * 4 - 2
+        a = _centered(rng, _ADD_RELU_SIZE)
+        b = _centered(rng, _ADD_RELU_SIZE)
         run.get_buffer("a").numpy_view()[:] = a
         run.get_buffer("b").numpy_view()[:] = b
         run()

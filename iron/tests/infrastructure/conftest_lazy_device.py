@@ -40,7 +40,7 @@ def _pytest(tmp_path, test_source, without_xrt=False):
     (tmp_path / "test_gated.py").write_text(test_source)
     env = dict(os.environ)
     pyxrt = importlib.util.find_spec("pyxrt")
-    if without_xrt and pyxrt is not None:
+    if without_xrt and pyxrt is not None and pyxrt.origin is not None:
         hidden = os.path.dirname(pyxrt.origin)
         entries = env.get("PYTHONPATH", "").split(os.pathsep)
         if hidden not in entries:

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from iron.operators.swiglu_prefill_stream.stream.ops import (
     op_for_onnx_type,
@@ -38,7 +39,7 @@ _WEIGHT_DATA_FIELDS = (
 class StreamWorkload:
     """An exported workload: the ONNX model and the names the mapping refers to."""
 
-    model: object  # onnx.ModelProto
+    model: Any  # onnx.ModelProto
     nodes: tuple[tuple[str, str], ...]  # (node name, kernel key), topological order
     buffers: tuple[str, ...]  # runtime buffer names, in argument order
 
@@ -143,6 +144,7 @@ def export_workload(
         optimize=False,
         verbose=False,
     )
+    assert program is not None
     model = program.model_proto
     _drop_weight_data(model)
     _rename(model, node_names, result_names or {}, output_name)

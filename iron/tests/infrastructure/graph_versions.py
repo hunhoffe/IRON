@@ -17,12 +17,11 @@ The function below writes its state at one shape and reads it at the other:
 state``.
 """
 
+import aie.utils as aie_utils
 import numpy as np
 import pytest
-from ml_dtypes import bfloat16
-
-import aie.utils as aie_utils
 from aie.iron.device import from_name
+from ml_dtypes import bfloat16
 
 import iron
 from iron.common.image import packaging
@@ -99,7 +98,8 @@ def test_two_shapes_share_weights_and_state_through_one_arena():
 def test_load_hands_each_piece_of_each_weight_to_release_once_it_is_uploaded():
     """``release`` sees every weight once over every version, in order, in
     pieces of at most ``piece_bytes``; after that the host copy is not read:
-    overwriting it changes nothing on the device."""
+    overwriting it changes nothing on the device.
+    """
     f, w, w2, s = _function()
     f.compile(x=(E,))
     f.compile(x=(2 * E,))
@@ -130,7 +130,8 @@ def test_load_hands_each_piece_of_each_weight_to_release_once_it_is_uploaded():
 def test_load_loads_a_version_whose_weights_are_already_uploaded():
     """Loading the one-line version uploads ``w``, which is every weight the
     two-line version reads; loading that one must still put its image on the
-    device, or its first call does."""
+    device, or its first call does.
+    """
     w = _numbers(E, 1)
 
     @iron.graph
@@ -154,7 +155,8 @@ def test_load_loads_a_version_whose_weights_are_already_uploaded():
 
 def test_a_version_compiled_after_the_first_call_grows_the_arena_and_keeps_state():
     """Compiling on first call at a new shape: the arena grows under the
-    version that already ran, which keeps working."""
+    version that already ran, which keeps working.
+    """
     f, w, w2, s = _function()
     x1, x2 = _numbers(E, 5), _numbers(2 * E, 6)
 

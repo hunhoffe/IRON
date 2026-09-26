@@ -1,20 +1,12 @@
 {
-  // After mlir-aie's pyrightconfig.json. The checked set is the library and
-  // its device-free tests; ruff.toml's "include" mirrors it. iron/operators,
-  // iron/applications and the rest of iron/tests construct operators through
-  // the per-class flat-kwargs constructor, which a checker cannot see from the
-  // dataclass one; they join once overlay and operator are one class
-  // (OPERATOR_API_PLAN.md, step 7), as do the three tests excluded below.
+  // After mlir-aie's pyrightconfig.json: the whole package, library, operators,
+  // exports, applications and tests alike; ruff.toml's "include" mirrors it.
   "include": [
-    "iron/common",
-    "iron/tests/common"
+    "iron"
   ],
   "exclude": [
     "**/__pycache__",
-    "**/*.pyi",
-    "iron/tests/common/build.py",
-    "iron/tests/common/fused_identity.py",
-    "iron/tests/common/graph.py"
+    "**/*.pyi"
   ],
   "pythonVersion": "3.11",
   "typeCheckingMode": "standard",

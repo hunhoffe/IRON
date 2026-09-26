@@ -7,8 +7,7 @@ from ml_dtypes import bfloat16
 
 
 def generate_golden_reference(M=1, K=2048, N=8192, seed=42):
-    """
-    Generate golden reference data for SwiGLU decode (for single token).
+    """Generate golden reference data for SwiGLU decode (for single token).
 
     SwiGLU computes: W3 @ (SiLU(W1 @ x) * (W2 @ x))
     where SiLU(x) = x * sigmoid(x)
@@ -71,5 +70,6 @@ def as_numpy(golden):
 
 def bf16_matmul(a, b):
     """``a @ b`` for bf16 arrays, accumulated in f32 as torch and the kernel
-    do; numpy would accumulate in bf16."""
+    do; numpy would accumulate in bf16.
+    """
     return (a.astype(np.float32) @ b.astype(np.float32)).astype(bfloat16)

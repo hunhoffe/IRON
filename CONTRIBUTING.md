@@ -44,7 +44,7 @@ black --check .
 black .
 ```
 
-**Lint and Type Checking:** `ruff check` and `pyright` (scoped by `ruff.toml` and `pyrightconfig.json`).
+**Lint and Type Checking:** `ruff check` and `pyright` over the whole `iron` package (`ruff.toml`, `pyrightconfig.json`); both must be clean.
 
 **Best Practices:**
 - Use type annotations for function parameters and return values

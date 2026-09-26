@@ -2,30 +2,31 @@
 # SPDX-License-Identifier: Apache-2.0
 
 
-import ml_dtypes
-from aie.iron.kernels import activation
 import dataclasses
+from typing import Any
 
+import ml_dtypes
 import numpy as np
-
+from aie.iron.kernels import activation
 from aie.utils.verify import Tolerance
 
 from iron.common.declare import (
-    Unresolvable,
-    Incompatible,
     In,
+    Incompatible,
     Operator,
     Out,
+    Unresolvable,
     Value,
-    param,
     auto,
+    param,
 )
 from iron.common.testing import Case, Testing, device_columns
 
 
 def _columns_channels(total_cores):
     """The (columns, channels) split for a core count: 2x2 from four cores up
-    (a 4x4 has placement issues on Phoenix), 1x2 for two, 1x1 for one."""
+    (a 4x4 has placement issues on Phoenix), 1x2 for two, 1x1 for one.
+    """
     return {1: (1, 1), 2: (1, 2)}.get(total_cores, (2, 2))
 
 
@@ -79,7 +80,8 @@ class Softmax(Operator):
 
     def resolve(self, dev):
         """Columns default to the most the device's shim budget allows that
-        leave every core a whole number of rows."""
+        leave every core a whole number of rows.
+        """
         cols = self.num_aie_columns
         if cols is None:
             if dev is None:
@@ -153,7 +155,7 @@ class Softmax(Operator):
             mask_kernel,
             rtp,
             barrier,
-            vector_size_src=None,
+            vector_size_src: Any = None,
         ):
             barrier.wait_for_value(1)
             n = rtp[0]

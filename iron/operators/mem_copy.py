@@ -18,18 +18,16 @@ full line, which is the hand-written sequence kept as an override.
 
 import dataclasses
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List
 
-from aie.iron.kernels import eltwise
 import numpy as np
-
+from aie.iron.kernels import eltwise
 from aie.utils.verify import Tolerance
 
-from iron.common.declare import In, Operator, Out, Unresolvable, param, auto
+from iron.common.declare import In, Operator, Out, Unresolvable, auto, param
 from iron.common.testing import Case, Testing, device_columns
-from iron.common.tiling import bank_elements
-from iron.common.tiling import Access
+from iron.common.tiling import Access, bank_elements
 
 # The maximum value the 4th dimension of DMA BD can be set
 TAP_REPEAT_MAX = 64
@@ -49,8 +47,8 @@ class PartialWorkloadConfig:
     full_taps: List[Access]
     num_cores_with_no_tiles: int
     num_cores_with_full_tiles: int
-    padding_tap_repeats: List[int] | None = None
-    padding_taps: List[Access] | None = None
+    padding_tap_repeats: List[int] = field(default_factory=list)
+    padding_taps: List[Access] = field(default_factory=list)
     partial_tap: Access | None = None
 
 
@@ -101,8 +99,6 @@ def create_partial_workload_config(
         num_cores_with_full_tiles=num_cores_with_full_tiles,
     )
     if partial_tile_size > 0:
-        config.padding_tap_repeats = []
-        config.padding_taps = []
         # The partial tile is padded to a full line with repeats of a common
         # factor of the two sizes, largest repeat count first.
         partial_tile_offset = line_size * num_cores_with_full_tiles + start_offset
@@ -129,7 +125,8 @@ def create_partial_workload_config(
 
 def _cases():
     """Every core and channel split that divides each size, with and without
-    the memtile bypass; the 2048 shape through the memtile is the default."""
+    the memtile bypass; the 2048 shape through the memtile is the default.
+    """
     out = []
     columns = device_columns()
     for size in [1024, 2048, 4096, 8192]:
@@ -159,7 +156,8 @@ def _cases():
 
 class MemCopy(Operator):
     """AIE-accelerated memory copy operator: ``num_cores`` copy paths, at
-    most ``num_channels`` per column."""
+    most ``num_channels`` per column.
+    """
 
     # A copy that alters a value is a broken copy, so gate it exactly.
     test = Testing(_cases, tolerance=Tolerance.exact())
@@ -273,7 +271,8 @@ class MemCopy(Operator):
 
         def padded(verb, lane):
             """The padding repeats then the partial tile on one fifo, in
-            groups of TASK_GROUP_SIZE transfers, each group awaited."""
+            groups of TASK_GROUP_SIZE transfers, each group awaited.
+            """
             tg = rt.new_group()
             count = 0
             for repeats, tap in zip(partial.padding_tap_repeats, partial.padding_taps):

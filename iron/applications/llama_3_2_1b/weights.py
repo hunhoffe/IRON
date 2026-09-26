@@ -227,7 +227,8 @@ class LlamaWeights:
 
     def release(self, array: np.ndarray) -> None:
         """Drop the host pages of ``array`` if it is a view of the mapped
-        checkpoint; anything else is left alone. It stays readable."""
+        checkpoint; anything else is left alone. It stays readable.
+        """
         if self.file is not None and self.file.holds(array):
             self.file.release(array)
 
@@ -314,21 +315,21 @@ class LlamaWeights:
         if self.norm.shape != (E,):
             raise ValueError(f"norm is {self.norm.shape}, not ({E},)")
         for i, layer in enumerate(self.layers):
-            for field, array in layer.arrays().items():
-                if array.shape != expected[field]:
+            for name, array in layer.arrays().items():
+                if array.shape != expected[name]:
                     raise ValueError(
-                        f"layer {i} {field} is {array.shape}, expected {expected[field]}"
+                        f"layer {i} {name} is {array.shape}, expected {expected[name]}"
                     )
 
     def named_parameters(self) -> Iterator[tuple[str, np.ndarray]]:
         """``(name, array)`` under :mod:`.model`'s names; what ``iron.graph(names_from=...)`` reads."""
         for i, layer in enumerate(self.layers):
-            for field, array in layer.arrays().items():
-                yield f"layers.{i}.{_LAYER_NAMES[field][1]}", array
+            for name, array in layer.arrays().items():
+                yield f"layers.{i}.{_LAYER_NAMES[name][1]}", array
         yield "norm.weight", self.norm
         yield "out_head.weight", self.out_head
 
-    def embed(self, token_ids: np.ndarray | list[int]) -> np.ndarray:
+    def embed(self, token_ids) -> np.ndarray:
         """Token embeddings, ``(*token_ids.shape, emb_dim)``: rows of the table, copied."""
         return self.embedding[np.asarray(token_ids, dtype=np.int64)]
 

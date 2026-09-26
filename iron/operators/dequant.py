@@ -4,9 +4,9 @@
 import dataclasses
 from typing import ClassVar
 
+import numpy as np
 from aie.iron.kernels import datamovement
 from aie.iron.kernels.datamovement import expand_ref
-import numpy as np
 from ml_dtypes import bfloat16
 
 from iron.common import UnaryElementwise
@@ -39,7 +39,8 @@ def _cases():
 
 def _packed(op):
     """Values in [0, 3.75) with scales in [1/3.75, 1) keep every quantized
-    value inside int4's [0, 15]; the input is their packed form."""
+    value inside int4's [0, 15]; the input is their packed form.
+    """
     rng = np.random.default_rng(42)
     values = (rng.random(op.size) * 3.75).astype(bfloat16)
     scales = (1 / 3.75 + (1 - 1 / 3.75) * rng.random(op.size // op.group_size)).astype(

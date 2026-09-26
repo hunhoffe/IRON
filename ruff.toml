@@ -9,10 +9,7 @@ target-version = "py311"
 # or docstring line black leaves alone. 160 clears those without hand-wraps.
 line-length = 160
 
-include = [
-  "iron/common/**/*.py",
-  "iron/tests/common/**/*.py",
-]
+include = ["iron/**/*.py"]
 
 extend-exclude = ["build", "*install*", "ironenv"]
 

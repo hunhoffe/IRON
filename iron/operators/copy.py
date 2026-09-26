@@ -11,6 +11,7 @@ reaches the copy as ``in_offset``/``out_offset``, an element offset.
 
 import dataclasses
 from dataclasses import field
+from typing import Any
 
 import numpy as np
 from aie.utils.verify import Tolerance
@@ -27,7 +28,7 @@ from iron.common.tiling import Walk, legalize
 _N_KV, _HEAD_DIM, _SEQ = 8, 64, 128
 
 
-def _kv_slot(seq, slot, num_aie_channels=1):
+def _kv_slot(seq, slot, num_aie_channels=1) -> dict[str, Any]:
     """Kwargs writing one (N_KV, HEAD_DIM) token into cache slot ``slot``."""
     return dict(
         src=Walk.of((_N_KV, _HEAD_DIM)),
@@ -38,7 +39,7 @@ def _kv_slot(seq, slot, num_aie_channels=1):
     )
 
 
-def _flat(size, num_aie_channels=1, transfer_size=None):
+def _flat(size, num_aie_channels=1, transfer_size=None) -> dict[str, Any]:
     """Kwargs for a contiguous copy of ``size`` elements."""
     return dict(
         input_buffer_size=size,
@@ -105,7 +106,7 @@ class Copy(Operator):
     dst: Walk | None = param(default=None)  # None: the whole output
     transfer_size: int = auto()  # None: the per-channel share of the walk
     num_aie_channels: int = auto(1)
-    dtype: object = field(default=bfloat16, repr=False)
+    dtype: Any = field(default=bfloat16, repr=False)
 
     x = In(
         input_buffer_size,
@@ -159,9 +160,16 @@ class Copy(Operator):
             self.y.lane(c).bind(fifo_out.cons())
         return []
 
+    @property
+    def walks(self) -> tuple[Walk, Walk]:
+        """The two walks, as :meth:`validate` filled them."""
+        assert self.src is not None and self.dst is not None
+        return self.src, self.dst
+
     def compatible(self) -> None:
         channels = self.num_aie_channels
-        for label, walk in (("src", self.src), ("dst", self.dst)):
+        src, dst = self.walks
+        for label, walk in (("src", src), ("dst", dst)):
             sizes, _ = _pad4(walk.sizes, walk.strides)
             highest = max(i for i, sz in enumerate(sizes) if sz >= 1)
             if sizes[highest] % channels:
@@ -169,11 +177,11 @@ class Copy(Operator):
                     f"the highest axis of {label} {walk} must be divisible by "
                     f"num_aie_channels ({channels})"
                 )
-        per_channel = self.src.elements // channels
+        per_channel = src.elements // channels
         if per_channel % self.transfer_size:
             raise Incompatible(
                 f"transfer_size {self.transfer_size} must divide the per-channel "
-                f"transfer {per_channel} (= {self.src.elements} / {channels} channels)"
+                f"transfer {per_channel} (= {src.elements} / {channels} channels)"
             )
 
     def _taps(self, buffer, walk: Walk, offset: int = 0):
@@ -209,11 +217,12 @@ class Copy(Operator):
         of ``output_buffer_size``. The offsets are the per-call values, in
         elements.
         """
+        src, dst = self.walks
         out = reference(
             x.reshape(-1),
-            self.src,
+            src,
             self.output_buffer_size,
-            self.dst,
+            dst,
             self.num_aie_channels,
             input_offset_addend=int(in_offset),
             output_offset_addend=int(out_offset),
@@ -222,8 +231,9 @@ class Copy(Operator):
         return out if y is None else y
 
     def sequence(self, rt):
-        ins = self._taps(self.x, self.src)
-        outs = self._taps(self.y, self.dst)
+        src, dst = self.walks
+        ins = self._taps(self.x, src)
+        outs = self._taps(self.y, dst)
         in_off = self.in_offset if self.uses_value("in_offset") else None
         out_off = self.out_offset if self.uses_value("out_offset") else None
         with rt.group() as tg:

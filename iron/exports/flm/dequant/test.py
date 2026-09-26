@@ -4,10 +4,9 @@
 
 import os
 
+import aie.utils as aie_utils
 import numpy as np
 import pytest
-
-import aie.utils as aie_utils
 from aie.dialects._aie_enum_gen import AIEArch
 
 from iron.common.harness import run_test
@@ -51,7 +50,8 @@ def _check(op, blob, expected, label):
 @pytest.mark.parametrize("K, N", SHAPES)
 def test_matches_reference(K, N, npu_runtime):
     """Byte-exact. Every rounding on the device is reproducible on the host, so
-    a tolerance would hide a value landing in the wrong block."""
+    a tolerance would hide a value landing in the wrong block.
+    """
     qw = random_q4nx(K, N, seed=0)
     op = DequantBFP(K=K, N=N)
     _check(op, qw, reference(qw, K, N), f"K={K} N={N}")
@@ -61,7 +61,8 @@ def test_matches_reference(K, N, npu_runtime):
 def test_output_feeds_gemm_unchanged(npu_runtime):
     """The output must equal what GEMM.pack_B produces, which is the contract
     that makes it a drop-in. Comparing against pack_B catches a drift in either
-    operator's tiling that a self-consistent reference would not."""
+    operator's tiling that a self-consistent reference would not.
+    """
     K, N = 1024, 128
     qw = random_q4nx(K, N, seed=3)
     w = dequantize(qw, K, N)
@@ -74,7 +75,7 @@ def test_output_feeds_gemm_unchanged(npu_runtime):
 
 @requires_aie2p
 def test_gate_up_interleaved_blob(npu_runtime):
-    """gate and up share one blob at 512 out-features in a 1024 period."""
+    """Gate and up share one blob at 512 out-features in a 1024 period."""
     K, N, run, period = 1024, 1024, 512, 1024
     qw = random_q4nx(K, N, seed=12)
     blob = scatter_runs(qw, K, N, run, period, seed=12)
@@ -100,7 +101,8 @@ def test_gate_up_interleaved_blob(npu_runtime):
 )
 def test_large_k_shapes(K, N, npu_runtime):
     """E2B's tall projections, whose k-tiles outnumber a shim tile's buffer
-    descriptors. K = 12288 is 24 k-tiles, the deepest E2B reaches."""
+    descriptors. K = 12288 is 24 k-tiles, the deepest E2B reaches.
+    """
     qw = random_q4nx(K, N, seed=21)
     op = DequantBFP(K=K, N=N)
     _check(op, qw, reference(qw, K, N), f"K={K} N={N}")
@@ -118,7 +120,8 @@ def test_large_k_shapes(K, N, npu_runtime):
 )
 def test_e4b_shapes(K, N, npu_runtime):
     """E4B's projections, as B is (K, N). These are the shapes flm.GEMM's own
-    extensive set covers, so the two operators are exercised on the same model."""
+    extensive set covers, so the two operators are exercised on the same model.
+    """
     qw = random_q4nx(K, N, seed=33)
     op = DequantBFP(K=K, N=N)
     _check(op, qw, reference(qw, K, N), f"K={K} N={N}")

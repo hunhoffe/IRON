@@ -15,9 +15,8 @@ Needs a device, since the fused path is NPU2-only and the ELF is genuinely
 built here rather than mocked.
 """
 
-import pytest
-
 import aie.utils as aie_utils
+import pytest
 from aie.iron.device import from_name
 from aie.utils.compile.jit.compilabledesign import CompilableDesign
 
@@ -39,7 +38,7 @@ def device():
 
 
 def _captured(name, trace_size=0, adds=2):
-    """x + w + w (or as many adds of w) as a graph function, fused and compiled."""
+    """X + w + w (or as many adds of w) as a graph function, fused and compiled."""
     add = ElementwiseAdd(size=1024, tile_size=128)
 
     @iron.graph
@@ -94,7 +93,8 @@ def test_two_graphs_get_distinct_cache_keys():
 
 def test_identical_sequences_reuse_the_compiled_elf():
     """A fresh, independently-built sequence with the same recipe must not
-    pay a second aiecc compile: same entry, untouched."""
+    pay a second aiecc compile: same entry, untouched.
+    """
     first = _captured("jitpath_cache_reuse").artifacts.image
     mtime = first.stat().st_mtime_ns
     second = _captured("jitpath_cache_reuse").artifacts.image
@@ -121,7 +121,8 @@ def test_identical_operators_reuse_the_compiled_xclbin():
 def test_a_traced_build_carries_the_lowered_module():
     """--get-input-with-addresses is what the trace parser reads; the flag
     reaching aiecc is checked by that file being in the entry, not by the
-    ELF differing (both builds come out the same size)."""
+    ELF differing (both builds come out the same size).
+    """
     traced = _captured("jitpath_trace_on", trace_size=8192).artifacts
     assert traced.lowered_mlir is not None and traced.lowered_mlir.exists()
     assert traced.image != _captured("jitpath_trace_off").artifacts.image
@@ -186,7 +187,8 @@ def test_a_device_is_recognised_by_shape_not_by_parameter_name():
 
 def test_an_opaque_design_parameter_is_rejected():
     """A value whose str() embeds an address is an operator bug, not a
-    silently-degraded cache."""
+    silently-degraded cache.
+    """
 
     class Opaque:
         pass

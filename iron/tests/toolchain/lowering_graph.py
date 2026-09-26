@@ -9,11 +9,10 @@ Same gate as ``lowering.py``: aiecc to an instruction stream, no Peano.
 
 import dataclasses
 
+import aie.utils as aie_utils
 import numpy as np
 import pytest
 from ml_dtypes import bfloat16
-
-import aie.utils as aie_utils
 
 from iron.tests.toolchain.lowering import lower
 from iron.tests.toolchain.tools import requires, swiglu_decode
@@ -28,9 +27,8 @@ def _lower_all(traced, tmp_path):
 
 
 def test_decode_graph_operators_lower_with_their_values(tmp_path):
-    from iron.tests.common.llama_model import Config as _Config
-
     from iron.applications.llama_3_2_1b.graphs import LlamaGraph
+    from iron.tests.common.llama_model import Config as _Config
 
     cfg = _Config()
     traced = LlamaGraph(cfg, 256).trace(cfg, 1)
@@ -40,9 +38,8 @@ def test_decode_graph_operators_lower_with_their_values(tmp_path):
 
 
 def test_prefill_graph_operators_lower_with_their_value(tmp_path):
-    from iron.tests.common.llama_model import Config as _Config
-
     from iron.applications.llama_3_2_1b.graphs import LlamaGraph
+    from iron.tests.common.llama_model import Config as _Config
 
     cfg = _Config()
     L = cfg.context_length
@@ -91,12 +88,12 @@ def test_shipped_external_sequence_lowers(tmp_path):
 def test_instructions_compile_alone_against_an_external_image():
     """The §11 instructions-only compile: the shipped image is downloaded,
     so its link step lowers only the sequence. No kernel, no Peano, and the
-    second request is a cache hit."""
-
+    second request is a cache hit.
+    """
     op = _shipped(M=256, K=1024, N=1152)
     op.compile()
     insts = op.artifacts.insts
-    assert insts.stat().st_size > 0
+    assert insts is not None and insts.stat().st_size > 0
     # The image is the download, so nothing was built beside the stream.
     assert op.artifacts.entry.xclbin is None
     assert op.artifacts.image.suffix == ".xclbin"
@@ -183,7 +180,8 @@ def test_prefill_steps_lower_at_llama_size(make, tmp_path):
     """The steps a prefill graph needs that a small case does not exercise: the
     down projection's column-major weight (its column-block stride is past the
     descriptor's 20-bit step, so B unrolls), the cache write's 2048-wide
-    reorder (legalized), and MHA reading (seq, heads, d)."""
+    reorder (legalized), and MHA reading (seq, heads, d).
+    """
     op = make(PREFILL)
     op.resolved(aie_utils.get_current_device())
     lower(op, tmp_path)

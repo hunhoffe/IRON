@@ -37,7 +37,7 @@ from ml_dtypes import bfloat16
 
 from iron.common.declare import In, Out, Shim, Unresolvable, Value, Xclbin, auto, select
 from iron.common.tiling import Access
-from iron.exports.flm.gemm.design import Epilogue, K_TILE, M_TILE
+from iron.exports.flm.gemm.design import K_TILE, M_TILE, Epilogue
 from iron.exports.flm.gemm.op import GEMM, _device_name
 
 # The FastFlowLM revision the overlay is taken from. A commit SHA rather than
@@ -71,7 +71,8 @@ MIN_K = K_TILE
 
 def _parameter_words(op) -> list[int]:
     """The image's block of eight words: k_iters, M, N, bias, epilogue mode,
-    clamp on, clamp min, clamp max."""
+    clamp on, clamp min, clamp max.
+    """
     clamp_min, clamp_max = op.clamp if op.clamp is not None else (0.0, 0.0)
     return [
         op.K // K_TILE,
@@ -170,7 +171,8 @@ class Shipped(
 
     def sequence(self, rt) -> None:
         """One transfer per (column-block, row-block, leg), in the order the
-        memtiles consume: column-block outermost, then row-block, then column."""
+        memtiles consume: column-block outermost, then row-block, then column.
+        """
         M, K, N = self.M, self.K, self.N
         k_iters = K // K_TILE
         m_row_blocks = M // MIN_M

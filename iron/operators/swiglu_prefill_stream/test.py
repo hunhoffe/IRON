@@ -24,13 +24,19 @@ pytest.skip(
     allow_module_level=True,
 )
 
-from iron.operators.swiglu_prefill_stream.op import SwiGLUPrefillStream
+from iron.common.harness import record_metric, verify_buffer  # noqa: E402
 
 # The operator's design is generated from this module; the values it is checked
 # against come from swiglu_decode's reference, which it shares.
-from iron.operators.swiglu_decode.reference import generate_golden_reference
-from iron.operators.swiglu_prefill_stream.reference import INPUT, OUTPUT, WEIGHTS
-from iron.common.harness import record_metric, verify_buffer
+from iron.operators.swiglu_decode.reference import (  # noqa: E402
+    generate_golden_reference,
+)
+from iron.operators.swiglu_prefill_stream.op import SwiGLUPrefillStream  # noqa: E402
+from iron.operators.swiglu_prefill_stream.reference import (  # noqa: E402
+    INPUT,
+    OUTPUT,
+    WEIGHTS,
+)
 
 # The MILP-feasible shape on the whole-array Strix (npu2) target.
 SEQ_LEN, EMBEDDING_DIM, HIDDEN_DIM = 256, 512, 2048
@@ -80,7 +86,9 @@ def test_swiglu_prefill_stream(k, npu_runtime):
     errors = verify_buffer(
         output,
         OUTPUT,
-        golden_ref[OUTPUT],
+        golden_ref[
+            OUTPUT
+        ],  # pyright: ignore[reportArgumentType]  # a bf16 torch tensor
         rel_tol=0.08,
         abs_tol=0.7,
         max_error_rate=0.25,

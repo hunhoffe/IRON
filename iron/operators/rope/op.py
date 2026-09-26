@@ -6,19 +6,18 @@ import dataclasses
 
 import numpy as np
 from aie.iron import kernels
+from aie.utils.verify import Tolerance
 from ml_dtypes import bfloat16
 
-from aie.utils.verify import Tolerance
-
 from iron.common.declare import (
-    Unresolvable,
-    Incompatible,
     In,
+    Incompatible,
     Operator,
     Out,
+    Unresolvable,
     Value,
-    param,
     auto,
+    param,
 )
 from iron.common.testing import Case, Testing, device_columns
 
@@ -101,7 +100,8 @@ class RoPE(Operator):
 
     def resolve(self, dev):
         """Columns default to the most the device's shim budget allows that
-        divide both the rows and the angle rows."""
+        divide both the rows and the angle rows.
+        """
         cols = self.num_aie_columns
         if cols is None:
             if dev is None:
@@ -192,7 +192,7 @@ class RoPE(Operator):
 
 def compute_rope_params(
     head_dim,
-    theta_base=10_000,
+    theta_base: float = 10_000,
     context_length=4096,
     method_type=0,
     freq_config=None,
@@ -267,7 +267,8 @@ def angle_table(
 ):
     """The ``angles`` buffer for ``rows`` positions: bf16 ``[cos, sin, ...]``
     pairs along each row, the table the device kernel reads (Llama 3's
-    frequency scaling by default)."""
+    frequency scaling by default).
+    """
     cos, sin = compute_rope_params(
         head_dim=cols,
         theta_base=theta_base,

@@ -71,7 +71,11 @@ class TiledStridedLayout:
         """
         from snaxc.ir.tsl import (
             Stride as SnaxStride,
+        )
+        from snaxc.ir.tsl import (
             TiledStride as SnaxTiledStride,
+        )
+        from snaxc.ir.tsl import (
             TiledStridedLayout as SnaxTiledStridedLayout,
         )
 

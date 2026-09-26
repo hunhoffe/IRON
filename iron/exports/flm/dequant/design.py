@@ -11,10 +11,14 @@ See README.md for the layout this describes.
 from iron.exports.flm.gemm.design import (
     BFP16_GROUP,
     CT_MAX_K_FOR_N,
-    K_TILE as K_TILE_B,
-    N_TILE_DEFAULT as N_TILE,
     S,
     T,
+)
+from iron.exports.flm.gemm.design import (
+    K_TILE as K_TILE_B,
+)
+from iron.exports.flm.gemm.design import (
+    N_TILE_DEFAULT as N_TILE,
 )
 
 # q4nx block: 32 out-features x 256 in-features, 32 weights per scale and min.
@@ -37,14 +41,9 @@ SPLIT = 2
 
 # Outermost first: n-half, k slice, then the core's run, split so the innermost
 # size stays inside the BD's field.
-DRAIN_DIMS = [
-    (N_TILE // M_TILE, RUN),
-    (K_TILE // CT_K, (N_TILE // T) * (CT_K // S) * T),
-    (SPLIT, RUN // SPLIT),
-    (RUN // SPLIT, 1),
-]
-DRAIN_SIZES = [d[0] for d in DRAIN_DIMS]
-DRAIN_STRIDES = [d[1] for d in DRAIN_DIMS]
+DRAIN_SIZES = (N_TILE // M_TILE, K_TILE // CT_K, SPLIT, RUN // SPLIT)
+DRAIN_STRIDES = (RUN, (N_TILE // T) * (CT_K // S) * T, RUN // SPLIT, 1)
+DRAIN_DIMS = list(zip(DRAIN_SIZES, DRAIN_STRIDES))
 
 # Core i takes n-half i % 2 and k-half i // 2, so cores 0/1 form the k-half 0
 # object and cores 2/3 the k-half 1 object.

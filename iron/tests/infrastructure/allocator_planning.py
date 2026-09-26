@@ -75,7 +75,7 @@ def test_live_range_overlap():
 
 
 def test_sequential_chain_double_buffers():
-    """a -> b -> c needs exactly two slots, and alternates between them.
+    """A -> b -> c needs exactly two slots, and alternates between them.
 
     A step that reads ``a`` and writes ``b`` has both live at that step, so
     they may not share an address -- writing ``b`` would clobber ``a`` mid-read.
@@ -390,7 +390,7 @@ def test_odd_sizes_never_leave_an_offset_unaligned():
 
 
 def _chain_steps(names):
-    """x -> names[0] -> ... -> names[-1] -> out, one step per arrow."""
+    """X -> names[0] -> ... -> names[-1] -> out, one step per arrow."""
     steps = [(["x"], [names[0]])]
     steps += [([a], [b]) for a, b in zip(names, names[1:])]
     steps.append(([names[-1]], ["out"]))
@@ -428,7 +428,8 @@ def test_transients_of_different_images_share_bytes():
 def test_an_image_added_later_moves_nothing_and_its_residents_go_on_top():
     """Offsets are baked into instruction streams; an earlier image must keep
     running unchanged. A new resident placed below an earlier image's
-    transients would be overwritten the next time that image ran."""
+    transients would be overwritten the next time that image ran.
+    """
     arena = ArenaPlan(alignment=64)
     first = arena.place_image(
         _chain_steps(["a", "b"]), {"w": 256, "a": 4096, "b": 4096}, {"w": "W"}
@@ -458,7 +459,8 @@ def test_a_resident_needs_a_size():
 
 def test_one_image_reaches_the_lower_bound_above_its_residents():
     """The sizes of test_mixed_sizes_reach_the_lower_bound, over a resident:
-    the resident must not cost the transients anything but its own bytes."""
+    the resident must not cost the transients anything but its own bytes.
+    """
     arena = ArenaPlan(alignment=64)
     names = [f"b{i}" for i in range(12)]
     sizes = {n: (1 + (i * 7) % 5) * 4096 for i, n in enumerate(sorted(names))}
@@ -495,7 +497,8 @@ def _random_image(rng, residents, prefix):
 def test_random_images_keep_every_invariant(seed):
     """Across several images: residents are disjoint from each other and from
     every transient; co-live transients of one image are disjoint; nothing
-    placed ever moves; every offset is aligned; the arena covers it all."""
+    placed ever moves; every offset is aligned; the arena covers it all.
+    """
     rng = random.Random(seed)
     alignment = rng.choice([64, 128, 4096])
     resident_sizes = {f"R{i}": rng.choice([18, 2048, 1 << 20]) for i in range(6)}
@@ -589,7 +592,8 @@ def test_placing_is_done_once_per_sequence():
 
 def test_a_parent_reached_only_through_slices_lives_from_first_to_last_slice():
     """Its slices sit at fixed offsets inside it, so the parent is the thing
-    placed, and a slice written early and read late keeps all of it live."""
+    placed, and a slice written early and read late keeps all of it live.
+    """
     add = _add()
     arena = ArenaPlan(alignment=64)
     seq = _arena_sequence(
@@ -650,7 +654,8 @@ def test_an_arena_needs_an_image_that_addresses_scratch_by_offset():
 
 def test_back_to_back_buffers_start_aligned_whatever_their_sizes():
     """Without a plan, pinned buffers pack in order -- each still on a
-    boundary a host view and a DMA burst can start at."""
+    boundary a host view and a DMA burst can start at.
+    """
     from iron.common.image import OperatorSequence
     from iron.common.image.sequence import ALIGNMENT
 

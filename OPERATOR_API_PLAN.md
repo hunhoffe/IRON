@@ -284,7 +284,16 @@ today**.
 
 ## Progress
 
-- (this commit) Step 7, rung 5: the two-class form is gone. `Overlay`,
+- (this commit) Step 7, last: ruff and pyright cover the whole `iron`
+  package (operators, exports, applications, every test), not only
+  `iron/common`; both are clean (pyright: 0 errors). What it took: a
+  metaclass `__call__` typed under `TYPE_CHECKING` so a positional operand
+  constructs a `Handle` and a keyword-only call the operator; `auto()`
+  fields annotated with their resolved type; `artifacts` that raises
+  instead of returning `None`; `bound_device()`/`device_name()` in
+  `iron/common/device.py` for the places that read the device by hand.
+  Both suites identical to baseline.
+- `e7529ee` Step 7, rung 5: the two-class form is gone. `Overlay`,
   `Operator[OV]`, the `ov` field and its `__init__` wrapper,
   `_split_kwargs`, the tier guards, `Resident`/`BoundResident`,
   `StreamIn`/`StreamOut` and `to=`/`from_=` as declarations, `InOut`, the

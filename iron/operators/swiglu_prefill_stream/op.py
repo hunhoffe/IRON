@@ -3,11 +3,10 @@
 
 from pathlib import Path
 
-import aie.utils as aie_utils
-
 from iron.common import DesignGenerator, from_spec
-from iron.common.kernels import kernels_dir
+from iron.common.device import device_name
 from iron.common.image import OperatorSequence
+from iron.common.kernels import kernels_dir
 
 
 def _stream_group(seq_len, embedding_dim, hidden_dim, k, group_index, context):
@@ -26,7 +25,7 @@ def _stream_group(seq_len, embedding_dim, hidden_dim, k, group_index, context):
     dims = (seq_len, embedding_dim, hidden_dim)
     shapes = stream_design.workload_for(*dims).shapes
     inputs, outputs = stream_design.group_ports(*dims, k=k)[group_index]
-    npu = aie_utils.get_current_device().resolve().name
+    npu = device_name()
 
     def generator(self, image="elf"):
         """The exported design, loaded from its module rather than derived."""

@@ -23,16 +23,16 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 from iron.common.declare import (
-    select,
-    Incompatible,
     In,
+    Incompatible,
     Operator,
     Out,
     Shim,
     Unresolvable,
     Value,
-    param,
     auto,
+    param,
+    select,
 )
 
 _I32x4 = np.ndarray[(4,), np.dtype[np.int32]]  # type: ignore[misc]
@@ -95,7 +95,7 @@ class MHA(Operator):
         tile=(d, B_kv),
         via=Shim(6),
     )
-    O = Out(
+    O = Out(  # noqa: E741  (the operand's name)
         select(heads_interleaved, (seq_pad, num_heads, d), (num_heads, seq_pad, d)),
         tile=(join_rows, d),
         per=(q_shims,),
@@ -183,6 +183,13 @@ class MHA(Operator):
     # -- derived geometry ------------------------------------------------------
 
     @property
+    def _lengths(self) -> tuple[int, int, int]:
+        """``(num_KV_heads, seq_len, seq_pad)``, as :meth:`validate` filled them."""
+        assert self.num_KV_heads is not None and self.seq_len is not None
+        assert self.seq_pad is not None
+        return self.num_KV_heads, self.seq_len, self.seq_pad
+
+    @property
     def pipelines_per_shim(self) -> int:
         return self.num_of_pipelines // (2 if self.num_of_pipelines > 6 else 1)
 
@@ -199,6 +206,7 @@ class MHA(Operator):
         from aie.helpers.dialects.scf import else_, if_
         from aie.iron import Buffer, ObjectFifo, Worker, kernels
         from aie.iron.controlflow import range_
+        from aie.iron.dataflow.objectfifo import StreamDims
         from aie.iron.device import Tile
 
         of_depth = 2
@@ -273,10 +281,10 @@ class MHA(Operator):
         # AIE-array data movement with object fifos. Q arrives joined for
         # n_join pipelines and is split between them on a memtile; K and V
         # are forwarded through a memtile to every pipeline.
-        q_dims = [(B_q // r, r * d), (d // s, s), (r, d), (s, 1)]
-        k_dims = [(B_kv // t, t * d), (d // s, s), (t, d), (s, 1)]
-        v_dims = [(B_kv // s, s * B_kv), (B_kv // t, t), (s, B_kv), (t, 1)]
-        a_dims = [(B_q // r, r * B_kv), (r, t), (B_kv // t, r * t), (t, 1)]
+        q_dims: StreamDims = [(B_q // r, r * d), (d // s, s), (r, d), (s, 1)]
+        k_dims: StreamDims = [(B_kv // t, t * d), (d // s, s), (t, d), (s, 1)]
+        v_dims: StreamDims = [(B_kv // s, s * B_kv), (B_kv // t, t), (s, B_kv), (t, 1)]
+        a_dims: StreamDims = [(B_q // r, r * B_kv), (r, t), (B_kv // t, r * t), (t, 1)]
         o_dims = a_dims
 
         # The Q splits and O joins, one per shim, on memtiles (6, 1) and (7, 1).
@@ -639,10 +647,12 @@ class MHA(Operator):
         """CPU reference: causal attention per head, K and V repeated over each
         query group. Rows past ``seq_len`` (the padding) come out as zeros;
         the real rows never attend to them, causality masks them. In the
-        interleaved layout the operands are ``(seq, heads, d)`` and so is O."""
+        interleaved layout the operands are ``(seq, heads, d)`` and so is O.
+        """
+        kv_heads, seq_len, seq_pad = self._lengths
         if self.heads_interleaved:
             Q, K, V = (np.swapaxes(t, 0, 1) for t in (Q, K, V))
-        groups = self.num_heads // self.num_KV_heads
+        groups = self.num_heads // kv_heads
         K = np.repeat(K, groups, axis=0)
         V = np.repeat(V, groups, axis=0)
         # Causal scaled-dot-product attention, in float32 and rounded once.
@@ -653,13 +663,13 @@ class MHA(Operator):
         seq = scores.shape[-1]
         scores += np.triu(np.full((seq, seq), -np.inf, dtype=np.float32), 1)
         e = np.exp(scores - scores.max(axis=-1, keepdims=True))
-        O = np.matmul(e / e.sum(axis=-1, keepdims=True), v).astype(Q.dtype)
-        if self.seq_len < self.seq_pad:
-            O = O.copy()
-            O[:, self.seq_len :] = 0
-        return (
-            np.ascontiguousarray(np.swapaxes(O, 0, 1)) if self.heads_interleaved else O
-        )
+        out = np.matmul(e / e.sum(axis=-1, keepdims=True), v).astype(Q.dtype)
+        if seq_len < seq_pad:
+            out = out.copy()
+            out[:, seq_len:] = 0
+        if self.heads_interleaved:
+            return np.ascontiguousarray(np.swapaxes(out, 0, 1))
+        return out
 
     # -- the runtime sequence --------------------------------------------------
 
@@ -677,11 +687,11 @@ class MHA(Operator):
         """
         from iron.common.tiling import legalize
 
-        heads, kv_heads = self.num_heads, self.num_KV_heads
-        group = heads // kv_heads
+        kv_heads, _, S = self._lengths
+        group = self.num_heads // kv_heads
         rows = self.join_rows  # Q rows each shim carries per block
-        blocks = self.seq_pad // (rows * self.q_shims)  # per pipeline
-        S, d = self.seq_pad, self.d
+        blocks = S // (rows * self.q_shims)  # per pipeline
+        d = self.d
 
         def strides_of(buffer):
             # (head, row) element strides of a (heads, seq, d) or, interleaved

@@ -28,6 +28,8 @@ import stream
 import torch
 from stream.api import optimize_allocation_co
 
+from iron.operators.swiglu_prefill_stream import reference
+from iron.operators.swiglu_prefill_stream.reference import swiglu_module
 from iron.operators.swiglu_prefill_stream.stream.hardware import ComputeArray
 from iron.operators.swiglu_prefill_stream.stream.mapping import (
     FusedGroup,
@@ -36,8 +38,6 @@ from iron.operators.swiglu_prefill_stream.stream.mapping import (
     group_boundaries,
 )
 from iron.operators.swiglu_prefill_stream.stream.workload import export_workload
-from iron.operators.swiglu_prefill_stream import reference
-from iron.operators.swiglu_prefill_stream.reference import swiglu_module
 
 # Hardware description for the whole-array Strix (npu2) target, shipped as package
 # data inside the installed stream package.

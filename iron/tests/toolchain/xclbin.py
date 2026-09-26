@@ -24,8 +24,8 @@ one under ``tools/hrx-xclbinutil``); no device.
 import urllib.error
 from pathlib import Path
 
-import pytest
 import aie.utils as aie_utils
+import pytest
 
 import iron
 from iron.tests.toolchain.tools import DEVICES, requires, swiglu_decode
@@ -72,7 +72,7 @@ def test_flm_gemm_links_its_configuration_xclbin_and_its_own_instructions(npu2):
     op.compile()
     artifacts = op.artifacts
     assert artifacts.image.stat().st_size > 0
-    assert artifacts.insts.stat().st_size > 0
+    assert artifacts.insts is not None and artifacts.insts.stat().st_size > 0
     # The configuration's image is its own entry, named for the configuration;
     # the stream is this shape's, in another.
     (design,) = artifacts.designs
@@ -107,7 +107,8 @@ def test_shipped_builds_its_instructions_for_the_external_image(npu2):
         clamp=(-2.0, 2.0),
     )
     op.compile()
-    assert op.artifacts.insts.stat().st_size > 0
+    insts = op.artifacts.insts
+    assert insts is not None and insts.stat().st_size > 0
 
 
 def test_shipped_fetches_its_image(npu2):
@@ -129,6 +130,7 @@ def test_a_declared_operator_compiles_to_an_xclbin_on_npu1():
         op = GEMV(M=512, K=1024)
         op.compile()
         assert op.artifacts.image.stat().st_size > 0
-        assert op.artifacts.insts.stat().st_size > 0
+        insts = op.artifacts.insts
+        assert insts is not None and insts.stat().st_size > 0
     finally:
         aie_utils.set_current_device(previous)

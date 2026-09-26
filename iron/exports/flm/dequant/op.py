@@ -4,8 +4,6 @@
 import dataclasses
 
 import numpy as np
-
-import aie.utils as aie_utils
 from aie.dialects._aie_enum_gen import AIEArch
 from aie.helpers.util import v8bfp16ebs8
 from aie.iron.kernels import quant
@@ -16,13 +14,13 @@ from iron.common.declare import (
     Operator,
     Out,
     Unresolvable,
-    param,
     auto,
+    param,
 )
+from iron.common.device import bound_device, device_name
 from iron.common.image.artifacts import Artifacts, Design, Step
-from iron.common.image.jit_compile import insts_design, xclbin_design
+from iron.common.image.jit_compile import cache_entry, insts_design, xclbin_design
 from iron.common.tiling import Access
-
 from iron.exports.flm.dequant.design import (
     BFP16_GROUP,
     BLOCK_BYTES,
@@ -39,8 +37,8 @@ from iron.exports.flm.dequant.design import (
     M_TILE,
     N_TILE,
     ROWS,
-    S,
     SLAB_BLOCKS,
+    S,
     T,
     qw_bytes_for,
     run_geometry,
@@ -146,7 +144,8 @@ class DequantBFP(Operator):
     @staticmethod
     def _check_extents(K, N, error) -> None:
         """The divisibility rule. It names K or N, never the tile_n a caller
-        did not pass."""
+        did not pass.
+        """
         if K % K_TILE_B:
             raise error(f"K ({K}) must be a multiple of {K_TILE_B}")
         if N % N_TILE:
@@ -163,8 +162,8 @@ class DequantBFP(Operator):
     @property
     def config_name(self) -> str:
         """Stem of the artifacts that do not depend on the shape: the xclbin's."""
-        t = self if self._resolved else self.resolved(aie_utils.get_current_device())
-        dev_name = aie_utils.get_current_device().resolve().name
+        t = self if self._resolved else self.resolved(bound_device())
+        dev_name = device_name()
         return f"FLM_DequantBFP_tn{t.tile_n}_c{t.cols}_{dev_name}"
 
     @property
@@ -278,7 +277,7 @@ class DequantBFP(Operator):
                     group=tg_fill,
                 )
 
-            prev = None
+            prev = rt.new_group()  # empty: closed on the first k-tile's turn
             for kb in range(k_tiles):
                 tg = rt.new_group()
                 for c, cb in columns:
@@ -296,8 +295,7 @@ class DequantBFP(Operator):
                         )
                 # finish() awaits the group, so closing the previous k-tile
                 # here overlaps its wait with this one, already running.
-                if prev is not None:
-                    prev.finish()
+                prev.finish()
                 prev = tg
             prev.finish()
             # The fill is not awaited. A core reads it before it writes the
@@ -310,7 +308,8 @@ class DequantBFP(Operator):
     @property
     def _reference_shape(self) -> tuple[int, int]:
         """The shape the configuration-only module is emitted at. Its runtime
-        sequence is discarded; only its device body reaches the xclbin."""
+        sequence is discarded; only its device body reaches the xclbin.
+        """
         return 2 * K_TILE_B, N_TILE * self.cols
 
     def _build(self):
@@ -320,7 +319,7 @@ class DequantBFP(Operator):
         xclbin is emitted at a reference shape so every shape sharing the
         configuration reuses it, and only the instruction stream is per shape.
         """
-        tuned = self.resolved(aie_utils.get_current_device())
+        tuned = self.resolved(bound_device())
         K, N = tuned._reference_shape
         reference = dataclasses.replace(
             tuned,
@@ -333,7 +332,8 @@ class DequantBFP(Operator):
         )
         image = xclbin_design(reference.generator(), kernel_name="MLIR_AIE")
         stream = insts_design(self.generator())
-        config, own = image.get_cache_entry(), stream.get_cache_entry()
+        config, own = cache_entry(image), cache_entry(stream)
+        assert config.xclbin is not None and own.insts is not None
         self._design = stream
         return Artifacts(
             kind="xclbin",

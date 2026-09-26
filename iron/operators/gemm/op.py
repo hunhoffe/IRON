@@ -3,24 +3,25 @@
 
 import dataclasses
 from dataclasses import field
+from typing import Any
 
 import numpy as np
-
 from aie.iron import kernels
+from aie.iron.dataflow.objectfifo import StreamDims
 from ml_dtypes import bfloat16
 
-from iron.common.kernels import target_arch
 from iron.common.declare import (
-    Incompatible,
     In,
+    Incompatible,
     Operator,
     Out,
     Unresolvable,
     Value,
+    auto,
     param,
     select,
-    auto,
 )
+from iron.common.kernels import target_arch
 
 
 def ceildiv(a, b):
@@ -28,6 +29,9 @@ def ceildiv(a, b):
 
 
 N_AIE_ROWS = 4
+# The mm factory's geometry query: a MatrixKernel attribute upstream's typing
+# does not show on the factory.
+_mac_dims = kernels.mm.mac_dims  # pyright: ignore[reportFunctionMemberAccess]
 
 
 class GEMM(Operator):
@@ -58,8 +62,8 @@ class GEMM(Operator):
     emulate_bf16_mmul_with_bfp16: bool = param(default=True, repr=False, array=True)
     prio_accuracy: bool = param(default=False, repr=False, array=True)
     round_conv_even: bool = param(default=True, repr=False, array=True)
-    dtype_in: object = field(default=bfloat16, repr=False)
-    dtype_out: object = field(default=bfloat16, repr=False)
+    dtype_in: Any = field(default=bfloat16, repr=False)
+    dtype_out: Any = field(default=bfloat16, repr=False)
     use_scalar: bool = param(default=False, repr=False, array=True)
     # Filled by resolve: the L2 tile of each stream and how many shims carry A.
     n_shim_mem_a: int = auto(repr=False)
@@ -115,7 +119,7 @@ class GEMM(Operator):
         belongs to the kernel mm.cc compiles, and upstream's table is the one
         its ``combos(X) X(..., r, s, t)`` macros are kept in step with.
         """
-        return kernels.mm.mac_dims(
+        return _mac_dims(
             self.dtype_in,
             self.dtype_out,
             arch=target_arch(dev),
@@ -135,7 +139,7 @@ class GEMM(Operator):
         # runs at construction, before resolution picks one. array() asks for
         # the geometry of the device it is actually building for, which on
         # npu1 is the looser (4, 8, 4).
-        r, s, t = kernels.mm.mac_dims(
+        r, s, t = _mac_dims(
             self.dtype_in,
             self.dtype_out,
             arch="aie2p",
@@ -224,11 +228,13 @@ class GEMM(Operator):
             )
 
     def device(self, target):
-        from aie.iron.device import NPU1, NPU1Col1, NPU1Col2, NPU2
+        from aie.iron.device import NPU1, NPU2, NPU1Col1, NPU1Col2
 
         if target.dev.resolve().name == "npu1":
-            return {1: NPU1Col1, 2: NPU1Col2, 4: NPU1}[self.num_aie_columns]()
-        return NPU2()
+            return {1: NPU1Col1, 2: NPU1Col2, 4: NPU1}[
+                self.num_aie_columns
+            ]()  # pyright: ignore[reportCallIssue]
+        return NPU2()  # pyright: ignore[reportCallIssue]
 
     # -- the array ----------------------------------------------------------
 
@@ -246,10 +252,9 @@ class GEMM(Operator):
         use_scalar = self.use_scalar
         dtype_in, dtype_out = self.dtype_in, self.dtype_out
         use_larger_internal_buffer = self.prio_accuracy
-        if use_larger_internal_buffer:
-            # bfloat16 accumulates in place in an f32 buffer, converted to bf16
-            # after the reduction loop for the transfer to L2.
-            dtype_out_internal = np.float32
+        # bfloat16 accumulates in place in an f32 buffer, converted to bf16
+        # after the reduction loop for the transfer to L2.
+        dtype_out_internal = np.float32
         r, s, t = self.mac_dims(target.dev)
         if not use_scalar:
             assert m % r == 0
@@ -288,22 +293,22 @@ class GEMM(Operator):
         )
         zero_kernel = kernels.zero(m * n, dtype_acc, vectorized=not use_scalar)
         convert_copy_kernel = None
+        C_l1_ty_internal = np.ndarray[(m * n,), np.dtype[dtype_out_internal]]
         if use_larger_internal_buffer:
             # Fix fifo depth for C objfifo to 1 since 1 buffer will be used for
             # accumulation and another for transfer to L2
             fifo_depth_out = 1
-            C_l1_ty_internal = np.ndarray[(m * n,), np.dtype[dtype_out_internal]]
             convert_copy_kernel = kernels.datamovement.convert_copy(m * n)
         else:
             fifo_depth_out = fifo_depth
 
         # AIE-array data movement with object fifos
-        A_l3l2_fifos = [None] * n_shim_mem_A
-        A_l2l1_fifos = [None] * n_aie_rows
-        B_l3l2_fifos = [None] * n_aie_cols
-        B_l2l1_fifos = [None] * n_aie_cols
-        C_l1l2_fifos = [[None] * n_aie_cols for _ in range(n_aie_rows)]
-        C_l2l3_fifos = [None] * n_aie_cols
+        A_l3l2_fifos: list[Any] = [None] * n_shim_mem_A
+        A_l2l1_fifos: list[Any] = [None] * n_aie_rows
+        B_l3l2_fifos: list[Any] = [None] * n_aie_cols
+        B_l2l1_fifos: list[Any] = [None] * n_aie_cols
+        C_l1l2_fifos: list[list[Any]] = [[None] * n_aie_cols for _ in range(n_aie_rows)]
+        C_l2l3_fifos: list[Any] = [None] * n_aie_cols
 
         # Runtime parameters: [K_div_k, n_tiles_per_core] per core
         rtps = [
@@ -331,14 +336,8 @@ class GEMM(Operator):
             start_row = i * n_A_tiles_per_shim
             stop_row = start_row + n_A_tiles_per_shim
             of_offsets = [m * k * j for j in range(stop_row - start_row)]
-            dims_to_stream = [
-                [
-                    (m // r, r * k),
-                    (k // s, s),
-                    (r, k),
-                    (s, 1),
-                ]
-            ] * (stop_row - start_row)
+            a_dims: StreamDims = [(m // r, r * k), (k // s, s), (r, k), (s, 1)]
+            dims_to_stream = [a_dims] * (stop_row - start_row)
             a_tmp_fifos = (
                 A_l3l2_fifos[i]
                 .cons()
@@ -357,29 +356,31 @@ class GEMM(Operator):
             B_l3l2_fifos[col] = ObjectFifo(
                 B_l2_ty, name=f"B_L3L2_{col}", depth=fifo_depth
             )
+            b_dims: StreamDims
             if b_col_maj:
-                dims_to_stream = [(n // t, t * k), (k // s, s), (t, k), (s, 1)]
+                b_dims = [(n // t, t * k), (k // s, s), (t, k), (s, 1)]
             else:
-                dims_to_stream = [(k // s, s * n), (n // t, t), (s, n), (t, 1)]
+                b_dims = [(k // s, s * n), (n // t, t), (s, n), (t, 1)]
             B_l2l1_fifos[col] = (
                 B_l3l2_fifos[col]
                 .cons()
                 .forward(
                     obj_type=B_l1_ty,
                     name=f"B_L2L1_{col}",
-                    dims_to_stream=dims_to_stream,
+                    dims_to_stream=b_dims,
                 )
             )
             # Output C
+            c_dims: StreamDims
             if c_col_maj:
-                dims_to_stream = [(n // t, t * m), (t, r), (m // r, r * t), (r, 1)]
+                c_dims = [(n // t, t * m), (t, r), (m // r, r * t), (r, 1)]
             else:
-                dims_to_stream = [(m // r, r * n), (r, t), (n // t, r * t), (t, 1)]
+                c_dims = [(m // r, r * n), (r, t), (n // t, r * t), (t, 1)]
             C_l2l3_fifos[col] = ObjectFifo(
                 C_l2_ty,
                 name=f"C_L2L3_{col}",
                 depth=fifo_depth,
-                dims_to_stream=dims_to_stream,
+                dims_to_stream=c_dims,
             )
             of_offsets = [m * n * i for i in range(n_aie_rows)]
             # join along one column
@@ -489,7 +490,8 @@ class GEMM(Operator):
         def legal(buffer, tap):
             """The tiler's pattern as descriptors the shim holds: one when it
             fits, else the outermost dimension unrolled (a column-major B
-            whose column-block stride is past the 20-bit step)."""
+            whose column-block stride is past the 20-bit step).
+            """
             return legalize(
                 buffer.elements, tap.offset, tap.sizes, tap.strides, buffer.dtype
             )

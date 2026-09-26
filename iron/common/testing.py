@@ -24,8 +24,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
-import aie.utils as aie_utils
 from aie.utils.verify import Tolerance
+
+from .device import bound_device
 
 __all__ = [
     "Case",
@@ -38,10 +39,7 @@ __all__ = [
 
 def device_columns() -> int:
     """The bound device's width, for a declaration that sweeps it."""
-    dev = aie_utils.get_current_device()
-    if dev is None:
-        raise RuntimeError("device_columns() needs a bound device")
-    return dev.cols
+    return bound_device().cols
 
 
 @dataclass(frozen=True)
@@ -82,7 +80,7 @@ class Testing:
 
     cases: Iterable[Case | dict] | Callable[[], Iterable[Case | dict]]
     tolerance: Tolerance | None = None
-    draw: Any = None
+    draw: dict[str, Any] | Callable[[Any], dict[str, Any]] | None = None
 
     def resolve(self) -> list[Case]:
         """The cases, with the callable form called and dicts wrapped."""

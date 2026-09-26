@@ -29,9 +29,8 @@ device), not to compile anything.
 
 import re
 
-import pytest
-
 import aie.utils as aie_utils
+import pytest
 from aie.iron.device import from_name
 
 import iron

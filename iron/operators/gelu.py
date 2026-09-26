@@ -3,10 +3,8 @@
 
 from typing import ClassVar
 
-from aie.iron.kernels import activation
-
 import numpy as np
-
+from aie.iron.kernels import activation
 from aie.utils.verify import Tolerance
 
 from iron.common import UnaryElementwise
@@ -14,7 +12,7 @@ from iron.common.testing import Testing, channeled_unary_cases
 
 
 class GELU(UnaryElementwise):
-    """AIE-accelerated GELU activation function"""
+    """AIE-accelerated GELU activation function."""
 
     test = Testing(
         channeled_unary_cases([1024, 2048, 4096, 8192], 8192),

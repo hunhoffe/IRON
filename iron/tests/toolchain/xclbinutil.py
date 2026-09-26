@@ -27,6 +27,7 @@ pytestmark = requires("xclbinutil")
 
 
 def _run(*args, cwd):
+    assert XCLBINUTIL is not None
     result = subprocess.run(
         [XCLBINUTIL, *args], cwd=cwd, capture_output=True, text=True, timeout=120
     )

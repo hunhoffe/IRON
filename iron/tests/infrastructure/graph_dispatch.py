@@ -14,9 +14,8 @@ change that quietly aliased two live buffers shows up here and nowhere
 else, because it produces wrong values rather than an error.
 """
 
-import pytest
-
 import aie.utils as aie_utils
+import pytest
 from aie.iron.device import from_name
 
 import iron
@@ -40,7 +39,7 @@ def _operator():
 
 
 def _graph(name, **kwargs):
-    """x + w + w + w, traced from dataflow, as the sequence it lowers to."""
+    """X + w + w + w, traced from dataflow, as the sequence it lowers to."""
     add = _operator()
 
     @iron.graph

@@ -3,33 +3,33 @@
 
 
 import dataclasses
+from collections.abc import Sequence
 
-from aie.iron.kernels import datamovement
 import numpy as np
+from aie.iron.kernels import datamovement
+from aie.utils.verify import Tolerance
 from ml_dtypes import bfloat16
 
-from aie.utils.verify import Tolerance
-
 from iron.common.declare import (
-    Incompatible,
     In,
+    Incompatible,
     Operator,
     Out,
     Unresolvable,
     Value,
-    param,
-    optional,
     auto,
+    optional,
+    param,
 )
 from iron.common.testing import Case, Testing, device_columns
 from iron.common.tiling import Access
 
 
-def _transformation_dims(sizes, strides):
+def _transformation_dims(sizes, strides) -> list[Sequence[int]]:
     """What ``TensorAccessPattern.transformation_dims`` returns for these sizes/strides."""
     from aie.helpers.taplib.tap import TensorAccessPattern
 
-    return TensorAccessPattern((1, 1), 0, sizes, strides).transformation_dims
+    return list(TensorAccessPattern((1, 1), 0, sizes, strides).transformation_dims)
 
 
 def _cases():
@@ -248,7 +248,8 @@ class Transpose(Operator):
 
     def sequence(self, rt):
         """One task group per batch (a parallel fill+drain over all cores), so the
-        contiguous matrices stream through the same fifos in sequence."""
+        contiguous matrices stream through the same fifos in sequence.
+        """
         M, N, nb = self.M, self.N, self.num_batches
         m, n, cols, chans = self.m, self.n, self.num_aie_columns, self.num_channels
         elems = M * N
@@ -291,5 +292,6 @@ class Transpose(Operator):
 
 def reference(x):
     """CPU reference: 2D transpose of an ``(rows, cols)`` matrix (ground truth);
-    of each matrix when a batch dimension leads."""
+    of each matrix when a batch dimension leads.
+    """
     return np.swapaxes(x, -2, -1)

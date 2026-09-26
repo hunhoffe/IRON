@@ -3,8 +3,7 @@
 # SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Inference harness -- all the necessary code _other_ than the actual model (forward pass).
+"""Inference harness -- all the necessary code _other_ than the actual model (forward pass).
 ``init`` maps the weights, loads the tokenizer, builds the RoPE table and
 tokenizes the prompt; ``generate`` runs the generation loop, calling the
 given ``forward_pass(config, state)`` for the prompt and then per token, and
@@ -117,7 +116,8 @@ class LlamaConfig:
 class LlamaModelState:
     """What a forward pass is given: the tokens to run (the whole prompt for
     prefill, the latest token for decode) and how many came before them.
-    The KV cache itself lives on the device."""
+    The KV cache itself lives on the device.
+    """
 
     def __init__(self, config):
         self.token_ids = np.empty((1, 0), dtype=np.int64)
@@ -197,7 +197,7 @@ def check_determinism(config, prompts, forward_pass, num_tokens, rounds):
     device then reads the other prompt's data, not a leftover copy of its own.
     Returns how many rounds differ from the first round of the same prompt.
     """
-    first = [None] * len(prompts)
+    first: list[np.ndarray | None] = [None] * len(prompts)
     n_differ = 0
     for r in range(rounds * len(prompts)):
         p = r % len(prompts)

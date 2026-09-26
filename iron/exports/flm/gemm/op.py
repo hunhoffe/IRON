@@ -18,31 +18,32 @@ per-choice breakdown against the shipped FastFlowLM overlay
 """
 
 import dataclasses
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import numpy as np
+from aie.dialects._aie_enum_gen import AIEArch
+from aie.dialects.aie import (
+    get_target_model,  # pyright: ignore[reportAttributeAccessIssue]  # not in _aie.pyi
+)
+from aie.helpers.util import v8bfp16ebs8
 from ml_dtypes import bfloat16
 
-import aie.utils as aie_utils
-from aie.dialects._aie_enum_gen import AIEArch
-from aie.dialects.aie import get_target_model
-from aie.helpers.util import v8bfp16ebs8
-
 from iron.common.declare import (
-    Incompatible,
     In,
+    Incompatible,
     Operator,
     Out,
     Unresolvable,
     Value,
+    auto,
     param,
     select,
-    auto,
 )
+from iron.common.device import bound_device, device_name
 from iron.common.kernels import lut_sources
-from iron.common.tiling import Access
-from iron.common.tiling import run_dims
+from iron.common.tiling import Access, run_dims
 from iron.exports.flm.gemm.design import (
+    _VERIFIED_CT_K,
     A_DEPTH,
     B_DEPTH,
     BFP16_GROUP,
@@ -51,26 +52,25 @@ from iron.exports.flm.gemm.design import (
     CT_MAX_K_FOR_N,
     CT_OUT_LEN,
     EPILOGUE_SYMBOL,
-    Epilogue,
     K_TILE,
     M_CHUNK_FOR_N,
     M_TILE,
     MIN_K,
     N_TILE_DEFAULT,
     OVERLAP_DEFAULT,
-    R,
     RTP_CLAMP_MAX,
     RTP_CLAMP_MIN,
     RTP_EPILOGUE,
     RTP_K_ITERS,
     RTP_M_ROW_BLOCKS,
     RTP_N_VAL,
-    Rounding,
-    S,
     SHIM_TASK_QUEUE,
     STACK_SIZE,
+    Epilogue,
+    R,
+    Rounding,
+    S,
     T,
-    _VERIFIED_CT_K,
     _b_depth_for,
     _default_l1,
     _hw_stride_ok,
@@ -82,7 +82,7 @@ from iron.exports.flm.packing import pack_b, packed_b_size
 
 
 def _device_name() -> str:
-    return aie_utils.get_current_device().resolve().name
+    return device_name()
 
 
 def _clamp_bits(clamp) -> tuple[int, int]:
@@ -117,7 +117,7 @@ class GEMM(Operator):
     N: int = param()
     # Activation fused into the C drain, selected at run time from the
     # compiled-in modes.
-    epilogue: Epilogue = param(default=Epilogue.NONE)
+    epilogue: Epilogue | str = param(default=Epilogue.NONE)
     # Optional (min, max) applied after the activation.
     clamp: tuple | None = param(default=None)
     # B's packed block count on AIE2P; filled by validate() from K and N.
@@ -135,14 +135,14 @@ class GEMM(Operator):
     # should compile two.
     epilogue_modes: tuple = param(default=tuple(Epilogue), array=True)
     # Rounding for every f32->bf16 conversion; see Rounding in design.py.
-    rounding: Rounding = param(default=Rounding.CONV_EVEN, array=True)
+    rounding: Rounding | str = param(default=Rounding.CONV_EVEN, array=True)
     # Filled by resolve, from the device: the grid, B's storage, the L2 tiles.
     rows: int = auto(repr=False)
     cols: int = auto(repr=False)
     bfp16_b: bool = auto(repr=False, array=True)
     # B's element type, on the array and in DDR alike; the host holds a
     # block-float B as bytes (BoundBuffer.host_dtype).
-    b_dtype: object = auto(repr=False)
+    b_dtype: Any = auto(repr=False)
     l1_b_depth: int = auto(repr=False, array=True)
     shim_bds: int = auto(repr=False)
     a_l2: int = auto(repr=False)
@@ -312,10 +312,11 @@ class GEMM(Operator):
         """This operator resolved for the current device, when construction
         left it unresolved: the names and the packing read fields resolution
         fills (tile_n, tile_ma, the B block depth), and both are wanted
-        before the build resolves."""
+        before the build resolves.
+        """
         if self._resolved:
             return self
-        return self.resolved(aie_utils.get_current_device())
+        return self.resolved(bound_device())
 
     @property
     def ct_max_k(self) -> int:
@@ -329,7 +330,8 @@ class GEMM(Operator):
     @property
     def epilogue_mask(self) -> int:
         """Bitmask of the modes compiled into the epilogue. Mode 0 is always
-        present -- the kernel falls back to it."""
+        present -- the kernel falls back to it.
+        """
         mask = 1
         for m in self.epilogue_modes:
             mask |= 1 << Epilogue(m).mode
@@ -419,6 +421,7 @@ class GEMM(Operator):
         from aie.helpers.util import v8bfp16ebs8  # noqa: F401  (the array type)
         from aie.iron import Buffer, ObjectFifo, Worker
         from aie.iron.controlflow import range_
+        from aie.iron.dataflow.objectfifo import StreamDims
 
         COLS, ROWS = self.cols, self.rows
         N_TILE, CT_MAX_K, M_CHUNK, T_MA = (
@@ -478,7 +481,7 @@ class GEMM(Operator):
         # --- Data movement ------------------------------------------------
         # These turn a row-major DDR tile into the blocked layout the mmul
         # indexes. A mismatch is silently wrong, not a build error.
-        gather_dims = [
+        gather_dims: StreamDims = [
             (M_TILE // R, R * N_TILE),
             (N_TILE // T, T),
             (R, N_TILE),
@@ -487,17 +490,18 @@ class GEMM(Operator):
         # B needs no reblocking on either hop: pack_B emits it in consume order.
         b_recv_dims = None
         b_send_dims = None
-        a_recv_dims = [
+        a_recv_dims: StreamDims = [
             (M_CHUNK * M_TILE // R, R * K_TILE),
             (R, S),
             (K_TILE // S, R * S),
             (S, 1),
         ]
         # Emits (b_iter, mc, band): the order the core acquires A in.
-        a_send_dims = [
+        a_send_dims: StreamDims = [
             (K_DIV_CT_K_MAX, R * CT_MAX_K),
             (M_CHUNK * M_TILE // R, R * K_TILE),
-        ] + run_dims(R * CT_MAX_K)
+            *run_dims(R * CT_MAX_K),
+        ]
 
         # C: one join per column; each of the ROWS cores drops its slice at
         # its own offset in a single memtile buffer.
@@ -575,7 +579,8 @@ class GEMM(Operator):
             accs, o_h, b_h, a_h, init_k, kstep_k, epi_k, my_rtp, my_col, barrier
         ):
             """Core body. Every trip count and the activation come from the
-            runtime parameter buffer, so one core program serves every shape."""
+            runtime parameter buffer, so one core program serves every shape.
+            """
             barrier.wait_for_value(1)
             # Derived rather than sent, saving an RTP word: column c has work
             # in block j iff (j*COLS + c)*N_TILE < N. Both divisors are powers
@@ -718,7 +723,7 @@ class GEMM(Operator):
     # -- the runtime sequence --------------------------------------------------
 
     def sequence(self, rt):
-        M, K, N = self.M, self.K, self.N
+        K, N = self.K, self.N
         COLS, ROWS = self.cols, self.rows
         N_TILE, M_CHUNK, B_GROUP = self.tile_n, self.m_chunk, self.b_group
         m_row_blocks, k_iters, n_units = (
@@ -734,7 +739,7 @@ class GEMM(Operator):
         # rem_blocks columns (0 <= rem_blocks < COLS) that do one block more.
         n_full = N // (N_TILE * COLS)
         rem_blocks = (N % (N_TILE * COLS)) // N_TILE
-        a_elems, b_elems, c_elems = self.A.elements, self.B.elements, self.C.elements
+        a_elems, c_elems = self.A.elements, self.C.elements
         # B's extents are in array elements (values // B_GROUP), whatever the
         # host buffer counts.
         b_units = K * N // B_GROUP
@@ -902,7 +907,8 @@ class GEMM(Operator):
     @property
     def _reference_shape(self) -> tuple[int, int, int]:
         """The shape the configuration-only module is emitted at: the smallest
-        valid one, so the shape-independence is explicit."""
+        valid one, so the shape-independence is explicit.
+        """
         return (M_TILE * self.rows * self.m_chunk, MIN_K, self.tile_n * self.cols)
 
     def _build(self):
@@ -916,18 +922,23 @@ class GEMM(Operator):
         overlay there is no image to build at all.
         """
         from iron.common.image.artifacts import Artifacts, Design, Step
-        from iron.common.image.jit_compile import insts_design, xclbin_design
+        from iron.common.image.jit_compile import (
+            cache_entry,
+            insts_design,
+            xclbin_design,
+        )
 
         if self.external is not None:
             return super()._build()  # the downloaded image, instructions only
-        tuned = self.resolved(aie_utils.get_current_device())
+        tuned = self.resolved(bound_device())
         M, K, N = tuned._reference_shape
         reference = dataclasses.replace(
             tuned, M=M, K=K, N=N, epilogue=Epilogue.NONE, clamp=None, packed_blocks=None
         )
         image = xclbin_design(reference.generator(), kernel_name="MLIR_AIE")
         stream = insts_design(self.generator())
-        config, own = image.get_cache_entry(), stream.get_cache_entry()
+        config, own = cache_entry(image), cache_entry(stream)
+        assert config.xclbin is not None and own.insts is not None
         self._design = stream
         return Artifacts(
             kind="xclbin",
@@ -956,7 +967,7 @@ class GEMM(Operator):
 
     # -- host-side helpers -------------------------------------------------------
 
-    def pack_B(self, B):
+    def pack_B(self, B):  # noqa: N802  (the operand's name)
         """Reorder a row-major ``(K, N)`` weight matrix into consumption order.
 
         Flat uint8 bfp16ebs8 blocks on NPU2, flat bf16 on NPU1. Packing to
@@ -976,7 +987,7 @@ class GEMM(Operator):
             overlay_order=t.b_overlay_order,
         )
 
-    def packed_B_size(self, K, N):
+    def packed_B_size(self, K, N):  # noqa: N802
         """Elements (bf16) or bytes (bfp16ebs8) that ``pack_B`` returns."""
         return packed_b_size(K, N, bool(self._tuned.bfp16_b))
 
@@ -984,7 +995,7 @@ class GEMM(Operator):
         """CPU reference: ``C = epilogue(A @ B)``."""
         from iron.exports.flm.gemm.reference import reference
 
-        return reference(A, B, self.epilogue, self.clamp)
+        return reference(A, B, Epilogue(self.epilogue), self.clamp)
 
 
 # Live descriptors on a shim tile under the split path: SHIM_TASK_QUEUE from

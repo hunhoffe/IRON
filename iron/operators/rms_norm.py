@@ -2,19 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 
-import numpy as np
-
 from typing import ClassVar
 
+import numpy as np
+from aie.iron.kernels import eltwise, norm
 from aie.utils.verify import Tolerance
 
 from iron.common import Elementwise
-from iron.common.declare import In, Out, auto, param
-import aie.utils as aie_utils
-from aie.iron.kernels import eltwise, norm
-
+from iron.common.declare import In, Out, auto, get_shim_dma_limit, param
+from iron.common.device import bound_device
 from iron.common.testing import Case, Testing
-from iron.common.declare import get_shim_dma_limit
 from iron.common.tiling import bank_elements
 
 _I32 = np.ndarray[(1,), np.dtype[np.int32]]  # type: ignore[misc]
@@ -24,10 +21,11 @@ def _cases(weighted):
     """Every column and channel split that divides each size within the
     ShimDMA budget; the 2048 shape is the default suite. A weighted norm
     also streams the weight row, one fifo per channel across the columns,
-    so its budget is channels * (columns + 1) and its line cap is half."""
+    so its budget is channels * (columns + 1) and its line cap is half.
+    """
 
     def cases():
-        dev = aie_utils.get_current_device()
+        dev = bound_device()
         limit = get_shim_dma_limit(dev)
         tile_cap = 4096 if weighted else 8192
         out = []
@@ -70,7 +68,8 @@ class RMSNorm(Elementwise):
     test = Testing(_cases(weighted=False), tolerance=Tolerance.relative(0.04, 1e-6))
 
     rows: int = param()
-    tile_size: int = param()
+    # Required here, though the base defaults it: every field is keyword-only.
+    tile_size: int = param()  # pyright: ignore
     # One core by default: a core normalizes whole rows, and how many rows
     # there are is the extent. Call sites with many rows spread them.
     num_aie_columns: int = auto(1)

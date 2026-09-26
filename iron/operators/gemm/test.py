@@ -3,16 +3,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
-import aie.utils as aie_utils
 
-from iron.operators.gemm.op import GEMM
+from iron.common.device import bound_device, device_name
 from iron.common.harness import record_metric, run_test, vectors
+from iron.operators.gemm.op import GEMM
 
 
 def get_params():
-    dev = aie_utils.get_current_device()
+    dev = bound_device()
     max_aie_columns = dev.cols
-    device_type = dev.resolve().name
+    device_type = device_name(dev)
     # fmt: off
     #   M,     K,     N, num_aie_columns, b_col_maj, c_col_maj,   m,   k,   n
     regular_params = [

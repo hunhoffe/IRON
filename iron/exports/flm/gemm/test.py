@@ -4,24 +4,26 @@
 
 import os
 
+import aie.utils as aie_utils
 import numpy as np
 import pytest
-import aie.utils as aie_utils
-
-from aie.dialects.aie import get_target_model
 from aie.dialects._aie_enum_gen import AIEArch
+from aie.dialects.aie import (
+    get_target_model,  # pyright: ignore[reportAttributeAccessIssue]  # not in _aie.pyi
+)
 
-from iron.operators import GEMM as GenericGEMM
+from iron.common.device import bound_device, device_name
+from iron.common.harness import record_metric, run_test, vectors
 from iron.exports.flm.gemm.design import (
     BFP16_GROUP,
     BFP16_GROUP_BYTES,
     CT_MAX_K_FOR_N,
     M_CHUNK_FOR_N,
-    Epilogue,
     M_TILE,
+    SHIM_TASK_QUEUE,
+    Epilogue,
     R,
     Rounding,
-    SHIM_TASK_QUEUE,
     _b_depth_for,
     _default_l1,
     l1_budget,
@@ -29,7 +31,7 @@ from iron.exports.flm.gemm.design import (
 from iron.exports.flm.gemm.op import GEMM
 from iron.exports.flm.gemm.reference import apply_epilogue
 from iron.exports.flm.gemm.shipped import Shipped
-from iron.common.harness import record_metric, run_test, vectors
+from iron.operators import GEMM as GenericGEMM
 
 # Unpacked so the parameter tables below stay column-aligned.
 NONE, GELU, SILU, SIGMOID = Epilogue
@@ -47,7 +49,7 @@ def get_params():
     dev = aie_utils.get_current_device()
     if dev is None:
         return []
-    dev_name = dev.resolve().name
+    dev_name = device_name(dev)
     if dev_name not in ("npu1", "npu2"):
         return []
 
@@ -158,7 +160,7 @@ def check_on_device(operator, data, rounding=CONV_EVEN):
     """
     A, B = data["A"], data["B"]
     mass = accumulated_mass(operator.K, A, B)
-    if aie_utils.get_current_device().resolve().name == "npu1":
+    if device_name() == "npu1":
         budget = 0.002 if rounding is FLOOR else 0.0002
     else:
         budget = 0.05 if rounding is FLOOR else 0.004
@@ -199,7 +201,7 @@ def test_gemm_split_leg_bounds(npu_runtime):
     either hangs silently. The live set is 4 + 2 + 2 = 8 of 16 descriptors;
     assert that here, since retuning SHIM_TASK_QUEUE could break it silently.
     """
-    dev = aie_utils.get_current_device()
+    dev = bound_device()
     available = get_target_model(dev.resolve()).get_num_bds(0, 0)
     worst = SHIM_TASK_QUEUE + 2 + 2
     assert worst <= available, (
@@ -240,7 +242,7 @@ def tile_option_params():
     own kernel object and xclbin.
     """
     dev = aie_utils.get_current_device()
-    if dev is None or dev.resolve().name not in ("npu1", "npu2"):
+    if dev is None or device_name(dev) not in ("npu1", "npu2"):
         return []
     l1 = l1_budget(dev)
     b_elem = BFP16_GROUP_BYTES / BFP16_GROUP if dev.arch == AIEArch.AIE2p else 2
@@ -279,7 +281,7 @@ def tile_option_params():
 def test_gemm_tile_options(M, K, N, tile_n, tile_ma, npu_runtime):
     """Each accepted (tile_n, tile_ma) computes the right answer on hardware."""
     operator = GEMM(M=M, K=K, N=N, tile_n=tile_n, tile_ma=tile_ma)
-    assert (operator._tuned_ov.tile_n, operator._tuned_ov.tile_ma) == (tile_n, tile_ma)
+    assert (operator._tuned.tile_n, operator._tuned.tile_ma) == (tile_n, tile_ma)
     errors, _latency_us, _bandwidth_gbps = check_on_device(
         operator, flm_vectors(operator, INPUT_SCALE)
     )
@@ -382,9 +384,10 @@ MAX_SLOPE = {NONE: 1.0, SIGMOID: 0.25, SILU: 1.1, GELU: 1.1}
 
 def _shipped_marks():
     """Extensive, since constructing the operator downloads the image; and
-    NPU2 with eight columns, which the binary was built for."""
+    NPU2 with eight columns, which the binary was built for.
+    """
     dev = aie_utils.get_current_device()
-    unfit = dev is None or dev.resolve().name != "npu2" or dev.cols < 8
+    unfit = dev is None or device_name(dev) != "npu2" or dev.cols < 8
     return [
         pytest.mark.extensive,
         pytest.mark.skipif(

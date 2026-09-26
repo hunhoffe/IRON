@@ -6,8 +6,8 @@ import math
 
 import pytest
 
-from iron.operators.mha.op import MHA
 from iron.common.harness import run_test, vectors
+from iron.operators.mha.op import MHA
 
 
 def get_params():

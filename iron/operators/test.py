@@ -17,13 +17,12 @@ step by step, a shipped binary checked against its own accumulator --
 keeps its own ``test.py`` beside it.
 """
 
+import aie.utils as aie_utils
 import pytest
 
-import aie.utils as aie_utils
-
 import iron.operators as catalog
-from iron.common.harness import run_test, vectors
 from iron.common.declare import Operator
+from iron.common.harness import run_test, vectors
 from iron.common.testing import Case, Testing
 
 if aie_utils.get_current_device() is None:

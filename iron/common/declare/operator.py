@@ -16,7 +16,15 @@ from __future__ import annotations
 import dataclasses
 import inspect
 from types import FunctionType
-from typing import Any, ClassVar, Self, dataclass_transform
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Self,
+    TypeVar,
+    dataclass_transform,
+    overload,
+)
 
 import aie.utils as aie_utils
 from aie.utils.npukernel import NPUKernel
@@ -32,6 +40,12 @@ from .member import Value, _Buffer, _Member, _Stream, _Value
 from .naming import label_parts
 from .shim import check_shim_columns, shim_columns
 
+if TYPE_CHECKING:
+    from ..graph.handle import Handle
+    from ..image.artifacts import Artifacts
+
+_T = TypeVar("_T")
+
 
 class _OperatorMeta(type):
     """``GEMV(w, h)`` inside a graph function records a step; anything else constructs.
@@ -39,7 +53,18 @@ class _OperatorMeta(type):
     The class tells the two apart by whether it received graph handles (or
     host tensors, which a graph closes over as weights); see
     :mod:`iron.common.graph`. Outside a graph the call constructs as usual.
+    To a checker the two are the two overloads below: a call with operands
+    is a graph step and yields a handle, a call by keyword constructs.
     """
+
+    if TYPE_CHECKING:
+
+        @overload
+        def __call__(
+            cls: type[_T], operand: Any, /, *operands: Any, **kwargs: Any
+        ) -> Handle: ...
+        @overload
+        def __call__(cls: type[_T], **kwargs: Any) -> _T: ...
 
     def __call__(cls, *args, **kwargs):
         from .. import graph as _graph  # imports this package: a cycle at module scope
@@ -451,12 +476,9 @@ class Operator(metaclass=_OperatorMeta):
 
     @property
     def dev(self):
-        """The device a design is generated for, bound as the current one.
-
-        Bound rather than merely inferred: the ``aie.iron.kernels`` factories
-        read only a bound device, and fall back to aie2 without one, so a
-        contract asked for before the first compile (``reference_tolerance``)
-        would otherwise describe aie2's kernel on an NPU2.
+        """The device a design is generated for, bound as the current one
+        (:func:`~iron.common.device.bound_device`); ``None`` on a host
+        without one, where an operator can still be checked and lowered.
         """
         return aie_utils.ensure_current_device()
 
@@ -508,9 +530,14 @@ class Operator(metaclass=_OperatorMeta):
         return self
 
     @property
-    def artifacts(self):
-        """The record of what :meth:`compile` produced (None before)."""
-        return getattr(self, "_artifacts", None)
+    def artifacts(self) -> "Artifacts":
+        """The record of what :meth:`compile` produced."""
+        artifacts = getattr(self, "_artifacts", None)
+        if artifacts is None:
+            raise RuntimeError(
+                f"{type(self).__name__} is not compiled; compile() first"
+            )
+        return artifacts
 
     def _members_io(self):
         """The declared buffers, without resolving a shape: their names alone."""

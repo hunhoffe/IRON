@@ -218,7 +218,8 @@ def test_tree_holds_each_checkpoint_tensor_bitwise(toy_path):
 
 def test_tree_names_are_the_module_trees(toy_path):
     """named_parameters() is model.Llama's, name for name and value for value:
-    it replaces Weights(module) as the graphs' names_from."""
+    it replaces Weights(module) as the graphs' names_from.
+    """
     weights = LlamaWeights.load(toy_path)
     ckpt = safetensors_torch.load_file(toy_path)
     torch_tree = model.Llama.from_hf(ToyConfig, ckpt)
@@ -231,7 +232,8 @@ def test_tree_names_are_the_module_trees(toy_path):
 
 def test_the_reference_tree_is_built_from_the_tree_bitwise(toy_path):
     """model.Llama.from_weights, the CPU reference's constructor, holds the
-    tree's values exactly as from_hf holds the checkpoint's."""
+    tree's values exactly as from_hf holds the checkpoint's.
+    """
     weights = LlamaWeights.load(toy_path)
     ckpt = safetensors_torch.load_file(toy_path)
     ours = dict(model.Llama.from_weights(ToyConfig, weights).named_parameters())
@@ -349,7 +351,8 @@ LLAMA_3_2 = Llama3RopeScaling(
 
 def _published_llama3_scaling(freqs, factor, low, high, original):
     """``apply_scaling`` from Meta's llama-models reference, as published:
-    one frequency at a time, in float64."""
+    one frequency at a time, in float64.
+    """
     low_wavelen, high_wavelen = original / low, original / high
     scaled = []
     for freq in freqs:
@@ -367,7 +370,8 @@ def _published_llama3_scaling(freqs, factor, low, high, original):
 def test_llama3_scaling_is_the_published_formula():
     """Every frequency of Llama 3.2 1B's (head_dim 64, base 500000) matches
     Meta's reference, and all three bands are exercised: the fastest fifteen
-    kept, three interpolated, the slowest fourteen divided by 32."""
+    kept, three interpolated, the slowest fourteen divided by 32.
+    """
     D, base = 64, 500000.0
     inv_freq = 1.0 / base ** (np.arange(0, D, 2) / D)
     ours = LLAMA_3_2(inv_freq)
@@ -388,7 +392,8 @@ def test_llama3_scaling_is_the_published_formula():
 
 def test_scaled_rope_table_rotates_by_the_scaled_frequencies():
     """The scaled table is the unscaled table's formula over the scaled
-    frequencies, rounded once; the kept band is the unscaled table's."""
+    frequencies, rounded once; the kept band is the unscaled table's.
+    """
     D, L, base = 64, 2048, 500000.0
     exponents = np.arange(0, D, 2, dtype=np.float32) / np.float32(D)
     inv_freq = 1.0 / base ** exponents.astype(np.float64)
@@ -446,7 +451,8 @@ def test_top_k_keeps_ties_with_the_kth():
 def test_probabilities_are_the_harness_pipeline():
     """Temperature, top-k and softmax as the torch pipeline Sampler replaced
     computed them, here in float32 on both sides. bf16 logits tie often, so more than k
-    survive: both sides keep every tie with the k-th."""
+    survive: both sides keep every tie with the k-th.
+    """
     logits = random_logits(128256, seed=4)
     sampler = Sampler(0.7, 50, np.random.default_rng(0))
     t = torch.from_numpy(logits.astype(np.float32)) / 0.7

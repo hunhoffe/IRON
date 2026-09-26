@@ -1,9 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from aie.iron.kernels import datamovement
-
 import numpy as np
+from aie.iron.kernels import datamovement
 
 from iron.common import BinaryElementwise, param
 from iron.common.testing import Case, Testing, device_columns
@@ -11,7 +10,8 @@ from iron.common.testing import Case, Testing, device_columns
 
 def _cases():
     """Every column count that divides each size, at two scalars; the 2048
-    shape at the default scalar is the default suite."""
+    shape at the default scalar is the default suite.
+    """
     out = []
     for size in [1024, 2048, 4096, 8192]:
         for cols in range(1, device_columns() + 1):
@@ -51,6 +51,7 @@ class AXPY(BinaryElementwise):
 
     def reference(self, a, b):
         """CPU reference: ``scalar_factor * a + b`` in fp32, rounded once, as
-        the kernel computes it; the scalar is bf16 on the device."""
+        the kernel computes it; the scalar is bf16 on the device.
+        """
         scalar = np.float32(np.asarray(self.scalar_factor, dtype=a.dtype))
         return (scalar * a.astype(np.float32) + b.astype(np.float32)).astype(a.dtype)

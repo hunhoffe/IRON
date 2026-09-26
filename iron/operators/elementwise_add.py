@@ -8,7 +8,7 @@ from iron.common.testing import Testing, binary_elementwise_cases
 
 
 class ElementwiseAdd(BinaryElementwise):
-    """AIE-accelerated element-wise addition"""
+    """AIE-accelerated element-wise addition."""
 
     test = Testing(binary_elementwise_cases([1024, 2048, 4096, 8192]))
 

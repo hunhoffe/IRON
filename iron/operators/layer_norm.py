@@ -4,10 +4,8 @@
 from dataclasses import field
 from typing import ClassVar
 
-from aie.iron.kernels import norm
-
 import numpy as np
-
+from aie.iron.kernels import norm
 from aie.utils.verify import Tolerance
 
 from iron.common import UnaryElementwise
@@ -15,7 +13,7 @@ from iron.common.testing import Testing, channeled_unary_cases
 
 
 class LayerNorm(UnaryElementwise):
-    """AIE-accelerated Layer Normalization operator"""
+    """AIE-accelerated Layer Normalization operator."""
 
     test = Testing(
         channeled_unary_cases([1024, 2048, 4096, 8192], 8192),

@@ -21,7 +21,6 @@ Device-free; nothing here compiles.
 """
 
 import pytest
-
 from aie.utils.compile.jit.compilabledesign import CompilableDesign
 
 
@@ -66,7 +65,8 @@ def test_the_same_graph_gets_the_same_key():
 @pytest.mark.parametrize("full_elf", [True, False])
 def test_full_elf_is_part_of_the_key(full_elf):
     """Fused dispatch asks for a full ELF and separate does not, so the two
-    produce different artifacts from the same MLIR and must not share an entry."""
+    produce different artifacts from the same MLIR and must not share an entry.
+    """
     text = "module { /* same */ }"
     this = CompilableDesign(lambda: text, full_elf=full_elf)
     other = CompilableDesign(lambda: text, full_elf=not full_elf)

@@ -2,18 +2,18 @@
 # SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import pytest
-import aie.utils as aie_utils
-
-from iron.operators.gemv.op import GEMV, gelu_tanh_approx
-from iron.common.kernels import target_arch
 import numpy as np
+import pytest
 from ml_dtypes import bfloat16
+
+from iron.common.device import bound_device
 from iron.common.harness import record_metric, run_test, vectors
+from iron.common.kernels import target_arch
+from iron.operators.gemv.op import GEMV, gelu_tanh_approx
 
 
 def get_params():
-    max_aie_columns = aie_utils.get_current_device().cols
+    max_aie_columns = bound_device().cols
 
     params_list = [
         (128, 128, 1, 32, 128),
@@ -60,7 +60,7 @@ def test_gemv(M, K, num_aie_columns, tile_size_input, tile_size_output, npu_runt
 
 
 def get_batched_params():
-    max_cols = aie_utils.get_current_device().cols
+    max_cols = bound_device().cols
     # (M, K, cols, tsi, tso, num_batches): exercise the coalesced path + fallback.
     plist = [
         (256, 128, 1, 1, 256, 4),  # tiny, coalesced

@@ -10,12 +10,11 @@ construction. Host-only: what is checked is the refusal, not a dispatch.
 """
 
 import pytest
-
-from aie.iron.device import NPU2
+from aie.iron.device import from_name
 
 from iron.common.declare import Incompatible
-from iron.operators.repeat import Repeat
 from iron.operators.copy import Copy, _flat
+from iron.operators.repeat import Repeat
 from iron.operators.transpose import Transpose
 
 
@@ -72,7 +71,7 @@ def test_transpose_dimension_that_does_not_tile_is_refused_by_name(
         M=M, N=N, num_aie_columns=aie_columns, num_channels=channels, m=m, n=n, s=8
     )
     with pytest.raises(Incompatible, match=bad):
-        op.resolved(NPU2())
+        op.resolved(from_name("npu2", n_cols=8))
 
 
 @pytest.mark.parametrize("aie_columns", [1, 2, 4])
@@ -80,4 +79,4 @@ def test_transpose_tiling_that_fits_is_still_accepted(aie_columns):
     """The guard must not narrow the accepted set: 1/2/4 columns all tile N=128 by n=32."""
     Transpose(
         M=2048, N=128, num_aie_columns=aie_columns, num_channels=1, m=256, n=32, s=8
-    ).resolved(NPU2())
+    ).resolved(from_name("npu2", n_cols=8))

@@ -3,25 +3,24 @@
 
 import dataclasses
 import math
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import numpy as np
 from aie.iron.kernels import activation, linalg
 from ml_dtypes import bfloat16
 
 from iron.common.declare import (
-    Unresolvable,
-    Incompatible,
     In,
+    Incompatible,
     Operator,
     Out,
+    Unresolvable,
     Value,
-    param,
-    optional,
     auto,
+    optional,
+    param,
 )
-from iron.common.tiling import Access
-from iron.common.tiling import DMA_BD_MAX_WRAP
+from iron.common.tiling import DMA_BD_MAX_WRAP, Access
 
 _I32 = np.ndarray[(1,), np.dtype[np.int32]]  # type: ignore[misc]
 
@@ -148,7 +147,8 @@ class GEMV(Operator):
     def resolve(self, dev):
         """Columns default to the most the device's shim budget allows that
         leave each column a whole number of tiles of M; the rest follows
-        from K and from each other, not from the device."""
+        from K and from each other, not from the device.
+        """
         cols = self.num_aie_columns
         if cols is None:
             if dev is None:
@@ -199,8 +199,8 @@ class GEMV(Operator):
         return f"{base}_epi{self.epilogue}"
 
     def array(self, target):
-        from aie.dialects.aie import T
         import aie.dialects.index as index
+        from aie.dialects.aie import T
         from aie.iron import ObjectFifo, Worker
         from aie.iron.controlflow import range_
 
@@ -266,7 +266,7 @@ class GEMV(Operator):
                 for _ in range_(n):
                     c = C_fifo.acquire(1)
                     for j_idx in range_(tile_size_output // tile_size_input):
-                        j_i32 = index.casts(T.i32(), j_idx)
+                        j_i32: Any = index.casts(T.i32(), j_idx)  # pyright: ignore
                         output_row_offset = j_i32 * tile_size_input
                         a = A_fifo.acquire(1)
                         matvec(tile_size_input, output_row_offset, a, b, c)
@@ -377,6 +377,8 @@ class GEMV(Operator):
                 elems, col_off, (1, nb, run_hi, run_lo), (0, bstride, run_lo, 1)
             )
 
+        A_coalesced: list[Access] = []
+        C_coalesced: list[Access] = []
         if coalesce:
             # Dropping the per-batch drain wait lets the single iterated fill BD
             # run ahead of the core. ObjectFifo lock backpressure keeps that

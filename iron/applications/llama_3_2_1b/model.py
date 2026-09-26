@@ -88,6 +88,7 @@ class Llama(nn.Module):
         (n,), H, G, D = tokens.shape, self.n_heads, self.n_kv_groups, self.head_dim
         x = F.embedding(tokens, self.out_head.weight)
         for blk in self.layers:
+            assert isinstance(blk, Block)
             h = blk.norm1(x)
             q = _rope(blk.attn.q(h).view(n, H, D), angles[:n])
             k = _rope(blk.attn.k(h).view(n, G, D), angles[:n])
@@ -153,7 +154,8 @@ def _tensor(a: np.ndarray, dtype) -> torch.Tensor:
 
 def rope_angles(head_dim, context_length, rope_base=500000.0):
     """The RoPE table, ``(context_length, head_dim)``: cos and sin interleaved
-    per frequency, as the device kernel and :func:`_rope` read it."""
+    per frequency, as the device kernel and :func:`_rope` read it.
+    """
     inv_freq = 1.0 / (rope_base ** (torch.arange(0, head_dim, 2).float() / head_dim))
     freqs = torch.outer(torch.arange(context_length).float(), inv_freq)
     angles = torch.empty(context_length, head_dim)

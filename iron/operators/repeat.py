@@ -3,16 +3,15 @@
 
 import dataclasses
 from dataclasses import field
+from typing import Any
 
 import numpy as np
+from aie.utils.verify import Tolerance
 from ml_dtypes import bfloat16
 
-from aie.utils.verify import Tolerance
-
-from iron.common.declare import In, Operator, Out, param, auto
-from iron.common.tiling import Access, granule_elements
+from iron.common.declare import In, Operator, Out, auto, param
 from iron.common.testing import Case, Testing
-from iron.common.tiling import DMA_BD_MAX_WRAP
+from iron.common.tiling import DMA_BD_MAX_WRAP, Access, granule_elements
 
 
 class Repeat(Operator):
@@ -54,7 +53,7 @@ class Repeat(Operator):
     # rows * repeat; derived unless given, since a shape may not be an expression.
     out_rows: int | None = param(default=None, repr=False)
     transfer_size: int = auto(repr=False)  # None: cols
-    dtype: object = field(default=bfloat16, repr=False)
+    dtype: Any = field(default=bfloat16, repr=False)
 
     x = In(rows, cols, dtype=dtype, tile=(transfer_size,))
     y = Out(out_rows, cols, dtype=dtype, tile=(transfer_size,))

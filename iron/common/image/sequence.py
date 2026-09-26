@@ -408,7 +408,7 @@ class OperatorSequence:
         """
         self.prepare()
         self.link()
-        if record == "disk" and self.artifacts is not None:
+        if record == "disk":
             self.artifacts.dump()
         return self
 
@@ -428,9 +428,12 @@ class OperatorSequence:
         return self.image if isinstance(self._image, FusedImage) else None
 
     @property
-    def artifacts(self):
-        """The record of what :meth:`link` produced (``None`` in reference mode)."""
-        return getattr(self, "_artifacts", None)
+    def artifacts(self) -> Artifacts:
+        """The record of what :meth:`link` produced."""
+        artifacts = getattr(self, "_artifacts", None)
+        if artifacts is None:
+            raise RuntimeError(f"{self.name} is not linked; compile() first")
+        return artifacts
 
     def _record(self):
         """What this image consists of: its designs, its steps, its buffers."""

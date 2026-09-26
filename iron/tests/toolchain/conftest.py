@@ -13,7 +13,6 @@ import pytest
 
 aie = pytest.importorskip("aie")
 import aie.utils as aie_utils  # noqa: E402
-from aie.iron.device import NPU2  # noqa: E402
 
 from iron.tests.toolchain.tools import DEVICES  # noqa: E402
 
@@ -41,6 +40,6 @@ def device(request):
 @pytest.fixture
 def npu2():
     previous = aie_utils.get_current_device()
-    aie_utils.set_current_device(NPU2())
+    aie_utils.set_current_device(DEVICES["npu2"]())
     yield
     aie_utils.set_current_device(previous)

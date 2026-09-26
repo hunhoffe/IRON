@@ -45,24 +45,23 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
-
-import aie.utils as aie_utils
 from aie.utils.hostruntime.xrtruntime.tensor import XRTTensor
 
-from iron.operators import GEMM as IronGEMM
+from iron.common.device import bound_device, device_name
+from iron.common.harness import record_metric
 from iron.exports.flm import GEMM as FLMGEMM
 from iron.exports.flm import Shipped
-from iron.common.harness import record_metric
+from iron.operators import GEMM as IronGEMM
 
 # Opt-in only: this module downloads the overlay, so keep it out of the default
 # run. See the note in the module docstring.
 pytestmark = pytest.mark.extensive
 
-_dev = aie_utils.get_current_device()
+_dev = bound_device()
 # The shipped overlay is a fixed 8-column NPU2 binary. Where that does not
 # match the device, drop that one candidate rather than skipping the module,
 # since flm vs iron.operators.GEMM is measurable on every supported device.
-HAVE_PREBUILT = _dev is not None and _dev.resolve().name == "npu2" and _dev.cols >= 8
+HAVE_PREBUILT = _dev is not None and device_name(_dev) == "npu2" and _dev.cols >= 8
 
 # Every projection of both Gemma4 variants FastFlowLM ships, at three prefill
 # lengths. E2B is dim 1536 / ffn 6144; E4B is dim 2560 / ffn 10240. Both ship
@@ -126,7 +125,8 @@ def make_inputs(M, K, N):
 
 class Candidate:
     """One implementation under test, with its buffers already bound so the
-    timed section contains nothing but the dispatch."""
+    timed section contains nothing but the dispatch.
+    """
 
     def __init__(self, name, op, A, B, M, N, budget, ctx):
         self.name = name

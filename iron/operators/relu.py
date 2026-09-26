@@ -1,16 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from aie.iron.kernels import eltwise
-
 import numpy as np
+from aie.iron.kernels import eltwise
 
 from iron.common import UnaryElementwise
 from iron.common.testing import Testing, channeled_unary_cases
 
 
 class ReLU(UnaryElementwise):
-    """AIE-accelerated ReLU activation function"""
+    """AIE-accelerated ReLU activation function."""
 
     test = Testing(
         channeled_unary_cases([1024, 2048, 4096, 8192], 4096),

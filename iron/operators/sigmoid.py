@@ -3,10 +3,8 @@
 
 from typing import ClassVar
 
-from aie.iron.kernels import activation
-
 import numpy as np
-
+from aie.iron.kernels import activation
 from aie.utils.verify import Tolerance
 
 from iron.common import UnaryElementwise
@@ -17,7 +15,7 @@ _LUT_LINE = 1024
 
 
 class Sigmoid(UnaryElementwise):
-    """AIE-accelerated Sigmoid activation function"""
+    """AIE-accelerated Sigmoid activation function."""
 
     test = Testing(
         channeled_unary_cases([1024, 2048, 4096, 8192], 4096, tile_floor=_LUT_LINE),

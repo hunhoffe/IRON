@@ -29,13 +29,13 @@ or by a test against nothing.
 
 import math
 
+import aie.utils as aie_utils
 import numpy as np
 from ml_dtypes import bfloat16
 
-import aie.utils as aie_utils
-
 import iron
 from iron.common.declare import Scratchpad
+from iron.operators.copy import Copy
 from iron.operators.elementwise_add import ElementwiseAdd
 from iron.operators.elementwise_mul import ElementwiseMul
 from iron.operators.gemm.op import GEMM
@@ -46,7 +46,6 @@ from iron.operators.rms_norm import RMSNorm
 from iron.operators.rope.op import RoPE
 from iron.operators.silu import SiLU
 from iron.operators.softmax import Softmax
-from iron.operators.copy import Copy
 from iron.operators.transpose import Transpose
 
 

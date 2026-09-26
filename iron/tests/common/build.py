@@ -10,6 +10,8 @@ recorded calls are what upstream's ObjectFifoHandle.fill/drain accept; that
 is the toolchain's job and the operator tests' job.
 """
 
+from typing import Any
+
 import numpy as np
 import pytest
 from aie.helpers.util import v8bfp16ebs8
@@ -84,7 +86,7 @@ def _bind_all(op, log):
 
 def test_plan_reproduces_the_channeled_unary_split():
     op = Unary(size=8192).resolved(FakeDev())
-    p = transfers(op.A, op.A.lanes)
+    p = transfers(op.A, op.streams["A"])
     assert len(p) == 8  # 4 columns x 2 channels
     chunk = 8192 // 8
     for i, (slot, accesses) in enumerate(p):
@@ -94,13 +96,13 @@ def test_plan_reproduces_the_channeled_unary_split():
 
 def test_plan_batched_gemv_coalesces_and_broadcasts():
     op = MV(M=256, K=128, num_batches=100)
-    a_transfers = transfers(op.A, op.A.lanes)
+    a_transfers = transfers(op.A, op.streams["A"])
     assert [slot.index for slot, _ in a_transfers] == [0, 1]
     (acc,) = a_transfers[1][1]
     run = (256 // 2) * 128
     assert acc.offset == run and acc.sizes[1] == 100 and acc.strides[1] == 256 * 128
-    b_slot, b_accesses = transfers(op.B, op.B.lanes)[0]
-    assert b_slot is op.B.lanes and b_accesses == [
+    b_slot, b_accesses = transfers(op.B, op.streams["B"])[0]
+    assert b_slot is op.streams["B"] and b_accesses == [
         Access(100 * 128, 0, (1, 1, 1, 100 * 128), (0, 0, 0, 1))
     ]
 
@@ -176,11 +178,12 @@ def test_preamble_writes_residents_and_rejects_unbound_ones():
         barriers = []
         image = "elf"
 
-    Sequence(op, {}).preamble(FakeTarget())
+    target: Any = FakeTarget()
+    Sequence(op, {}).preamble(target)
     assert rtps == [{0: 10}, {0: 10}]
 
     with pytest.raises(ValueError, match="never bound this value"):
-        Sequence(Op(n=64), {}).preamble(FakeTarget())
+        Sequence(Op(n=64), {}).preamble(target)
 
 
 def test_mha_sequence_is_one_descriptor_set_per_kv_group(monkeypatch):
@@ -341,7 +344,9 @@ def flm(monkeypatch):
 
     monkeypatch.setattr(flm, "AIEArch", _Arch)
     monkeypatch.setattr(flm, "get_target_model", lambda dev: _TargetModel())
-    monkeypatch.setattr(flm.aie_utils, "get_current_device", lambda: _NPU2())
+    import iron.common.device as device
+
+    monkeypatch.setattr(device.aie_utils, "ensure_current_device", lambda: _NPU2())
     import iron.exports.flm.gemm.design as design
 
     monkeypatch.setattr(design, "get_target_model", lambda dev: _TargetModel())
@@ -511,13 +516,14 @@ def test_a_shipped_image_declares_its_pins_and_parameter_block():
 
     op = Shipped(M=256, K=1024, N=1152)
     assert op.external.filename == "flm_mm_f81eba71.xclbin"
-    assert [(p.col, p.channel) for p in (op.A.lane(r).shim for r in range(4))] == [
+    pins = [op.A.lane(r).shim for r in range(4)] + [op.B.lane(3).shim]
+    assert [(p.col, p.channel) for p in pins if p is not None] == [
         (0, 0),
         (2, 0),
         (4, 0),
         (6, 0),
+        (3, 1),
     ]
-    assert (op.B.lane(3).shim.col, op.B.lane(3).shim.channel) == (3, 1)
     assert (op.rtp.address, op.rtp.lock) == (4096, 10)
 
     image = Xclbin(url="u", sha256="s", filename="f")

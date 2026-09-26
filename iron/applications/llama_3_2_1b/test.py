@@ -2,17 +2,25 @@
 # SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import os
 import re
 import subprocess
-import pytest
-import os
 import sys
 from pathlib import Path
+
+import pytest
 
 from iron.common.harness import record_metric
 
 repo_root = Path(__file__).resolve().parents[3]
 weights_dir = Path(os.environ.get("IRON_EXAMPLE_WEIGHTS_DIR", "/srv"))
+
+
+def _figure(pattern: str, text: str) -> str:
+    """The ``value`` group of ``pattern`` in ``text``, which must be there."""
+    match = re.search(pattern, text)
+    assert match is not None, f"no {pattern!r} in the output"
+    return match.group("value")
 
 
 def generate_test_params():
@@ -111,7 +119,7 @@ def test_llama_3_2_1b_accuracy():
     result = run_llama_npu(1024, 40, figures=ACCURACY, entry_point="accuracy")
 
     for stat, bound in MAX_KL.items():
-        kl = float(re.search(ACCURACY[f"{stat}KL"], result.stdout).group("value"))
+        kl = float(_figure(ACCURACY[f"{stat}KL"], result.stdout))
         assert kl <= bound, f"{stat.lower()} KL {kl} > {bound}"
 
 
@@ -130,4 +138,5 @@ def test_llama_3_2_1b_determinism():
     result = run_llama_npu(1024, 4, "--check-determinism", "5", figures=DETERMINISM)
 
     differing = re.search(r"Differing runs:\s*(\d+)/(\d+)", result.stdout)
+    assert differing is not None, "no determinism figure in the output"
     assert int(differing.group(1)) == 0, f"{differing.group(0)} (bitwise logits)"

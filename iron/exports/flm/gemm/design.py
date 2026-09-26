@@ -25,7 +25,9 @@ share.
 from enum import StrEnum
 
 from aie.dialects._aie_enum_gen import AIEArch
-from aie.dialects.aie import get_target_model
+from aie.dialects.aie import (
+    get_target_model,  # pyright: ignore[reportAttributeAccessIssue]  # not in _aie.pyi
+)
 
 # --- Fixed geometry -------------------------------------------------------
 # GEMM tiling per compute tile, and the register tiling inside it.

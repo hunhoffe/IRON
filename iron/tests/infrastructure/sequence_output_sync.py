@@ -10,12 +10,11 @@ device-resident, so a range left marked ``cpu`` by the previous pull is skipped
 and the next dispatch hands back the previous one's output.
 """
 
+import aie.utils as aie_utils
 import numpy as np
 import pytest
-from ml_dtypes import bfloat16
-
-import aie.utils as aie_utils
 from aie.iron.device import from_name
+from ml_dtypes import bfloat16
 
 import iron
 from iron.operators import ElementwiseAdd

@@ -11,7 +11,6 @@ from iron.common.harness import record_metric, verify_buffer
 from iron.operators.elementwise_mul import ElementwiseMul
 from iron.operators.gemm.op import GEMM
 from iron.operators.silu import SiLU
-from iron.operators.swiglu_prefill.op import swiglu_prefill
 
 # swiglu_prefill shares the same reference implementation as swiglu_decode:
 # both compute W3 @ (SiLU(W1 @ x) * (W2 @ x)), differing only in that prefill
@@ -21,6 +20,7 @@ from iron.operators.swiglu_decode.reference import (
     bf16_matmul,
     generate_golden_reference,
 )
+from iron.operators.swiglu_prefill.op import swiglu_prefill
 
 
 def get_params():
