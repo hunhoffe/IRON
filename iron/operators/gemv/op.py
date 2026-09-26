@@ -12,6 +12,7 @@ from aie.iron.kernels import activation, linalg
 from ml_dtypes import bfloat16
 
 from iron.common import (
+    Extent,
     In,
     Incompatible,
     Operator,
@@ -75,12 +76,19 @@ class GEMV(Operator):
         per=(num_aie_columns,),
         depth=2,
     )
+    valid = Extent(M)  # M, or fewer rows per call (``A[:n]`` in a graph)
     # Output tiles each column produces per batch: the core's trip count,
-    # written once per build, so the array does not depend on M.
+    # written once per build, so the array does not depend on M; per call
+    # under a bound, read by each core.
     tiles = Value(
         np.int32,
-        derive=lambda op: op.M // (op.num_aie_columns * op.tile_size_output),
+        derive=lambda op: op.valid // (op.num_aie_columns * op.tile_size_output),
     )
+
+    def extent_unit(self, buffer: str) -> int | None:
+        # A column takes A in output tiles (several input tiles each) so
+        # its rows and C's line up under the round-robin split.
+        return self.tile_size_output if buffer == "A" else None
 
     # Vector widths mv.cc's matvec_vectorized is instantiated at, widest first.
     # Each is a legal aie::vector<bfloat16, r> width; anything narrower than 16
@@ -244,12 +252,19 @@ class GEMV(Operator):
             ObjectFifo(self.C.tile, name=f"C_L1L3_{i}", depth=self.C.depth)
             for i in range(cols)
         ]
-        tiles = [target.rtp(_I32, name=f"tiles_{i}") for i in range(cols)]
+        # The trip count: an RTP written once per build, or a scratchpad
+        # word each core reads per call when a graph bounds M.
+        dynamic = self.uses_value("tiles") and target.image == "elf"
+        tiles = (
+            [self.tiles.param] * cols
+            if dynamic
+            else [target.rtp(_I32, name=f"tiles_{i}") for i in range(cols)]
+        )
         barriers = [target.barrier() for _ in range(cols)]
 
         def core_body(A_fifo, B_fifo, C_fifo, matvec, tiles, barrier, gelu_kernel=None):
             barrier.wait_for_value(1)
-            n = tiles[0]
+            n = tiles.read() if dynamic else tiles[0]
             for _ in range_(0xFFFFFFFF):  # batch dim handled as part of this loop
                 b = B_fifo.acquire(1)
                 # Each column produces tiles output tiles of tile_size_output
@@ -286,7 +301,8 @@ class GEMV(Operator):
             self.A.lane(i).bind(A_fifos[i].prod())
             self.B.lane(i).bind(B_fifos[i].prod())
             self.C.lane(i).bind(C_fifos[i].cons())
-        self.tiles.bind(tiles)
+        if not dynamic:
+            self.tiles.bind(tiles)
         return workers
 
     def sequence(self, rt):
@@ -296,6 +312,22 @@ class GEMV(Operator):
         """
         M, K, nb, cols = self.M, self.K, self.num_batches, self.num_aie_columns
         A_elems, B_elems, C_elems = self.A.elements, self.B.elements, self.C.elements
+        if self.A.bounded is not None:
+            # M bounded per call: B as below, then A and C round-robin over
+            # the columns in output tiles, each lane's count patched.
+            with rt.group() as tg_b:
+                for col in range(cols):
+                    rt.fill(
+                        self.B.lane(col),
+                        Access(B_elems, 0, (1, 1, 1, nb * K), (0, 0, 0, 1)),
+                        group=tg_b,
+                    )
+            with rt.group() as tg:
+                for slot, acc, size_by in rt.plan(self.A):
+                    rt.fill(slot, (self.A, acc), group=tg, size_by=size_by)
+                for slot, acc, size_by in rt.plan(self.C):
+                    rt.drain(slot, (self.C, acc), group=tg, wait=True, size_by=size_by)
+            return
 
         # Distribution pattern for the input matrix A: each AIE core gets a
         # contiguous chunk of rows; the shim puts all data on the stream in

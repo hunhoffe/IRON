@@ -642,3 +642,36 @@ def test_the_words_a_call_writes_come_from_the_bound(npu2):
     assert words[f"{op.name}_valid_n"](call) == 16 * 8  # the reshape's scale
     assert words[f"{op.name}_count"](call) == 16 * 8 // 2  # derived: valid // lanes
     assert words[f"{op.name}_valid_x"](call) == 16 * 8 // 2  # tiles per lane
+
+
+def test_a_bound_reaches_a_copy_and_a_repeat_through_their_views(npu2):
+    """``x[:n]`` reshaped and transposed lands on axis 1 of the copy's source
+    walk; ``keys[:, :n]`` on axis 1 of its destination; ``keys[:, :c]`` on the
+    stack axis of a Repeat, whose output carries the bound on.
+    """
+    from iron.operators.copy import Copy
+    from iron.operators.repeat import Repeat
+
+    G, D, L = 4, 8, 32  # traced at the cache's full length, as a prompt is
+    keys = iron.state((G, L, D), name="keys")
+
+    @iron.graph
+    def g(x, *, n: Scratchpad[np.int32], c: Scratchpad[np.int32]):
+        k = x[:n].reshape(L, G, D).transpose(1, 0, 2)
+        Copy(k, keys[:, :n])
+        return Repeat(keys[:, :c], repeat=2)
+
+    t = g.trace(x=(L, G * D))
+    copy, rep = t.operators
+    assert copy.src.bounded == 1 and copy.dst.bounded == 1
+    assert copy.bound_values == {"src_valid": "n", "dst_valid": "n"}
+    assert rep.bound_extents == {"valid_seq": "c"}
+    assert [(b.member.name, b.value.name, b.scale) for b in t.bindings] == [
+        ("src_valid", "n", 1),
+        ("dst_valid", "n", 1),
+        ("valid_seq", "c", 1),
+    ]
+    (out,) = t.outputs
+    assert out.shape == (2 * G, L, D) and out.bounds == {1: (t.values[1], 1)}
+    rep = rep.resolved(aie_utils.get_current_device())
+    assert rep.derived_at("valid_seq_x", valid_seq=12) == 12  # the stack axis itself

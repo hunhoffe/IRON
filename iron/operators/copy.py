@@ -20,7 +20,7 @@ from ml_dtypes import bfloat16
 
 from iron.common import In, Incompatible, Operator, Out, Scratchpad, auto, param
 from iron.common.testing import Case, Testing
-from iron.common.tiling import Walk, legalize
+from iron.common.tiling import Walk, _pack_exact, granule_elements, legalize
 
 # Llama's KV-cache write, shrunk: the cache is (n_kv_groups, seq, head_dim)
 # and one token's keys land in slot t of every group. SEQ is 128 rather than
@@ -147,6 +147,10 @@ class Copy(Operator):
     # Per-call addends on the two base addresses, in elements.
     in_offset = Scratchpad(np.int32)
     out_offset = Scratchpad(np.int32)
+    # Per-call sizes of the bounded axis of each walk (``x[:n]`` on a view),
+    # in that axis's units.
+    src_valid = Scratchpad(np.int32)
+    dst_valid = Scratchpad(np.int32)
 
     def validate(self) -> None:
         if self.src.elements != self.dst.elements:
@@ -163,7 +167,7 @@ class Copy(Operator):
         return dataclasses.replace(self, tile_size=tile_size)
 
     def uses_value(self, name: str) -> bool:
-        # An offset is patched only when a graph binds a handle to it.
+        # An offset or a size is patched only when a graph binds a handle to it.
         return name in self.used_values
 
     def array(self, target) -> list:
@@ -188,18 +192,52 @@ class Copy(Operator):
             )
 
     def _taps(self, buffer, walk: Walk, offset: int = 0):
-        """Per channel, the descriptors of its share of the walk.
+        """Per channel, the descriptors of its share of the walk, each with
+        the dimension a bound patches (``None`` when none does).
 
         Each share is legalized for the shim (an axis past its slot's wrap
         is factored or unrolled, order preserved), so a wide reorder lowers
-        here instead of failing later in the toolchain.
+        here instead of failing later in the toolchain. A bounded axis must
+        keep its slot, so a bounded walk is one exact descriptor per channel
+        or an error; a bound on the innermost axis, the one the channels
+        split, takes one channel.
         """
-        return [
-            legalize(buffer.elements, start + offset, sizes, strides, buffer.dtype)
-            for start, sizes, strides in _shares(walk, self.num_channels)
-        ]
+        shares = _shares(walk, self.num_channels)
+        if walk.bounded is None:
+            return [
+                [
+                    (acc, None)
+                    for acc in legalize(
+                        buffer.elements, start + offset, sizes, strides, buffer.dtype
+                    )
+                ]
+                for start, sizes, strides in shares
+            ]
+        dim = 4 - len(walk.sizes) + walk.bounded
+        if dim == 3 and self.num_channels > 1:
+            raise Incompatible(
+                f"{walk} is bounded on the axis the {self.num_channels} channels "
+                f"split; bound another axis or copy on one channel"
+            )
+        out = []
+        for start, sizes, strides in shares:
+            acc = _pack_exact(
+                buffer.elements,
+                start + offset,
+                list(zip(sizes, strides)),
+                granule_elements(buffer.dtype),
+            )
+            if acc is None:
+                raise Incompatible(
+                    f"{walk} does not fit one descriptor per channel, which a "
+                    f"bounded axis needs (its size is patched in place)"
+                )
+            out.append([(acc, dim)])
+        return out
 
-    def reference(self, x, y=None, *, in_offset=0, out_offset=0):
+    def reference(
+        self, x, y=None, *, in_offset=0, out_offset=0, src_valid=None, dst_valid=None
+    ):
         """CPU reference: gather by ``src``, scatter by ``dst``.
 
         ``x`` is the whole input buffer and ``y`` the whole output buffer,
@@ -209,6 +247,10 @@ class Copy(Operator):
         elements.
         """
         src, dst = self.src, self.dst
+        if src_valid is not None:
+            src = _at(src, int(src_valid))
+        if dst_valid is not None:
+            dst = _at(dst, int(dst_valid))
         out = reference(
             x.reshape(-1),
             src,
@@ -227,23 +269,43 @@ class Copy(Operator):
         outs = self._taps(self.y, dst)
         in_off = self.in_offset if self.uses_value("in_offset") else None
         out_off = self.out_offset if self.uses_value("out_offset") else None
+
+        def size_by(dim, name):
+            return {dim: self.value(name)} if dim is not None else None
+
         with rt.group() as tg:
             for c in range(self.num_channels):
-                for acc in ins[c]:
-                    rt.fill(self.x.lane(c), acc, group=tg, offset_by=in_off)
-                for acc in outs[c]:
+                for acc, dim in ins[c]:
+                    rt.fill(
+                        self.x.lane(c),
+                        acc,
+                        group=tg,
+                        offset_by=in_off,
+                        size_by=size_by(dim, "src_valid"),
+                    )
+                for acc, dim in outs[c]:
                     rt.drain(
                         self.y.lane(c),
                         acc,
                         group=tg,
-                        wait=acc is outs[c][-1],
+                        wait=acc is outs[c][-1][0],
                         offset_by=out_off,
+                        size_by=size_by(dim, "dst_valid"),
                     )
 
 
 # --------------------------------------------------------------------------
 # The CPU reference this operator is checked against.
 # --------------------------------------------------------------------------
+
+
+def _at(walk: Walk, valid: int) -> Walk:
+    """The walk with its bounded axis at ``valid``: what one call moves."""
+    if walk.bounded is None:
+        raise ValueError(f"{walk} has no bounded axis to set to {valid}")
+    sizes = list(walk.sizes)
+    sizes[walk.bounded] = valid
+    return dataclasses.replace(walk, sizes=tuple(sizes), bounded=None)
 
 
 def _walk_offsets(sizes, strides, offset):

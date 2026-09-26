@@ -12,6 +12,7 @@ from typing import Any
 import aie.utils as aie_utils
 import pytest
 
+from iron.common import Incompatible
 from iron.common.tiling import Walk
 from iron.operators.copy import Copy, _kv_slot
 
@@ -81,7 +82,7 @@ PINNED: dict[str, tuple[dict[str, Any], list, list]] = {
 
 def _taps(op, buffer, walk):
     return [
-        [(a.offset, a.sizes, a.strides) for a in channel]
+        [(a.offset, a.sizes, a.strides) for a, dim in channel if dim is None]
         for channel in op._taps(buffer, walk)
     ]
 
@@ -92,3 +93,39 @@ def test_copy_issues_these_descriptors(name):
     op = Copy(**kwargs).resolved(aie_utils.get_current_device())
     assert _taps(op, op.x, op.src) == ins
     assert _taps(op, op.y, op.dst) == outs
+
+
+def test_a_bounded_axis_keeps_its_slot_and_names_it():
+    """A cache write of n rows, ``Copy(k.transpose(1, 0, 2), keys[:, :n])``:
+    the bounded axis is one exact descriptor dimension per channel, the one
+    a call patches, and the reference moves the bounded rows alone.
+    """
+    import dataclasses
+
+    import numpy as np
+
+    N, G, D, L = 16, 4, 8, 32
+    src = dataclasses.replace(Walk.permuted((N, G, D), (1, 0, 2)), bounded=1)
+    dst = dataclasses.replace(
+        Walk.slice((G, L, D), (slice(None), slice(0, N))), bounded=1
+    )
+    op = Copy(
+        src=src, dst=dst, input_buffer_size=N * G * D, output_buffer_size=G * L * D
+    ).resolved(aie_utils.get_current_device())
+    assert [
+        [(a.sizes, a.strides, dim) for a, dim in ch] for ch in op._taps(op.x, src)
+    ] == [[((1, G, N, D), (0, D, G * D, 1), 2)]]
+    assert [[(a.sizes, dim) for a, dim in ch] for ch in op._taps(op.y, dst)] == [
+        [((1, G, N, D), 2)]
+    ]
+    x = np.arange(N * G * D, dtype=np.float32).reshape(N, G, D)
+    y = np.zeros((G, L, D), dtype=np.float32)
+    op.reference(x, y, src_valid=5, dst_valid=5)
+    assert (y[:, :5] == x[:5].transpose(1, 0, 2)).all() and not y[:, 5:].any()
+    flat = Copy(
+        src=dataclasses.replace(Walk.of((N,)), bounded=0),
+        input_buffer_size=N,
+        num_channels=2,
+    ).resolved(aie_utils.get_current_device())
+    with pytest.raises(Incompatible, match="channels split"):
+        flat._taps(flat.x, flat.src)

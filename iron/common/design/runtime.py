@@ -78,15 +78,17 @@ class Transfers:
     def _derived(self) -> None:
         with self.group() as tg:
             for buf in self.op.inputs:
-                for slot, acc, size_by in self._plan(buf):
+                for slot, acc, size_by in self.plan(buf):
                     self.fill(slot, (buf, acc), group=tg, size_by=size_by)
             for buf in self.op.outputs:
-                for slot, acc, size_by in self._plan(buf):
+                for slot, acc, size_by in self.plan(buf):
                     self.drain(slot, (buf, acc), group=tg, wait=True, size_by=size_by)
 
-    def _plan(self, buf: BoundBuffer) -> list[tuple[Any, Access, dict | None]]:
-        """``(slot, access, size_by)`` per transfer of ``buf``: the declared
-        split, or the round-robin one with its patched dimension under a bound.
+    def plan(self, buf: BoundBuffer) -> list[tuple[Any, Access, dict | None]]:
+        """The derived transfers of one operand, ``(slot, access, size_by)``
+        each: the declared split across its lanes, or the round-robin one
+        with its patched dimension under a bound. An override that keeps the
+        derived movement for some operands issues them from here.
         """
         stream = self._stream_of(buf)
         bounded = buf.bounded
@@ -407,6 +409,18 @@ def transfers(
     return [(stream[b.slot], encode(b, buffer.elements, buffer.dtype)) for b in blocks]
 
 
+def extent_unit(buffer: BoundBuffer, axis: int) -> int:
+    """The rows along ``axis`` one round-robin unit of ``buffer`` holds: what
+    the operator says (``extent_unit``), else the stream tile's rows there.
+    """
+    unit = buffer._op.extent_unit(buffer.name)
+    if unit is not None:
+        return unit
+    tile_shape = buffer.lanes.shape if buffer.lanes is not None else ()
+    k = axis - (len(buffer.shape) - len(tile_shape))
+    return tile_shape[k] if k >= 0 else 1
+
+
 def bounded_transfers(
     buffer: BoundBuffer, stream: BoundStream, axis: int
 ) -> list[tuple[Any, Access, int]]:
@@ -422,9 +436,7 @@ def bounded_transfers(
     shape, dtype = buffer.shape, buffer.dtype
     lanes = 1 if stream.replicate else stream.count
     inner = prod(shape[axis + 1 :]) if axis + 1 < len(shape) else 1
-    tile_shape = stream.shape
-    k = axis - (len(shape) - len(tile_shape))
-    tile_rows = tile_shape[k] if k >= 0 else 1
+    tile_rows = extent_unit(buffer, axis)
     if shape[axis] % (lanes * tile_rows):
         raise ValueError(
             f"{buffer.name} {shape}: axis {axis} does not divide into {tile_rows}-row "

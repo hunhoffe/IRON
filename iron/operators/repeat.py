@@ -10,9 +10,9 @@ from aie.iron import ObjectFifo
 from aie.utils.verify import Tolerance
 from ml_dtypes import bfloat16
 
-from iron.common import In, Operator, Out, auto, optional, param
+from iron.common import Extent, In, Operator, Out, auto, optional, param
 from iron.common.testing import Case, Testing
-from iron.common.tiling import DMA_BD_MAX_WRAP, Access, granule_elements
+from iron.common.tiling import DMA_BD_MAX_WRAP, Access, granule_elements, split_run
 
 
 class Repeat(Operator):
@@ -57,6 +57,11 @@ class Repeat(Operator):
     out_rows: int = param(default=lambda op: op.rows * op.repeat, repr=False)
     tile_size: int = auto(repr=False)  # None: cols
     dtype: Any = field(default=bfloat16, repr=False)
+
+    # Either may be bounded per call: the rows of a matrix (``x[:n]``) or
+    # the middle axis of a stack, a KV cache's context (``keys[:, :c]``).
+    valid_rows = Extent(rows)
+    valid_seq = Extent(seq)
 
     x = In(rows, optional(seq), cols, dtype=dtype, tile=(tile_size,))
     y = Out(out_rows, optional(seq), cols, dtype=dtype, tile=(tile_size,))
@@ -110,6 +115,9 @@ class Repeat(Operator):
         return []
 
     def sequence(self, rt):
+        if self.bound_extents:
+            self._bounded_sequence(rt)
+            return
         rows, cols, repeat = self.rows, self.row, self.repeat
         cols_split = self._cols_split()
         chunk = cols // cols_split
@@ -129,6 +137,52 @@ class Repeat(Operator):
         with rt.group() as tg:
             rt.fill(self.x, input_tap, group=tg)
             rt.drain(self.y, output_tap, group=tg, wait=True)
+
+    def _bounded_sequence(self, rt):
+        """The same movement with the bounded axis in a slot of its own,
+        patched per call from its word: ``(repeat, rows, seq, cols)`` for a
+        bounded stack axis, ``(repeat, rows, chunks, chunk)`` for bounded
+        rows. One descriptor each way; a shape that does not fit is refused.
+        """
+        rows, seq, cols, repeat = self.rows, self.seq, self.cols, self.repeat
+        gran = granule_elements(self.dtype)
+        if "valid_seq" in self.bound_extents:
+            if "valid_rows" in self.bound_extents:
+                raise ValueError("Repeat takes one bounded axis, not rows and seq")
+            if cols % gran or cols > DMA_BD_MAX_WRAP:
+                raise ValueError(
+                    f"cols={cols} must be a whole number of words at most "
+                    f"{DMA_BD_MAX_WRAP} to bound the stack axis"
+                )
+            row = seq * cols
+            sizes = (repeat, rows, seq, cols)
+            in_strides, out_strides = (0, row, cols, 1), (row, repeat * row, cols, 1)
+            dim, word = 2, "valid_seq"
+        else:
+            halves = split_run(self.row, gran)
+            if halves is None:
+                raise ValueError(
+                    f"a row of {self.row} elements does not fit one descriptor"
+                )
+            chunks, chunk = halves
+            sizes = (repeat, rows, chunks, chunk)
+            in_strides = (0, self.row, chunk, 1)
+            out_strides = (self.row, self.row * repeat, chunk, 1)
+            dim, word = 1, "valid_rows"
+        with rt.group() as tg:
+            rt.fill(
+                self.x,
+                Access(self.x.elements, 0, sizes, in_strides),
+                group=tg,
+                size_by={dim: self.value(f"{word}_x")},
+            )
+            rt.drain(
+                self.y,
+                Access(self.y.elements, 0, sizes, out_strides),
+                group=tg,
+                wait=True,
+                size_by={dim: self.value(f"{word}_y")},
+            )
 
     def reference(self, x):
         """CPU reference: repeat-interleave along the leading dimension."""

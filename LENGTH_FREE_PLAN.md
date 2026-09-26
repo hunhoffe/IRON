@@ -141,6 +141,18 @@ sets), pyright and ruff clean, and a Progress entry.
 
 ## Progress
 
+- `(this commit)` Step 3, the hand-written sequences. A `Walk` carries the
+  axis a graph bounds; a copy's view operands put a bound on their walk
+  and bind `src_valid`/`dst_valid`, and `Copy._taps` keeps a bounded walk
+  as one exact descriptor per channel with that axis in its own slot,
+  refusing a bound on the axis the channels split; the reference moves
+  the bounded rows alone. Repeat bounds either its rows or a stack's
+  middle axis, the context of a KV cache, in a slot of its own. GEMV
+  bounds `M`: an operator names the round-robin unit per operand
+  (`extent_unit`), so a column takes A in output tiles and its rows line
+  up with C's, and the sequence issues both from the derived plan
+  (`rt.plan`) after B; its trip count derives from the extent and the
+  cores read it per call. Both suites identical to baseline.
 - `b2b5b01` Step 2, the derived sequence under a bound. For each
   Extent and each operand its field sizes, the operator makes one word of
   tiles per lane (`valid_x`, `valid_y`), derived from the extent like any

@@ -713,3 +713,52 @@ def test_the_derived_sequence_patches_a_bounded_operand():
         ("drain", "dy", None, {1: "<valid_y>"}),
     ]
     assert op.derived_at("valid_x", valid=16) == 8  # the word: 16 rows over 2 lanes
+
+
+def test_a_bounded_gemv_moves_a_and_c_in_output_tiles_round_robin(npu2):
+    """Under a bound on M, B goes whole as ever, then each column takes A in
+    output tiles (two input tiles each here) and C in the same tiles, both
+    patched by the tile count the core also reads.
+    """
+    from aie.iron.device import from_name
+
+    from iron.operators.gemv.op import GEMV
+
+    op = GEMV(M=256, K=64, num_aie_columns=2, tile_size_input=2, tile_size_output=4)
+    op.use_value("valid", "n")
+    op = op.resolved(from_name("npu2", n_cols=8))
+    assert [v.name for v in op.values] == ["valid", "tiles", "valid_A", "valid_C"]
+    assert op.derived_at("tiles", valid=64) == 64 // (2 * 4)
+    assert op.derived_at("valid_A", valid=64) == 64 // (2 * 4)  # unit: output tiles
+    log = []
+    for name in ("valid_A", "valid_C"):
+        op.value(name).param = f"<{name}>"
+    for s in op.streams.values():
+        for i in range(s.count):
+            s.bind(_SizedHandle(log), i)
+    Sequence(op, {"A": "dA", "B": "dB", "C": "dC"}).run()
+    assert log == [
+        ("fill", "dB", None, None),
+        ("fill", "dB", None, None),
+        ("fill", "dA", None, {1: "<valid_A>"}),
+        ("fill", "dA", None, {1: "<valid_A>"}),
+        ("drain", "dC", None, {1: "<valid_C>"}),
+        ("drain", "dC", None, {1: "<valid_C>"}),
+    ]
+
+
+def test_a_bounded_repeat_patches_the_stack_axis():
+    from iron.operators.repeat import Repeat
+
+    op = Repeat(rows=4, cols=8, seq=32, repeat=2).resolved(FakeDev())
+    op.use_value("valid_seq", "c")
+    log = []
+    for name in ("valid_seq_x", "valid_seq_y"):
+        op.value(name).param = f"<{name}>"
+    for s in op.streams.values():
+        s.bind(_SizedHandle(log))
+    Sequence(op, {"x": "dx", "y": "dy"}).run()
+    assert log == [
+        ("fill", "dx", None, {2: "<valid_seq_x>"}),
+        ("drain", "dy", None, {2: "<valid_seq_y>"}),
+    ]

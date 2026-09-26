@@ -103,6 +103,15 @@ def _extent_for(cls, buffer, rank: int, axis: int):
     )
 
 
+def _unbounded(h: Handle) -> Handle:
+    """``h`` without its per-call bounds (the same buffer)."""
+    if not h.bounds:
+        return h
+    return Handle(
+        h.shape, h.dtype, h.name, h.role, h.parent, h.start, h.walk, h.index_by
+    )
+
+
 def _take_views(cls, operands, kwargs, values, scales):
     """Hand each view operand's walk to the operator and stand its parent in.
 
@@ -115,16 +124,23 @@ def _take_views(cls, operands, kwargs, values, scales):
     for i, h in enumerate(operands):
         if i < len(accept):
             param, offset_member = accept[i]
-            if h.walk is None:
-                kwargs.setdefault(param, Walk.of(h.shape))
-                out.append(h)
-                continue
-            kwargs.setdefault(param, h.walk)
+            walk = Walk.of(h.shape) if h.walk is None else h.walk
+            if h.bounds:
+                # A bound on one axis of the view: the walk keeps that axis
+                # and the copy patches its size from the value.
+                (axis, (value, scale)), *more = h.bounds.items()
+                if more:
+                    raise ValueError(f"{h!r}: a copy takes one bounded axis")
+                walk = dataclasses.replace(walk, bounded=axis)
+                values[f"{param}_valid"] = value
+                scales[f"{param}_valid"] = scale
+            kwargs.setdefault(param, walk)
             if h.index_by is not None:
                 value, stride = h.index_by
                 values[offset_member] = value
                 scales[offset_member] = stride
-            out.append(h.parent)
+            # The bound is the walk's now: the buffer stands in, plain.
+            out.append(_unbounded(h.parent if h.walk is not None else h))
         elif h.walk is not None:
             raise TypeError(
                 f"{cls.__name__} takes a contiguous operand at position {i}, not "

@@ -170,12 +170,11 @@ class _ExtentWord(Value):
         self.extent, self.buffer, self.axis = extent, buffer, axis
 
     def _tiles(self, op) -> int:
+        from ..design.runtime import extent_unit  # the one definition of the unit
+
         b = op.value_buffer(self.buffer)
         lanes = 1 if b.lanes.replicate else b.lanes.count
-        rank, tile_shape = len(b.shape), b.lanes.shape
-        k = self.axis - (rank - len(tile_shape))
-        tile_rows = tile_shape[k] if k >= 0 else 1
-        return getattr(op, self.extent.name) // (lanes * tile_rows)
+        return getattr(op, self.extent.name) // (lanes * extent_unit(b, self.axis))
 
     def __repr__(self) -> str:
         return f"<tiles per lane of {self.buffer} under {self.extent.name}>"
@@ -562,6 +561,13 @@ class Operator(metaclass=_OperatorMeta):
         at = copy.copy(self)
         vars(at)["_extents"] = {**self.__dict__.get("_extents", {}), **extents}
         return member.derive(at)
+
+    def extent_unit(self, buffer: str) -> int | None:
+        """The rows of operand ``buffer`` one lane takes at a time under a
+        bound, when it is not the stream tile's rows (GEMV's A moves in
+        output tiles, several input tiles each); ``None`` for the tile's.
+        """
+        return None
 
     def value_buffer(self, name: str) -> BoundBuffer:
         """The bound operand ``name``."""

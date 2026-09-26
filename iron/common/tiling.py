@@ -519,6 +519,9 @@ class Walk:
     offset: int
     sizes: tuple[int, ...]
     strides: tuple[int, ...]
+    # The axis a graph bounds per call (``x[:n]`` on a view a copy takes):
+    # its size is the full extent here and patched to the call's at dispatch.
+    bounded: int | None = None
 
     @classmethod
     def of(cls, shape) -> "Walk":
@@ -556,4 +559,5 @@ class Walk:
         return (
             f"o{self.offset}s{'x'.join(map(str, self.sizes))}"
             f"t{'x'.join(map(str, self.strides))}"
+            + (f"b{self.bounded}" if self.bounded is not None else "")
         )
