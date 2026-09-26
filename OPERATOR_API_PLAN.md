@@ -34,7 +34,7 @@ run in CI with mlir-aie's configuration.
   Compile-time = baked into the artifact (array *or* sequence; which one is
   derived from where the field is used); dispatch-time = never baked.
 - **1A** The array's dependency set is *declared*: a field is array-tier iff
-  it appears in an operand's `tile=`/`per=`/`depth=` or in `bakes = (...)`.
+  it appears in an operand's `tile=`/`per=`/`depth=` or says so itself, `param(..., array=True)`.
   `array(target)` receives a view exposing only those and raises on any other
   read. No learned read-sets.
 - **2B** `In(*shape, dtype=, tile=, per=, depth=, via=)` absorbs `StreamIn`:
@@ -42,8 +42,8 @@ run in CI with mlir-aie's configuration.
   endpoint, `op.A.tile` the fifo type. Shape args stay extent-only; `tile=`/
   `per=` may be knobs. `Stream(...)` remains for the rare internal stream.
 - **3B** `Value(dtype, derive=..., address=, lock=)` replaces `Resident` and
-  `Scratchpad`; the call site decides the tier (an int bakes, a `DispatchTime`
-  graph parameter never bakes); `.read()` in a core body picks the lowering
+  `Scratchpad`; the call site decides the tier (an int is compiled in, a `DispatchTime`
+  graph parameter never is); `.read()` in a core body picks the lowering
   per image. `design_key`/`explain()` print which values were baked.
 - **4B** `Shipped(GEMM, image=Xclbin(url=, sha256=))`: the shipped binary is
   a subclass; `image=` is consumed by `__init_subclass__` (replaces
@@ -87,8 +87,7 @@ class GEMV(Operator):
     tile_in: int = auto(2, choices=(1, 2, 4, 8))
     tile_out: int = auto()                    # largest divisor of M//columns that fits L1
     vector_width: int = auto()                # the kernel contract's vec_size
-    epilogue: str = param(default="none")
-    bakes = ("epilogue",)                     # read by array(), named by no tiling
+    epilogue: str = param(default="none", array=True)   # read by array(), named by no tile
 
     A = In(optional(batches), M, K, tile=(tile_in, K), per=columns, depth=2)
     B = In(optional(batches), K,    tile=(K,),         per=columns, depth=1)
@@ -190,7 +189,7 @@ minimal. `pyright` and `ruff check` clean at every commit.
    in the lint workflow.
 2. **Field vocabulary**: `param()`/`auto()` (done: a rename on the two-class
    model, `auto(choices=, legal=)` recorded for a tuner); then `In(..., tile=,
-   per=, depth=, via=)` (2B), `Value` (3B) and `bakes`/the restricted view
+   per=, depth=, via=)` (2B), `Value` (3B) and `array=True`/the restricted view
    (1A). Those three are one-class concepts (an operand's `tile=` is the
    stream the overlay owns today), so they land with the merge, operator by
    operator: a merged class answers as its own `ov`, so the graph, sequence
@@ -242,7 +241,7 @@ minimal. `pyright` and `ruff check` clean at every commit.
      with `tile=` is its own stream; `op.A` answers as a buffer (shape,
      elements, nbytes, views) and as a stream (`tile`, `lane(i)`/`[i]`,
      `bind`, `handles`, `count`). The array tier is declared: every field
-     named in a `tile=`/`per=`/`depth=` or in `bakes = (...)`. `design_key`
+     named in a `tile=`/`per=`/`depth=` or declared `param(..., array=True)`. `design_key`
      is the class and those fields, resolved; `array(target)` receives a
      view that raises on any other field, naming the rule.
    - `Value(dtype, derive=..., address=, lock=)`: a resident when it is
@@ -289,7 +288,7 @@ today**.
   each operator built at two extents with the same knobs must leave
   byte-identical per-core ELFs (the real build; an insts-only lowering
   compiles no core). ReLU, ElementwiseAdd, Softmax, RoPE, RMSNorm and GEMM
-  pass on both device widths; GEMV is a strict xfail, since it bakes the
+  pass on both device widths; GEMV is a strict xfail, since it compiles the
   rows per column into its core loop (the `rows` `Value` of the merge
   fixes it); Repeat and Copy have no core.
 - `a99ced5` Step 5a: `declare_kernel(source_text=)`: a kernel written
