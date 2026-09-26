@@ -192,7 +192,7 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
             f"{type(self).__name__}.reference() is not implemented"
         )
 
-    def design(self, rt) -> None:
+    def sequence(self, rt) -> None:
         """Override to write the runtime sequence by hand; otherwise it is derived.
 
         ``rt`` is an :class:`iron.common.design.Sequence`: ``rt.fill(stream,
@@ -206,8 +206,8 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
         return {}
 
     @classmethod
-    def has_design_override(cls) -> bool:
-        return cls.design is not Operator.design
+    def has_sequence_override(cls) -> bool:
+        return cls.sequence is not Operator.sequence
 
     # -- library surface ---------------------------------------------------
 

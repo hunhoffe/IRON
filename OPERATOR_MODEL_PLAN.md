@@ -24,7 +24,7 @@ and why; the rest is the design as agreed.
 | shapes are arbitrary Python over compile-time fields | a shape dimension is a **bare field or an integer**; a conditional may only test a field with a default | inference becomes a lookup instead of a solver. The draft's own examples (`size // tile_size`, `if b_col_maj`) needed the resolver it claimed to have dissolved |
 | declaration in a method body, names recovered by a `__setattr__` hook | declaration **at class level**, names from the descriptor protocol, fields usable by bare name | once shapes are field references there is nothing left for a method body to do; the hook and its three guard checks go |
 | `resolve()` on the operator, deriving overlay tunables from the extent (`tile_size_output = M // cols`) | `resolve(dev)` on the **overlay**, from the device only; `for_extent(...)` is the explicit opt-out | tuning from `M` makes the overlay depend on the extent, which defeats reuse. The operator author chooses reuse or per-shape performance, per call site |
-| the design restates the ABI (`L3_*_ty`, `Runtime(seq, fn_args=[...])`) and E7 checks identity | the **library owns `Runtime` and `Program`**; a buffer names its stream (`to=`/`from_=`) and the fill/drain sequence is **derived**; `design(rt)` is an override for irregular operators | deletes the second spelling and the checks that policed it. Most sequence designs in the tree are "tile this buffer over that stream across the columns" |
+| the design restates the ABI (`L3_*_ty`, `Runtime(seq, fn_args=[...])`) and E7 checks identity | the **library owns `Runtime` and `Program`**; a buffer names its stream (`to=`/`from_=`) and the fill/drain sequence is **derived**; `sequence(rt)` is an override for irregular operators | deletes the second spelling and the checks that policed it. Most sequence designs in the tree are "tile this buffer over that stream across the columns" |
 | three runtime tiers named by what rebuilds (`HostResident`, `SequenceResident`, a plain field) | two author-named markers, **`Scratchpad`** and upstream's **`DispatchTime`** | the third tier is a plain field and needs no name; reusing upstream's name avoids two vocabularies for one mechanism |
 | four packaging constructors (`Overlay`, `StaticSequence`/`GeneratedSequence`, `Elf`/`Xclbin`) | **`compile(dev, boundaries=, image=)`**, everything else derived from the declaration and reported | with author-named markers the sequence kind is already declared, and the image follows from device, boundaries and markers. Only boundaries and an image override were ever the user's to choose |
 | `Overlay` ABI (bindings, residents, sizes) read back from files and compared (E23) | agreement **by construction** for overlays IRON builds; read-back kept only for an external xclbin (`Overlay.from_xclbin`) | the sequence is built from the overlay's typed stream declarations, so there is nothing to compare except divisibility |
@@ -250,18 +250,18 @@ Surveyed against every design on the PR 215 branch: **14 operators are
 derivable** as they stand (relu, gelu, silu, sigmoid, tanh, layer_norm,
 elementwise_add, elementwise_mul, axpy, leaky_relu, dequant, rms_norm both
 designs, rope) plus softmax once the preamble exists; **eight need
-`design(rt)`** (strided_copy, transpose, mem_copy, gemv, gemm, mha, flm/gemm,
+`sequence(rt)`** (strided_copy, transpose, mem_copy, gemv, gemm, mha, flm/gemm,
 mm_prebuilt); repeat is borderline and is treated as an override; the two
 swiglu composites become graph functions (§8). The eight are mostly about
 TaskGroup and wait structure (an outer group held across batches, one wait
 per batch, queue-depth retirement, drain issued before fill) and the tiler
 does not learn any of that.
 
-**An operator overrides `design(rt)`** when the derivation cannot express its
+**An operator overrides `sequence(rt)`** when the derivation cannot express its
 pattern. This is what the derived one is equivalent to:
 
 ```python
-    def design(self, rt):
+    def sequence(self, rt):
         rows = self.M // self.ov.cols
         rt.fill(self.ov.b, self.B)
         for col in range(self.ov.cols):
@@ -300,7 +300,7 @@ class StridedCopy(Operator[CopyOverlay]):
     dst_offset = Scratchpad(np.int32)        # patched into the BD; free per call; works under full ELF
     n_live     = DispatchTime(np.int32)      # regenerates the stream per call; xclbin only
 
-    def design(self, rt):
+    def sequence(self, rt):
         rt.fill(self.ov.s, self.src[:self.n_live])
         rt.drain(self.ov.d, self.dst[self.dst_offset:], wait=True)
 ```
@@ -634,8 +634,8 @@ Each row names the failure or mechanism that justifies it. **T1** pyright,
 | C10 | extent not a multiple of the overlay's tile unit | T3 | `compatible()` |
 | C11 | an overlay's core ELFs differ between two extents | test suite | the reuse discipline (§3), byte-identity; fails today for every design with a compile-time trip count |
 | C12 | an external overlay's declared bindings disagree with its file | T4 | the mm_prebuilt case (§9) |
-| C13 | a declared buffer never filled or drained in an overridden `design(rt)` | T4 | the derived sequence cannot make this mistake; an override can |
-| C14 | DMA addresses past the end of a buffer in an overridden `design(rt)` | T4 | bounds from the slice, cheap; the coverage checks beyond this are opt-in test utilities |
+| C13 | a declared buffer never filled or drained in an overridden `sequence(rt)` | T4 | the derived sequence cannot make this mistake; an override can |
+| C14 | DMA addresses past the end of a buffer in an overridden `sequence(rt)` | T4 | bounds from the slice, cheap; the coverage checks beyond this are opt-in test utilities |
 | C15 | a `Scratchpad` never written before dispatch | T5 | sync-time check on the handle |
 | C16 | one instance bound to two per-call handles | graph build | one symbol per design (§6) |
 | C17 | `n_rows > max_rows` | write time | the bound is declared beside the buffer |
@@ -1221,7 +1221,7 @@ and the decode graph's parity against the token snapshot (§18).
 | the shipped flm image, external overlays (§9) | `iron/common/external.py`, `iron/operators/flm/gemm/shipped.py` (was `mm_prebuilt/`, a second operator; now a second overlay of `flm.GEMM`, its instruction stream byte-identical at four shapes) | pins and parameter block declared; 32 cores' words then locks before any DMA; consume-order transfers and per-slot queue bound checked against the old emitter's arithmetic | **needs a run**: the raw-dialect emission (`aiex.runtime_sequence(*types)` with `*args`, `shim_dma_single_bd_task`) has only been exercised against a recorder |
 
 Step 2 is complete. Step 3 so far: repeat, strided_copy, transpose, gemm
-and mha are declared overrides (`design(rt)` over the same `Sequence`), with
+and mha are declared overrides (`sequence(rt)` over the same `Sequence`), with
 their access patterns kept as explicit descriptors (mha's as buffer slices)
 and their RTP values as residents; `select()` carries gemm's layout
 transposes and `Overlay.device()` its NPU1 column variants. mha's four

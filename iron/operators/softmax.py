@@ -69,7 +69,7 @@ class SoftmaxOverlay(Overlay):
         mask_k = softmax_k.object_file.bind("mask_bf16", [tile_ty, np.int32, np.int32])
         return softmax_k, mask_k
 
-    def design(self, target) -> list:
+    def array(self, target) -> list:
         from aie.iron import ObjectFifo, Worker
         from aie.iron.controlflow import range_
 

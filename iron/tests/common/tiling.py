@@ -241,7 +241,7 @@ def test_legalize_rejects_granularity_violations():
 def test_view_of_whole_rows_is_one_linear_run():
     from iron.common.tiling import view
 
-    # GEMV's design(rt): self.A[:, col*rows:(col+1)*rows, :] over (nb, M, K)
+    # GEMV's sequence(rt): self.A[:, col*rows:(col+1)*rows, :] over (nb, M, K)
     nb, M, K, cols = 4, 256, 128, 8
     rows = M // cols
     off, sizes, strides = view(

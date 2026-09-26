@@ -49,7 +49,7 @@ class CopyOverlay(Overlay):
     s = StreamIn(transfer_size, dtype=dtype, per=num_aie_channels, depth=1)
     d = StreamOut(transfer_size, dtype=dtype, per=num_aie_channels, depth=1)
 
-    def design(self, target) -> list:
+    def array(self, target) -> list:
         from aie.iron import ObjectFifo
 
         for c in range(self.num_aie_channels):
@@ -244,7 +244,7 @@ class Copy(Operator[CopyOverlay]):
         )
         return out if y is None else y
 
-    def design(self, rt):
+    def sequence(self, rt):
         ins = self._taps(self.x, self.src)
         outs = self._taps(self.y, self.dst)
         in_off = self.in_offset if self.uses_value("in_offset") else None

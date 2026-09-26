@@ -102,7 +102,7 @@ class WeightedRMSNormOverlay(RMSNormOverlay):
         RMSNormOverlay.line_size, per=RMSNormOverlay.num_channels, replicate=True
     )
 
-    def design(self, target) -> list:
+    def array(self, target) -> list:
         from aie.iron import ObjectFifo, Worker
         from aie.iron.controlflow import range_
 

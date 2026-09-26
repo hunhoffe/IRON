@@ -20,7 +20,7 @@ Transfers are emitted as shim DMA tasks on the pinned allocations, at most
 ``depth`` outstanding per slot (the image's memtiles hold that many
 objects, so a further transfer would overwrite one still in use). Task
 groups have no meaning here and are accepted as no-ops, so an operator's
-``design(rt)`` reads the same against a built or an external overlay.
+``sequence(rt)`` reads the same against a built or an external overlay.
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ class _NoGroup:
 
 
 class ExternalSequence(Transfers):
-    """What an operator's ``design(rt)`` receives against an external overlay.
+    """What an operator's ``sequence(rt)`` receives against an external overlay.
 
     The same surface :class:`~iron.common.design.Sequence` offers, lowering a
     transfer to words for a downloaded image instead of MLIR tasks.

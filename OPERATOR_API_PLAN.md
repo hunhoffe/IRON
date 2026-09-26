@@ -230,7 +230,7 @@ minimal. `pyright` and `ruff check` clean at every commit.
 7. **Merge** each operator onto one class. The mechanics, so both forms
    coexist and operators migrate one at a time with the suites green:
    - The merged base carries both surfaces. `Operator` gains what `Overlay`
-     has (`resolve`/`resolved`, `array` (was `design(target)`), `streams`,
+     has (`resolve`/`resolved`, `array` (was `array(target)`), `streams`,
      `values`, `residents`, `design_key`, `tolerance`, `device`, `copy`,
      `name_parts`, `external`/`prebuilt`/`build`), and `op.ov` is `self`
      on a merged class (no `ov` field, no `_split_kwargs`, no `__init__`
@@ -249,7 +249,7 @@ minimal. `pyright` and `ruff check` clean at every commit.
      when a graph binds it (`Scratchpad`'s lowering), `DispatchTime` when
      declared so. `residents()` goes: the derivation is on the member.
    - `array(self, target)`: the old overlay `design`; `sequence(self, rt)`:
-     the old operator `design(rt)`; `reference` unchanged.
+     the old operator `sequence(rt)`; `reference` unchanged.
    - Rungs: the elementwise family (the four templates collapse to one
      `Elementwise` base whose operands say how many streams there are),
      then gemv/softmax/rope/transpose/repeat/mem_copy, then gemm/mha, then

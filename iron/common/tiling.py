@@ -25,7 +25,7 @@ are stated in tap order (outermost first), ``sizes = [iter, d2, d1, d0]``:
   them.
 
 GEMV, repeat and mha each carried a private copy of the first rule. GEMV's
-copy stays in its ``design(rt)`` override until its object is proven
+copy stays in its ``sequence(rt)`` override until its object is proven
 byte-identical; the derived operators use this one.
 
 Upstream's ``taplib`` is used for what it does: ``TensorAccessPattern`` is the

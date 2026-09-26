@@ -107,7 +107,7 @@ class FLMDequantOverlay(Overlay):
 
     # -- the array -------------------------------------------------------------
 
-    def design(self, target) -> list:
+    def array(self, target) -> list:
         from aie.iron import ObjectFifo, Worker
 
         cols = self.cols
@@ -259,7 +259,7 @@ class DequantBFP(Operator[FLMDequantOverlay]):
 
     # -- the runtime sequence --------------------------------------------------
 
-    def design(self, rt):
+    def sequence(self, rt):
         ov = self.ov
         cols = ov.cols
         k_tiles = self.K // K_TILE_B

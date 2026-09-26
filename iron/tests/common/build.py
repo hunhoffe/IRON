@@ -168,7 +168,7 @@ def test_override_slices_and_issues_through_the_same_sequence():
         B = In(MVOverlay.K, to=MVOverlay.b)
         C = Out(M, from_=MVOverlay.c)
 
-        def design(self, rt):
+        def sequence(self, rt):
             rows = self.M // self.ov.cols
             rt.fill(self.ov.b, self.B)
             with rt.group():
@@ -180,8 +180,8 @@ def test_override_slices_and_issues_through_the_same_sequence():
     ov = MVOverlay(K=128)
     _bind_all(ov, log)
     op = Custom(ov, M=256)
-    assert Custom.has_design_override() and not MV.has_design_override()
-    op.design(Sequence(op, ov, {"A": "dA", "B": "dB", "C": "dC"}))
+    assert Custom.has_sequence_override() and not MV.has_sequence_override()
+    op.sequence(Sequence(op, ov, {"A": "dA", "B": "dB", "C": "dC"}))
     assert [(v, h) for v, h, _, _ in log] == [
         ("fill", "b0"),
         ("fill", "a0"),
@@ -268,7 +268,7 @@ def test_mha_sequence_is_one_descriptor_set_per_kv_group(monkeypatch):
     for s in ov.streams.values():
         for i in range(s.count):
             s.bind(Handle(f"{s.name}{i}", log), i)
-    op.design(Sequence(op, ov, {"Q": "dQ", "K": "dK", "V": "dV", "O": "dO"}))
+    op.sequence(Sequence(op, ov, {"Q": "dQ", "K": "dK", "V": "dV", "O": "dO"}))
 
     head, block = 1024 * 64, 256 * 64
     # Q: (heads, blocks, rows, d), one per slot. K and V: the re-read in the
@@ -325,7 +325,7 @@ def test_mha_sequence_over_interleaved_heads_is_strided_the_same_way(monkeypatch
     for s in ov.streams.values():
         for i in range(s.count):
             s.bind(Handle(f"{s.name}{i}", log), i)
-    op.design(Sequence(op, ov, {"Q": "dQ", "K": "dK", "V": "dV", "O": "dO"}))
+    op.sequence(Sequence(op, ov, {"Q": "dQ", "K": "dK", "V": "dV", "O": "dO"}))
     assert [name for name, _ in log] == ["q0", "q1", "k0", "v0", "o0", "o1"] * 2
     q0, q1, k0, *_ = [tap for _, tap in log[:6]]
     # Q: (heads 2 at stride d, blocks 2, rows 256 at stride 4d, d)
@@ -465,7 +465,7 @@ def test_flm_gemm_unsplit_sequence_issues_c_then_a_then_b_per_block(flm):
     op = flm.GEMM(M=512, K=1024, N=1024).resolved(_NPU2())
     ov = op.ov
     log = _record(ov)
-    op.design(Sequence(op, ov, {"A": "dA", "B": "dB", "C": "dC"}))
+    op.sequence(Sequence(op, ov, {"A": "dA", "B": "dB", "C": "dC"}))
     verbs = [v for v, *_ in log]
     # Two column-blocks (N = 2 * 8 * 64): each drains C on eight columns,
     # then fills A on four rows and B on eight columns.
@@ -487,7 +487,7 @@ def test_flm_gemm_split_sequence_drains_one_row_block_at_a_time(flm):
     assert op._c_split and not op._a_split
     ov = op.ov
     log = _record(ov)
-    op.design(Sequence(op, ov, {"A": "dA", "B": "dB", "C": "dC"}))
+    op.sequence(Sequence(op, ov, {"A": "dA", "B": "dB", "C": "dC"}))
     drains = [e for e in log if e[0] == "drain"]
     assert len(drains) == 20 * 8 * 2  # blocks x columns x row-blocks
     assert all(sizes == (1, 1, 256, 64) for _, _, _, sizes, _ in drains)
@@ -513,7 +513,7 @@ def test_mem_copy_sequence_pads_a_remainder_to_a_full_line(monkeypatch):
             size=size, num_cores=4, num_channels=1, bypass=False, tile_size=256
         ).resolved(Dev())
         log = _record(op.ov)
-        op.design(Sequence(op, op.ov, {"x": "dx", "y": "dy"}))
+        op.sequence(Sequence(op, op.ov, {"x": "dx", "y": "dy"}))
 
         def moved(verb):
             return sum(s[0] * s[3] for v, _, _, s, _ in log if v == verb)

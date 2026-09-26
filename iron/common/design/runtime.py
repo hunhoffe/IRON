@@ -35,7 +35,7 @@ class Transfers:
 
     A concrete sequence supplies ``op``, ``ov`` and the ``fill``/``drain``/
     ``group`` surface; this decides what goes through it -- the overlay's own
-    sequence, the operator's ``design(rt)`` override, or the one derived from
+    sequence, the operator's ``sequence(rt)`` override, or the one derived from
     the declarations. :class:`Sequence` lowers a transfer to MLIR tasks;
     :class:`~iron.common.external.ExternalSequence` emits it as words for a
     downloaded image.
@@ -59,8 +59,8 @@ class Transfers:
         """
         if self.ov.has_sequence():
             self.ov.sequence(self.op, self)
-        elif self.op.has_design_override():
-            self.op.design(self)
+        elif self.op.has_sequence_override():
+            self.op.sequence(self)
         else:
             self._derived()
 
@@ -71,7 +71,7 @@ class Transfers:
                 if stream is None:
                     raise ValueError(
                         f"{type(self.op).__name__}.{buf.name} names no stream (to=), so its "
-                        f"sequence cannot be derived; add to= or override design(rt)"
+                        f"sequence cannot be derived; add to= or override sequence(rt)"
                     )
                 for slot, accesses in transfers(buf, stream):
                     for acc in accesses:
@@ -81,7 +81,7 @@ class Transfers:
                 if stream is None:
                     raise ValueError(
                         f"{type(self.op).__name__}.{buf.name} names no stream (from_=), so its "
-                        f"sequence cannot be derived; add from_= or override design(rt)"
+                        f"sequence cannot be derived; add from_= or override sequence(rt)"
                     )
                 for slot, accesses in transfers(buf, stream):
                     for acc in accesses:

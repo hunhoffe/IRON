@@ -78,7 +78,7 @@ class MemCopyOverlay(Overlay):
             self, num_cores=cores, tile_size=tile_size, line_size=min(tile_size, 8192)
         )
 
-    def design(self, target) -> list:
+    def array(self, target) -> list:
         from aie.iron import ObjectFifo, Worker
         from aie.iron.controlflow import range_
 
@@ -263,7 +263,7 @@ class MemCopy(Operator[MemCopyOverlay]):
 
     # -- the runtime sequence --------------------------------------------------
 
-    def design(self, rt):
+    def sequence(self, rt):
         ov = self.ov
         size, num_cores, line_size = self.size, ov.num_cores, ov.line_size
         s, d = ov.s, ov.d

@@ -305,7 +305,7 @@ class FLMGEMMOverlay(Overlay):
 
     # -- the array -------------------------------------------------------------
 
-    def design(self, target) -> list:
+    def array(self, target) -> list:
         from aie.helpers.util import v8bfp16ebs8  # noqa: F401  (the array type)
         from aie.iron import Buffer, ObjectFifo, Worker
         from aie.iron.controlflow import range_
@@ -763,7 +763,7 @@ class GEMM(Operator[FLMGEMMOverlay]):
 
     # -- the runtime sequence --------------------------------------------------
 
-    def design(self, rt):
+    def sequence(self, rt):
         ov = self.ov
         M, K, N = self.M, self.K, self.N
         COLS, ROWS = ov.cols, ov.rows

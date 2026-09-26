@@ -83,7 +83,7 @@ def build_design(
                 )
             value.param = dispatch[value.symbol]
 
-    workers = ov.design(target)
+    workers = ov.array(target)
     if workers is None:
         workers = []
 

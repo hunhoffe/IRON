@@ -142,7 +142,7 @@ class GEMVOverlay(Overlay):
             kernel_vector_size=self._legal_kernel_vector_size(),
         )
 
-    def design(self, target):
+    def array(self, target):
         from aie.dialects.aie import T
         import aie.dialects.index as index
         from aie.helpers.dialects.scf import _for as range_
@@ -313,7 +313,7 @@ class GEMV(Operator[GEMVOverlay]):
             return base
         return f"{base}_epi{self.ov.epilogue}"
 
-    def design(self, rt):
+    def sequence(self, rt):
         """The runtime sequence, kept as it was: B once per column in an outer
         group, then A/C per batch, coalesced into one iterated descriptor per
         column when the shim can hold it.

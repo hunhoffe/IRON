@@ -42,7 +42,7 @@ class RepeatOverlay(Overlay):
     def resolve(self, dev) -> "RepeatOverlay":
         return dataclasses.replace(self, transfer_size=self.transfer_size or self.cols)
 
-    def design(self, target) -> list:
+    def array(self, target) -> list:
         from aie.iron import ObjectFifo
 
         fifo_in = ObjectFifo(self.s.tile, name="fifo_in", depth=2)
@@ -136,7 +136,7 @@ class Repeat(Operator[RepeatOverlay]):
             f"({granule} elements = one 32-bit word). No divisor of {cols} satisfies all three."
         )
 
-    def design(self, rt):
+    def sequence(self, rt):
         rows, cols, repeat = self.rows, self.ov.cols, self.repeat
         cols_split = self._cols_split()
         chunk = cols // cols_split

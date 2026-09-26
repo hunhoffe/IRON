@@ -191,7 +191,7 @@ class GEMMOverlay(Overlay):
 
     # -- the array ----------------------------------------------------------
 
-    def design(self, target) -> list:
+    def array(self, target) -> list:
         from aie.iron import Buffer, ObjectFifo, Worker
         from aie.iron.controlflow import range_
         from aie.iron.device import Tile
@@ -511,7 +511,7 @@ class GEMM(Operator[GEMMOverlay]):
 
     # -- the runtime sequence --------------------------------------------------
 
-    def design(self, rt):
+    def sequence(self, rt):
         from aie.helpers.taplib import TensorAccessPattern, TensorTiler2D
 
         from iron.common.tiling import legalize

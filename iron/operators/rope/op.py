@@ -67,7 +67,7 @@ class RoPEOverlay(Overlay):
             self.check_shim_columns(dev, cols)
         return dataclasses.replace(self, num_aie_columns=cols)
 
-    def design(self, target) -> list:
+    def array(self, target) -> list:
         from aie.iron import ObjectFifo, Worker
         from aie.iron.controlflow import range_
 

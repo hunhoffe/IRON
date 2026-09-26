@@ -148,11 +148,11 @@ reuse lint
        `OPERATOR_MODEL_PLAN.md`). The **overlay** (`XOverlay(Overlay)`) is the
        array configuration: `auto()` fields filled by `resolve(dev)` from the
        device alone, `StreamIn`/`StreamOut` members in tile units, `Resident`
-       values the cores read (trip counts), and `design(target)`, which builds
+       values the cores read (trip counts), and `array(target)`, which builds
        ObjectFIFOs and Workers and binds each stream to a fifo's shim end. The
        **operator** (`X(Operator[XOverlay])`) is the host side: `param()` fields,
        `In`/`Out` buffers declared by shape against the overlay's streams,
-       `residents()` from the extents, and optionally `design(rt)` when the
+       `residents()` from the extents, and optionally `sequence(rt)` when the
        runtime sequence is not the derived one. External overlays (a downloaded
        xclbin) declare an `Xclbin` attribute and pinned streams instead of
        `design()`.
@@ -224,7 +224,7 @@ reuse lint
 
 **Runtime Sequence**: Host-side control flow. The library derives it from
 the operator's declaration (each buffer split over its stream's slots); an
-operator that needs a different order overrides `design(rt)`:
+operator that needs a different order overrides `sequence(rt)`:
 
 - `rt.fill(slot, view)`: DMA data from host → NPU (shim → L2/L1)
 - `rt.drain(slot, view)`: DMA data from NPU → host
@@ -312,14 +312,14 @@ Data movement pattern: L3 → Shim DMA → L2 → L1 (tile local) → Compute
    - `StreamIn`/`StreamOut` members in tile units (`per=` a column count)
    - a `Resident` for every trip count the core reads, so the array never
      depends on the extent
-   - `design(target)`: build ObjectFIFOs and Workers (`target.kernel(...)`,
+   - `array(target)`: build ObjectFIFOs and Workers (`target.kernel(...)`,
      `target.rtp(...)`, `target.barrier()`), `range_()` for loops, and
      `self.x[i].bind(fifo.prod())` / `self.count.bind(rtps)` for every member
 3. Declare the operator (`class X(Operator[XOverlay])`):
    - `param()` fields; `In`/`Out` buffers with `to=`/`from_=` naming the stream
    - `compatible()` for divisibility against the tuned overlay, `residents()`
      for the counts
-   - `design(rt)` only if the derived sequence is not the one you want
+   - `sequence(rt)` only if the derived sequence is not the one you want
    - see `iron/common/elementwise.py` for the elementwise families, and
      `gemm/op.py` or `mha/op.py` for hand-written sequences
 4. Name the kernel with a factory from `aie.iron.kernels`

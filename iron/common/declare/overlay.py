@@ -7,7 +7,7 @@ An overlay fixes everything a change to which rebuilds the design: tile
 shapes, column counts, dtypes, kernel flags. Its tunables start out ``None``
 and :meth:`Overlay.tuning` fills them for a device, raising
 :class:`~iron.common.declare.field.Unresolvable` when the device admits no legal
-choice. :meth:`Overlay.design` writes the dataflow; an external overlay
+choice. :meth:`Overlay.array` writes the dataflow; an external overlay
 declares :class:`~iron.common.declare.member.Xclbin` instead and supplies a
 binary.
 """
@@ -167,7 +167,7 @@ class Overlay:
         """The runtime sequence for ``op`` on this overlay, when the overlay
         rather than the operator knows it: a external image consumes its
         transfers in the order it was built for, whatever operator drives it.
-        Takes precedence over the operator's ``design(rt)``.
+        Takes precedence over the operator's ``sequence(rt)``.
         """
         raise NotImplementedError
 
@@ -210,7 +210,7 @@ class Overlay:
         """
         return target.dev
 
-    def design(self, target) -> list:
+    def array(self, target) -> list:
         """Build the array for ``target`` and return its workers.
 
         ``target`` (:class:`iron.common.design.Target`) carries the device,
@@ -220,7 +220,7 @@ class Overlay:
         ``per=`` stream) with the shim end of the fifo that carries it, and
         ``.bind(buffers)`` on every declared resident.
         """
-        raise NotImplementedError(f"{type(self).__name__}.design() is not implemented")
+        raise NotImplementedError(f"{type(self).__name__}.array() is not implemented")
 
     def tolerance(self, target: Target) -> Tolerance | None:
         """How close this array's output comes to the operator's reference:

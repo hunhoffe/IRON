@@ -81,7 +81,7 @@ class TransposeOverlay(Overlay):
             self.check_shim_columns(dev, cols, self.num_channels)
         return dataclasses.replace(self, num_aie_columns=cols)
 
-    def design(self, target) -> list:
+    def array(self, target) -> list:
         from aie.iron import ObjectFifo, Worker
         from aie.iron.controlflow import range_
 
@@ -262,7 +262,7 @@ class Transpose(Operator[TransposeOverlay]):
             "chan_tiles": self.M // ov.m // ov.num_channels,
         }
 
-    def design(self, rt):
+    def sequence(self, rt):
         """One task group per batch (a parallel fill+drain over all cores), so the
         contiguous matrices stream through the same fifos in sequence."""
         ov = self.ov

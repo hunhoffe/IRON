@@ -129,7 +129,7 @@ class MHAOverlay(Overlay):
 
     # -- the array -------------------------------------------------------------
 
-    def design(self, target) -> list:
+    def array(self, target) -> list:
         import sys
 
         from aie.helpers.dialects.scf import else_, if_
@@ -704,7 +704,7 @@ class MHA(Operator[MHAOverlay]):
 
     # -- the runtime sequence --------------------------------------------------
 
-    def design(self, rt):
+    def sequence(self, rt):
         """One descriptor set per KV group.
 
         The array consumes, per head and per Q block, the block's Q rows on
