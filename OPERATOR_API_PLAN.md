@@ -228,13 +228,42 @@ minimal. `pyright` and `ruff check` clean at every commit.
    string; `arg_types` from operands).
 6. **C11 device-free**: build each class's array at two extents, require
    byte-identical core ELFs. Gates the merge.
-7. **Merge** each operator onto one class (elementwise; gemv/softmax/rope/
-   transpose/repeat/mem_copy; gemm/mha; flm). Rename collisions first. flm →
-   `iron/exports/flm`. Delete `_split_kwargs`, the `__init__` wrapper,
-   `_overlay_class_of`, `Overlay.copy()`, the `residents()` bridge, both tier
-   guards. An operator's constructor becomes visible to a checker here, so
-   pyright's scope widens to `iron/operators`, `iron/applications` and the
-   rest of `iron/tests`.
+7. **Merge** each operator onto one class. The mechanics, so both forms
+   coexist and operators migrate one at a time with the suites green:
+   - The merged base carries both surfaces. `Operator` gains what `Overlay`
+     has (`resolve`/`resolved`, `array` (was `design(target)`), `streams`,
+     `values`, `residents`, `design_key`, `tolerance`, `device`, `copy`,
+     `name_parts`, `external`/`prebuilt`/`build`), and `op.ov` is `self`
+     on a merged class (no `ov` field, no `_split_kwargs`, no `__init__`
+     wrapper); a two-class operator keeps its separate `ov`. The graph,
+     sequence and image layers keep reading `op.ov` until the last operator
+     has moved, then `ov` goes.
+   - `In(*shape, dtype=, tile=, per=, depth=, via=, replicate=)`: an operand
+     with `tile=` is its own stream; `op.A` answers as a buffer (shape,
+     elements, nbytes, views) and as a stream (`tile`, `lane(i)`/`[i]`,
+     `bind`, `handles`, `count`). The array tier is declared: every field
+     named in a `tile=`/`per=`/`depth=` or in `bakes = (...)`. `design_key`
+     is the class and those fields, resolved; `array(target)` receives a
+     view that raises on any other field, naming the rule.
+   - `Value(dtype, derive=..., address=, lock=)`: a resident when it is
+     derived or given a number (the preamble writes it), a per-call value
+     when a graph binds it (`Scratchpad`'s lowering), `DispatchTime` when
+     declared so. `residents()` goes: the derivation is on the member.
+   - `array(self, target)`: the old overlay `design`; `sequence(self, rt)`:
+     the old operator `design(rt)`; `reference` unchanged.
+   - Rungs: the elementwise family (the four templates collapse to one
+     `Elementwise` base whose operands say how many streams there are),
+     then gemv/softmax/rope/transpose/repeat/mem_copy, then gemm/mha, then
+     flm (→ `iron/exports/flm`; `Shipped(GEMM, image=Xclbin(...))`). Rename
+     collisions first: flm `epilogue` resident → `mode`, dequant `qw`/`out`,
+     `config_name`.
+   - Gates per rung: both suites identical to baseline; the C11 gate
+     (GEMV's xfail turns strict-pass when `rows` becomes a `Value`); the
+     design counts of step 3's test; llama's reference tests.
+   - After the last rung: delete `Overlay`, `_overlay_class_of`, the tier
+     guards, the `residents()` bridge; pyright's scope widens to
+     `iron/operators`, `iron/applications` and the rest of `iron/tests`,
+     since an operator's constructor is the dataclass one.
 8. **Exports**: `declare` 32 → ~15; delete the dead re-exports in
    `iron/common/__init__.py`.
 
