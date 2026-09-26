@@ -290,7 +290,7 @@ today**.
 
 ## Progress
 
-- (this commit) Step 8, last: `iron.common.image`, `.design` and `.graph`
+- `6a4f30e` Step 8, last: `iron.common.image`, `.design` and `.graph`
   re-export what something imports through them and nothing else (image 29
   → 6, design 9 → 7, graph 12 → 10); everything else is imported from its
   module. Both suites identical to baseline.
