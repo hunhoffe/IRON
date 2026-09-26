@@ -121,7 +121,7 @@ class GEMVOverlay(Overlay):
             )
         return self.kernel_vector_size
 
-    def tuning(self, dev) -> "GEMVOverlay":
+    def resolve(self, dev) -> "GEMVOverlay":
         # Device-independent today: the tunables that are None are derived from
         # K and from each other, not from the device. (The column count is not
         # defaulted from the device; every caller sets it.)

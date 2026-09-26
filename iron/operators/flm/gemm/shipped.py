@@ -39,7 +39,7 @@ from iron.common.declare import (
     Shim,
     StreamIn,
     StreamOut,
-    Untunable,
+    Unresolvable,
     Xclbin,
     auto,
 )
@@ -136,9 +136,9 @@ class Shipped(External, FLMGEMMOverlay):
     n_chunks = n_units = None
     rtp = Resident(np.int32, address=RTP_ADDRESS, lock=RTP_LOCK_ID)
 
-    def tuning(self, dev) -> "Shipped":
+    def resolve(self, dev) -> "Shipped":
         if dev is not None and (dev.resolve().name != "npu2" or dev.cols < 8):
-            raise Untunable(
+            raise Unresolvable(
                 "flm.gemm.Shipped is a prebuilt NPU2 overlay and needs the 8 "
                 f"columns of NPU2 (aie2p); got {dev.resolve().name!r} with "
                 f"{dev.cols} columns"

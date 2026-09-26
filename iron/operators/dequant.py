@@ -48,8 +48,8 @@ class DequantOverlay(ChanneledUnaryOverlay):
         ),
     )
 
-    def tuning(self, dev) -> "DequantOverlay":
-        tuned = super().tuning(dev)
+    def resolve(self, dev) -> "DequantOverlay":
+        tuned = super().resolve(dev)
         packed = (tuned.line_size // 2) + (tuned.line_size // self.group_size) * 2
         return dataclasses.replace(tuned, in_tile=packed)
 

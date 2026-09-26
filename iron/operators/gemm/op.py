@@ -19,7 +19,7 @@ from iron.common.declare import (
     Resident,
     StreamIn,
     StreamOut,
-    Untunable,
+    Unresolvable,
     param,
     select,
     auto,
@@ -157,15 +157,15 @@ class GEMMOverlay(Overlay):
                 f"Output dtype ({dout}) must be equal or larger to input dtype ({din})"
             )
 
-    def tuning(self, dev) -> "GEMMOverlay":
+    def resolve(self, dev) -> "GEMMOverlay":
         if dev is not None:
             name = dev.resolve().name
             if name == "npu1" and self.num_aie_columns > 4:
-                raise Untunable(
+                raise Unresolvable(
                     "Invalid configuration: NPU (Phoenix/Hawk) has 4 columns"
                 )
             if name == "npu2" and self.num_aie_columns > 8:
-                raise Untunable(
+                raise Unresolvable(
                     "Invalid configuration: NPU2 (Strix/Strix Halo/Krackan) has 8 columns"
                 )
         return dataclasses.replace(

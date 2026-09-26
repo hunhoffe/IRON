@@ -6,7 +6,7 @@
 An overlay fixes everything a change to which rebuilds the design: tile
 shapes, column counts, dtypes, kernel flags. Its tunables start out ``None``
 and :meth:`Overlay.tuning` fills them for a device, raising
-:class:`~iron.common.declare.field.Untunable` when the device admits no legal
+:class:`~iron.common.declare.field.Unresolvable` when the device admits no legal
 choice. :meth:`Overlay.design` writes the dataflow; an external overlay
 declares :class:`~iron.common.declare.member.Xclbin` instead and supplies a
 binary.
@@ -26,7 +26,7 @@ from aie.utils.verify import Tolerance
 
 from .bound import BoundResident, BoundStream, BoundValue
 from .creation import declare
-from .field import DeclarationError, Untunable, param
+from .field import DeclarationError, Unresolvable, param
 from .member import DispatchTime, Resident, Xclbin, _Buffer, _Member, _Stream, _Value
 from .naming import label_parts
 
@@ -134,10 +134,10 @@ class Overlay:
         return max(1, min(dev.cols, (limit - fixed) // cost))
 
     def check_shim_columns(self, dev, cols: int, num_channels: int = 1) -> None:
-        """Raise :class:`Untunable` if ``cols`` exceeds the shim budget."""
+        """Raise :class:`Unresolvable` if ``cols`` exceeds the shim budget."""
         allowed = type(self).shim_columns(dev, num_channels)
         if cols > allowed:
-            raise Untunable(
+            raise Unresolvable(
                 f"{type(self).__name__} with {cols} columns x {num_channels} "
                 f"channels exceeds this device's shim DMA budget; "
                 f"{allowed} columns fit"
@@ -183,21 +183,22 @@ class Overlay:
         return op.residents()
 
     def __post_init__(self) -> None:
-        self._tuned = False
-        self._specialised: dict[str, Any] = {}
+        self._resolved = False
         self.validate()
         self._bind()
 
     # -- declared surface --------------------------------------------------
 
     def validate(self) -> None:
-        """Check the compile-time fields. Runs at construction and after tuning."""
+        """Check the compile-time fields. Runs at construction and after resolution."""
 
-    def tuning(self, dev) -> Self:
-        """Return a copy with every tunable filled for ``dev``; raise :class:`Untunable`.
+    def resolve(self, dev) -> Self:
+        """Return a copy with every ``auto()`` filled for ``dev``; raise :class:`Unresolvable`.
 
-        Sees the device and nothing else, so a tuned overlay serves every
-        extent. The default fills nothing.
+        Sees the device and this overlay's own fields, so a resolved overlay
+        serves every extent; an operator whose extents decide a knob fills it
+        in its own :meth:`Operator.resolve` before this runs. The default
+        fills nothing.
         """
         return self
 
@@ -234,40 +235,28 @@ class Overlay:
 
     # -- library surface ---------------------------------------------------
 
-    def tuned(self, dev) -> Self:
-        if self._tuned:
+    def resolved(self, dev) -> Self:
+        """This overlay resolved for ``dev``: itself if it already is, else a
+        resolved copy, every knob checked filled. The one place :meth:`resolve`
+        is called.
+        """
+        if self._resolved:
             return self
-        new = self.tuning(dev)
+        new = self.resolve(dev)
         if not isinstance(new, type(self)):
             raise TypeError(
-                f"{type(self).__name__}.tuning() must return a {type(self).__name__}, "
+                f"{type(self).__name__}.resolve() must return a {type(self).__name__}, "
                 f"got {type(new).__name__}"
             )
         missing = [n for n in self._auto_fields if getattr(new, n) is None]
         if missing:
-            raise Untunable(
-                f"{type(self).__name__}.tuning() left {missing} unset for {dev}"
+            raise Unresolvable(
+                f"{type(self).__name__}.resolve() left {missing} unset for {dev}"
             )
         new.validate()
-        new._tuned = True
-        new._specialised = dict(self._specialised)
+        new._resolved = True
         new._bind()
         return new
-
-    def for_extent(self, **overrides) -> Self:
-        """A specialised copy: tunables set for one extent, at the cost of sharing."""
-        bad = [k for k in overrides if k not in self._auto_fields]
-        if bad:
-            raise TypeError(f"for_extent() sets non-auto fields {bad}")
-        new = dataclasses.replace(self, **overrides)
-        new._specialised = {**self._specialised, **overrides}
-        new._tuned = self._tuned
-        new._bind()
-        return new
-
-    @property
-    def specialised(self) -> bool:
-        return bool(self._specialised)
 
     def value_symbol(self, value: "BoundValue") -> str | None:
         """An explicit device symbol for a core-read per-call value, or ``None``."""
@@ -282,14 +271,13 @@ class Overlay:
         )
 
     def copy(self) -> Self:
-        """A fresh instance with the same fields and tuning state.
+        """A fresh instance with the same fields and resolution state.
 
         A build works on a copy, so anything ``compatible()`` records on the
         overlay for one operator never reaches another that shares it.
         """
         new = dataclasses.replace(self)
-        new._tuned = self._tuned
-        new._specialised = dict(self._specialised)
+        new._resolved = self._resolved
         new._bind()
         return new
 

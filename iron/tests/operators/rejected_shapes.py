@@ -57,7 +57,7 @@ def test_transfer_size_not_dividing_the_per_channel_share_is_rejected():
 
 # Shapes whose M*N is divisible by every factor while one per-dimension quotient is not
 # a whole number of tiles. Without the guard these reach the transfer as sizes
-# [8, 0, 256, 32]. compatible() runs at tuned(), so that is where the refusal lands.
+# [8, 0, 256, 32]. compatible() runs at resolved(), so that is where the refusal lands.
 @pytest.mark.parametrize(
     "M,N,aie_columns,channels,m,n,bad",
     [
@@ -72,7 +72,7 @@ def test_transpose_dimension_that_does_not_tile_is_refused_by_name(
         M=M, N=N, num_aie_columns=aie_columns, num_channels=channels, m=m, n=n, s=8
     )
     with pytest.raises(Incompatible, match=bad):
-        op.tuned(NPU2())
+        op.resolved(NPU2())
 
 
 @pytest.mark.parametrize("aie_columns", [1, 2, 4])
@@ -80,4 +80,4 @@ def test_transpose_tiling_that_fits_is_still_accepted(aie_columns):
     """The guard must not narrow the accepted set: 1/2/4 columns all tile N=128 by n=32."""
     Transpose(
         M=2048, N=128, num_aie_columns=aie_columns, num_channels=1, m=256, n=32, s=8
-    ).tuned(NPU2())
+    ).resolved(NPU2())

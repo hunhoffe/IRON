@@ -380,6 +380,15 @@ class OperatorSequence:
                     f"{self.name}: a shared arena needs the full ELF, which this "
                     f"device does not dispatch"
                 )
+        # Every operator resolved for the device, once, before anything takes
+        # its identity: unique_designs() then sees the knobs as they will be
+        # built, so two spellings of one array are one design.
+        dev = aie_utils.get_current_device()
+        resolved: dict[int, Operator] = {}
+        for op, *_ in self.runlist:
+            if id(op) not in resolved:
+                resolved[id(op)] = op.resolved(dev)
+        self.runlist = [(resolved[id(op)], *bufs) for op, *bufs in self.runlist]
         # After the mode: a sequence that cannot run in its arena must not
         # have placed anything there.
         self.subbuffer_layout, self.buffer_sizes, self.slice_info = (

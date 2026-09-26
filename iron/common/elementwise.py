@@ -60,7 +60,7 @@ from .declare import (
     Resident,
     StreamIn,
     StreamOut,
-    Untunable,
+    Unresolvable,
     auto,
     param,
 )
@@ -103,7 +103,7 @@ class ElementwiseOverlay(Overlay):
     default_tile: ClassVar[int] = DEFAULT_TILE
     tile_cap: ClassVar[int] = 4096
 
-    def tuning(self, dev) -> "ElementwiseOverlay":
+    def resolve(self, dev) -> "ElementwiseOverlay":
         tile_size = self.default_tile if self.tile_size is None else self.tile_size
         cols = self.num_aie_columns
         if dev is not None:
@@ -111,7 +111,7 @@ class ElementwiseOverlay(Overlay):
                 cols = self.shim_columns(dev, self.num_channels)
             self.check_shim_columns(dev, cols, self.num_channels)
         elif cols is None:
-            raise Untunable("num_aie_columns defaults from the device; none given")
+            raise Unresolvable("num_aie_columns defaults from the device; none given")
         return dataclasses.replace(
             self,
             num_aie_columns=cols,

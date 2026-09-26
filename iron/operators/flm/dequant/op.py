@@ -18,7 +18,7 @@ from iron.common.declare import (
     Overlay,
     StreamIn,
     StreamOut,
-    Untunable,
+    Unresolvable,
     param,
     auto,
 )
@@ -85,13 +85,13 @@ class FLMDequantOverlay(Overlay):
                 "agree or the GEMM reads B in the wrong order"
             )
 
-    def tuning(self, dev) -> "FLMDequantOverlay":
+    def resolve(self, dev) -> "FLMDequantOverlay":
         if dev is None:
-            raise Untunable(
+            raise Unresolvable(
                 "the q4nx dequant grid defaults from the device; none given"
             )
         if dev.arch != AIEArch.AIE2p:
-            raise Untunable("bfp16ebs8 exists only on AIE2P")
+            raise Unresolvable("bfp16ebs8 exists only on AIE2P")
         return dataclasses.replace(
             self,
             tile_n=N_TILE if self.tile_n is None else self.tile_n,
@@ -336,7 +336,7 @@ class DequantBFP(Operator[FLMDequantOverlay]):
         xclbin is emitted at a reference shape so every shape sharing the
         configuration reuses it, and only the instruction stream is per shape.
         """
-        tuned = self.tuned(aie_utils.get_current_device())
+        tuned = self.resolved(aie_utils.get_current_device())
         K, N = tuned._reference_shape
         reference = dataclasses.replace(
             tuned,

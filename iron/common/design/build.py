@@ -48,7 +48,7 @@ def build_design(
     operator's ``DesignGenerator``; ``code`` exists only to reach the cache
     key (see :func:`mlir_artifact_for`).
     """
-    op = op.tuned(dev)
+    op = op.resolved(dev).copy()  # a build binds streams; each gets its own
     ov = op.ov
     if ov.external is not None:
         # A downloaded image: no array to build, only the sequence against

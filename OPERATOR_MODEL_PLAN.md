@@ -23,7 +23,7 @@ and why; the rest is the design as agreed.
 | one `interface()` method per operator, declaring host buffers | two classes: an **Overlay** declares what configures the array, an **Operator** declares the host buffers against it | the overlay depends on data movement *into* the array (tile shapes, columns, dtypes); the sequence depends on host extents. One declaration conflated them, so nothing could be reused by construction and everything had to be checked by comparison. flm/gemm already lives this split by hand |
 | shapes are arbitrary Python over compile-time fields | a shape dimension is a **bare field or an integer**; a conditional may only test a field with a default | inference becomes a lookup instead of a solver. The draft's own examples (`size // tile_size`, `if b_col_maj`) needed the resolver it claimed to have dissolved |
 | declaration in a method body, names recovered by a `__setattr__` hook | declaration **at class level**, names from the descriptor protocol, fields usable by bare name | once shapes are field references there is nothing left for a method body to do; the hook and its three guard checks go |
-| `tuning()` on the operator, deriving overlay tunables from the extent (`tile_size_output = M // cols`) | `tuning(dev)` on the **overlay**, from the device only; `for_extent(...)` is the explicit opt-out | tuning from `M` makes the overlay depend on the extent, which defeats reuse. The operator author chooses reuse or per-shape performance, per call site |
+| `resolve()` on the operator, deriving overlay tunables from the extent (`tile_size_output = M // cols`) | `resolve(dev)` on the **overlay**, from the device only; `for_extent(...)` is the explicit opt-out | tuning from `M` makes the overlay depend on the extent, which defeats reuse. The operator author chooses reuse or per-shape performance, per call site |
 | the design restates the ABI (`L3_*_ty`, `Runtime(seq, fn_args=[...])`) and E7 checks identity | the **library owns `Runtime` and `Program`**; a buffer names its stream (`to=`/`from_=`) and the fill/drain sequence is **derived**; `design(rt)` is an override for irregular operators | deletes the second spelling and the checks that policed it. Most sequence designs in the tree are "tile this buffer over that stream across the columns" |
 | three runtime tiers named by what rebuilds (`HostResident`, `SequenceResident`, a plain field) | two author-named markers, **`Scratchpad`** and upstream's **`DispatchTime`** | the third tier is a plain field and needs no name; reusing upstream's name avoids two vocabularies for one mechanism |
 | four packaging constructors (`Overlay`, `StaticSequence`/`GeneratedSequence`, `Elf`/`Xclbin`) | **`compile(dev, boundaries=, image=)`**, everything else derived from the declaration and reported | with author-named markers the sequence kind is already declared, and the image follows from device, boundaries and markers. Only boundaries and an image override were ever the user's to choose |
@@ -132,11 +132,11 @@ class GEMVOverlay(Overlay):
     b = StreamIn(K, broadcast=True)
     c = StreamOut(tile_out, per_column=True)
 
-    def tuning(self, dev) -> "GEMVOverlay":
+    def resolve(self, dev) -> "GEMVOverlay":
         cols = self.cols or dev.columns()
         vec = self.vec or next((w for w in (64, 32, 16) if self.K % w == 0 and self.K >= 2 * w), None)
         if vec is None:
-            raise Untunable(f"K={self.K}: no vector width in (64, 32, 16) divides it")
+            raise Unresolvable(f"K={self.K}: no vector width in (64, 32, 16) divides it")
         return replace(self, cols=cols, vec=vec)
 
     def design(self, dev):
@@ -172,7 +172,7 @@ class body the name `K` is bound to the specifier, so the stream declarations
 below it use the bare name. As the class is built, its base re-attaches
 each field as a class attribute, so `GEMVOverlay.K` names the dimension from
 outside and `ov.K` is the integer on an instance. A `tunable` is what the
-previous draft called `Tuning[T]`: a field `tuning()` may set, and pyright
+previous draft called `Tuning[T]`: a field `resolve()` may set, and pyright
 checks `replace()` against the real field list.
 
 **Streams** are declared unannotated, so the dataclass machinery ignores them
@@ -182,13 +182,13 @@ consumer. A stream's shim binding is the placer's unless pinned with `via=`
 (§9). Direction is not spelled: `StreamIn` is a shim producer, `StreamOut` a
 shim consumer.
 
-**`tuning(dev)`** sees the device and nothing else, so a tuned overlay serves
-every extent. `Untunable` is an expected outcome. An author who wants today's
+**`resolve(dev)`** sees the device and nothing else, so a tuned overlay serves
+every extent. `Unresolvable` is an expected outcome. An author who wants today's
 one-configuration-per-shape behaviour asks for it at the call site:
 
 ```python
-ov = GEMVOverlay(K=2048).tuned(dev)                        # reusable across every M
-ov = GEMVOverlay(K=2048).tuned(dev).for_extent(M=1024)     # specialised, explicit
+ov = GEMVOverlay(K=2048).resolved(dev)                        # reusable across every M
+ov = GEMVOverlay(K=2048).resolved(dev).for_extent(M=1024)     # specialised, explicit
 ```
 
 `for_extent` produces a distinct overlay. The graph builder warns when a
@@ -623,14 +623,14 @@ Each row names the failure or mechanism that justifies it. **T1** pyright,
 | id | mistake | when | because |
 |---|---|---|---|
 | C1 | wrong type, missing argument, bogus kwarg at construction | T1 | real dataclass fields; the most valuable static check the previous draft measured |
-| C2 | `tuning()` sets a field that is not a `tunable` | T1 | `replace()` against the real field list |
+| C2 | `resolve()` sets a field that is not a `tunable` | T1 | `replace()` against the real field list |
 | C3 | a shape dimension is a `tunable`, a per-call value, or an expression | T2 | the shape rule (§7); the pipeline would cycle |
 | C4 | a member declared with an annotation | T2 | it would become a constructor argument |
 | C5 | a `Scratchpad` used at a size position; a `DispatchTime` read by a core | T4 | the hardware rule in §6 |
 | C6 | a `DispatchTime` member in a full-ELF sequence | T4 | no instruction-buffer argument to swap; upstream raises the same |
 | C7 | `via=Shim(channel=2)` | T2 | two per direction per shim tile; unvalidated today |
 | C8 | more shim endpoints than the device has | T3 | `get_shim_dma_limit` exists; extend to the graph |
-| C9 | no legal tuning for this `K` on this device | T3 | `Untunable`; the mem_copy 16-core hang compiled fine |
+| C9 | no legal tuning for this `K` on this device | T3 | `Unresolvable`; the mem_copy 16-core hang compiled fine |
 | C10 | extent not a multiple of the overlay's tile unit | T3 | `compatible()` |
 | C11 | an overlay's core ELFs differ between two extents | test suite | the reuse discipline (§3), byte-identity; fails today for every design with a compile-time trip count |
 | C12 | an external overlay's declared bindings disagree with its file | T4 | the mm_prebuilt case (§9) |
@@ -698,7 +698,7 @@ What keeps them two functions, rather than one call:
   the taps itself. An overlay here returns workers and leaves the sequence
   to the library, which is what lets several operators fuse into one image.
 - **the column budget**. Upstream takes every column of the device.
-  `tuning()` here takes as many as the device's shim DMA budget allows for
+  `resolve()` here takes as many as the device's shim DMA budget allows for
   the streams declared (`shim_slots_per_core()`), which is what lets a
   binary kernel -- two input fifos per core -- place at all.
 
@@ -840,7 +840,7 @@ the symbolic probe, `specialize()` on the operator, `HostResident`/
 general mechanism, `via=` on host buffers, `Compare`/`Reference` as classes,
 and E1–E3, E6, E7, E14–E20, E23, E25, E27, E28.
 
-Kept throughout: `Untunable` and per-device numbers from the target model,
+Kept throughout: `Unresolvable` and per-device numbers from the target model,
 the un-flattening, `Tuning` (as `tunable`) IRON-local, the capture surface as the
 authoring layer, and the decode-drift snapshot (§18).
 
@@ -1234,7 +1234,7 @@ gather).
 
 flm/gemm is the model's showcase: `FLMGEMMOverlay` is exactly what the
 xclbin depends on (its `config_name` is the stem), `GEMM` is the shape and
-activation as residents, and `tuning(dev)` no longer looks at K; the legacy
+activation as residents, and `resolve(dev)` no longer looks at K; the legacy
 constructor reproduces the old K-dependent `tile_n` default by passing it
 explicitly. mem_copy's array was already extent-free. mm_prebuilt is the
 external case: an `Xclbin` class attribute in place of `design()`, streams

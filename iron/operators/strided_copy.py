@@ -3,6 +3,8 @@
 
 from dataclasses import field
 
+import dataclasses
+
 import numpy as np
 from ml_dtypes import bfloat16
 
@@ -144,13 +146,13 @@ class StridedCopy(Operator[StridedCopyOverlay]):
     in_offset = Scratchpad(np.int32)
     out_offset = Scratchpad(np.int32)
 
-    @classmethod
-    def overlay_defaults(cls, kwargs):
+    def resolve(self, dev):
         """The transfer size is the per-channel share of the copy unless given."""
-        if kwargs.get("transfer_size") is None:
-            sizes = kwargs.get("input_sizes", ())
-            channels = kwargs.get("num_aie_channels", 1)
-            kwargs["transfer_size"] = int(np.prod(sizes)) // channels
+        ov = self.ov
+        if ov.transfer_size is None:
+            share = int(np.prod(self.input_sizes)) // ov.num_aie_channels
+            ov = dataclasses.replace(ov, transfer_size=share)
+        return dataclasses.replace(self, ov=ov.resolved(dev).copy())
 
     def uses_value(self, name: str) -> bool:
         # An offset is patched only when a graph binds a handle to it.

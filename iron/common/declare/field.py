@@ -16,10 +16,10 @@ from dataclasses import MISSING, Field
 from typing import Any, Callable
 
 
-class Untunable(ValueError):
+class Unresolvable(ValueError):
     """No legal tuning exists for this overlay on this device.
 
-    An expected outcome, not a bug: raised by :meth:`Overlay.tuning` so the
+    An expected outcome, not a bug: raised by :meth:`Overlay.resolve` so the
     caller learns at tune time rather than from a design that compiles and
     then hangs.
     """
@@ -62,7 +62,7 @@ def auto(
 ) -> Any:
     """Declare a knob the library resolves for the device when the caller
     does not: a compile-time value that starts at ``default`` (``None``:
-    tuning must fill it) and that :meth:`Overlay.tuning` may replace.
+    tuning must fill it) and that :meth:`Overlay.resolve` may replace.
 
     An ``auto()`` never appears in a host shape (inference would cycle
     through tuning); a stream tile may name one. ``choices`` and ``legal``

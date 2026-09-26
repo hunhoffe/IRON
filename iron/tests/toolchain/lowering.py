@@ -21,7 +21,7 @@ import subprocess
 
 import pytest
 
-from iron.common.declare import Incompatible, Untunable
+from iron.common.declare import Incompatible, Unresolvable
 from iron.tests.common.cases import CASES
 from iron.tests.toolchain.tools import AIECC, requires
 
@@ -74,7 +74,7 @@ def test_operator_lowers_to_instructions(device, module, cls_name, kwargs, tmp_p
     cls = getattr(importlib.import_module(f"iron.operators.{module}"), cls_name)
     try:
         op = cls(**kwargs)
-        op.tuned(device)
-    except (ValueError, Untunable, Incompatible) as e:
+        op.resolved(device)
+    except (ValueError, Unresolvable, Incompatible) as e:
         pytest.skip(f"not for {device.resolve().name}: {e}")
     lower(op, tmp_path)

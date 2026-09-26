@@ -36,7 +36,7 @@ from iron.common.declare import (
     Resident,
     StreamIn,
     StreamOut,
-    Untunable,
+    Unresolvable,
     param,
     select,
     auto,
@@ -188,9 +188,9 @@ class FLMGEMMOverlay(Overlay):
             dict.fromkeys(Epilogue(m) for m in self.epilogue_modes)
         )
 
-    def tuning(self, dev) -> "FLMGEMMOverlay":
+    def resolve(self, dev) -> "FLMGEMMOverlay":
         if dev is None:
-            raise Untunable("FLMGEMMOverlay is sized from the device's L1 and grid")
+            raise Unresolvable("FLMGEMMOverlay is sized from the device's L1 and grid")
         tm = get_target_model(dev.resolve())
         rows, cols = compute_rows(dev), dev.cols
         # B is bfp16ebs8 on AIE2P and bf16 on AIE2. AIE2 has no scalar BFP
@@ -626,7 +626,7 @@ class GEMM(Operator[FLMGEMMOverlay]):
         The names and the packing read fields tuning fills (tile_n, tile_ma,
         the B block depth), and both are wanted before the build tunes."""
         ov = self.ov
-        return ov if ov._tuned else ov.tuned(aie_utils.get_current_device())
+        return ov if ov._resolved else ov.resolved(aie_utils.get_current_device())
 
     @property
     def config_name(self) -> str:
@@ -704,7 +704,7 @@ class GEMM(Operator[FLMGEMMOverlay]):
             # wide and the forward always drains that much.
             raise error(
                 f"m_row_blocks ({m_row_blocks}) must be a multiple of m_chunk "
-                f"({ov.m_chunk}); use for_extent(m_chunk=1) for this shape"
+                f"({ov.m_chunk}); pass m_chunk=1 for this shape"
             )
 
     def compatible(self) -> None:
@@ -968,7 +968,7 @@ class GEMM(Operator[FLMGEMMOverlay]):
 
         if self.ov.external is not None:
             return super()._build()  # the downloaded image, instructions only
-        tuned = self.tuned(aie_utils.get_current_device())
+        tuned = self.resolved(aie_utils.get_current_device())
         M, K, N = tuned._reference_shape
         reference = dataclasses.replace(
             tuned, M=M, K=K, N=N, epilogue=Epilogue.NONE, clamp=None, packed_blocks=None

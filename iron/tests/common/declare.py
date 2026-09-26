@@ -31,7 +31,7 @@ from iron.common.declare import (
     Shim,
     StreamIn,
     StreamOut,
-    Untunable,
+    Unresolvable,
     auto,
     from_spec,
     infer,
@@ -64,13 +64,13 @@ class MVOverlay(Overlay):
     c = StreamOut(tile_size_output, per=num_aie_columns)
     count = Resident(np.int32)
 
-    def tuning(self, dev):
+    def resolve(self, dev):
         cols = self.num_aie_columns or dev.columns()
         vec = self.vec or next(
             (w for w in (64, 32, 16) if self.K % w == 0 and self.K >= 2 * w), None
         )
         if vec is None:
-            raise Untunable(f"K={self.K}: no vector width divides it")
+            raise Unresolvable(f"K={self.K}: no vector width divides it")
         return dataclasses.replace(self, num_aie_columns=cols, vec=vec)
 
 
@@ -327,15 +327,15 @@ def test_per_call_values_bind_on_the_operator():
 
 
 def test_tuning_fills_tunables_from_the_device_only():
-    ov = MVOverlay(K=256).tuned(FakeDev(cols=8))
+    ov = MVOverlay(K=256).resolved(FakeDev(cols=8))
     assert ov.num_aie_columns == 8 and ov.vec == 64
     assert ov.a.count == 8
-    assert ov.tuned(FakeDev(cols=4)) is ov  # idempotent once tuned
+    assert ov.resolved(FakeDev(cols=4)) is ov  # idempotent once tuned
 
 
 def test_untunable_is_raised_not_defaulted():
-    with pytest.raises(Untunable, match="K=24"):
-        MVOverlay(K=24).tuned(FakeDev())
+    with pytest.raises(Unresolvable, match="K=24"):
+        MVOverlay(K=24).resolved(FakeDev())
 
 
 def test_tuning_that_leaves_a_tunable_unset_is_an_error():
@@ -344,25 +344,15 @@ def test_tuning_that_leaves_a_tunable_unset_is_an_error():
         t: int = auto()
         s = StreamIn(n)
 
-    with pytest.raises(Untunable, match=r"left \['t'\] unset"):
-        Lazy(n=4).tuned(FakeDev())
-
-
-def test_for_extent_is_a_distinct_specialised_overlay():
-    base = MVOverlay(K=256).tuned(FakeDev())
-    spec = base.for_extent(tile_size_output=32)
-    assert spec.specialised and not base.specialised
-    assert spec != base and hash(spec) != hash(base)
-    assert MVOverlay(K=256).tuned(FakeDev()) == base  # equal by design_key
-    with pytest.raises(TypeError, match="non-auto"):
-        base.for_extent(K=128)
+    with pytest.raises(Unresolvable, match=r"left \['t'\] unset"):
+        Lazy(n=4).resolved(FakeDev())
 
 
 def test_operator_tuned_runs_compatible():
     op = MV(MVOverlay(K=256, tile_size_output=64), M=1000)
     with pytest.raises(Incompatible, match="M=1000"):
-        op.tuned(FakeDev(cols=8))
-    ok = MV(MVOverlay(K=256, tile_size_output=64), M=1024).tuned(FakeDev(cols=8))
+        op.resolved(FakeDev(cols=8))
+    ok = MV(MVOverlay(K=256, tile_size_output=64), M=1024).resolved(FakeDev(cols=8))
     assert ok.ov.num_aie_columns == 8
 
 

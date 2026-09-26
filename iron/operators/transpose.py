@@ -19,7 +19,7 @@ from iron.common.declare import (
     Resident,
     StreamIn,
     StreamOut,
-    Untunable,
+    Unresolvable,
     param,
     optional,
     auto,
@@ -69,11 +69,13 @@ class TransposeOverlay(Overlay):
                 f"Kernel tile {self.s} needs AIE tile rows > 16 and columns > 16."
             )
 
-    def tuning(self, dev) -> "TransposeOverlay":
+    def resolve(self, dev) -> "TransposeOverlay":
         cols = self.num_aie_columns
         if cols is None:
             if dev is None:
-                raise Untunable("num_aie_columns defaults from the device; none given")
+                raise Unresolvable(
+                    "num_aie_columns defaults from the device; none given"
+                )
             cols = self.shim_columns(dev, self.num_channels)
         elif dev is not None:
             self.check_shim_columns(dev, cols, self.num_channels)

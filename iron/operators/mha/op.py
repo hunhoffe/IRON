@@ -35,7 +35,7 @@ from iron.common.declare import (
     Shim,
     StreamIn,
     StreamOut,
-    Untunable,
+    Unresolvable,
     param,
     auto,
 )
@@ -103,9 +103,9 @@ class MHAOverlay(Overlay):
         if self.d % s:
             raise ValueError(f"d must be divisible by s ({self.d} % {s} != 0)")
 
-    def tuning(self, dev) -> "MHAOverlay":
+    def resolve(self, dev) -> "MHAOverlay":
         if dev is not None and dev.resolve().name != "npu2":
-            raise Untunable(
+            raise Unresolvable(
                 f"MHA is pinned to the NPU2 array (memtiles at columns 3-7); "
                 f"got {dev.resolve().name}"
             )

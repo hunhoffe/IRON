@@ -240,7 +240,16 @@ today**.
   (38 files, +390/−509). Failure set identical to baseline.
 - `610c926` Step 1: the bases are dataclasses to a checker; pyright in CI on
   the declare package. Members generic in their bound form; `Self` returns.
-- (this commit) Step 2a: `dim()`/`tunable()` → `param()`/`auto()`. `param`
+- (this commit) Step 3a: one resolution point. `Operator.resolve(dev)` is
+  the hook that sees the device and the extents (`overlay_defaults` gone;
+  StridedCopy's transfer size is its one override); `Overlay.resolve(dev)`
+  (was `tuning`) sees the device and its own fields; `resolved(dev)` on
+  both is idempotent and the only caller of `resolve`. The sequence
+  resolves every operator in `prepare()`, before `unique_designs()` takes
+  identity, so two spellings of one array are one design (test added; ffn
+  6 designs / swiglu 4, as before). `for_extent`, `specialised` gone;
+  `Untunable` → `Unresolvable`. Failure set identical to baseline.
+- `da31c8b` Step 2a: `dim()`/`tunable()` → `param()`/`auto()`. `param`
   is a field specifier with keyword `default=`, so a missing required field
   is now a checker error too; `auto(choices=, legal=)` is accepted and
   recorded. Failure set identical to baseline.

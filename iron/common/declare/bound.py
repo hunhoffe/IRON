@@ -29,7 +29,7 @@ class BoundStream:
     """A stream on an overlay instance: concrete tile, count, and fifo handles.
 
     Resolved lazily, because a tile or a ``per=`` count may name a tunable
-    that is ``None`` until :meth:`Overlay.tuned` fills it.
+    that is ``None`` until :meth:`Overlay.resolved` fills it.
     """
 
     def __init__(self, member: _Stream, overlay: "Overlay") -> None:
@@ -48,7 +48,7 @@ class BoundStream:
             return _resolve_dim(spec, self.overlay)
         except Incompatible as e:
             raise Incompatible(
-                f"stream {self.name!r}: {e}. Tune the overlay first (tuned(dev))"
+                f"stream {self.name!r}: {e}. Resolve the overlay first (resolved(dev))"
             ) from None
 
     @property

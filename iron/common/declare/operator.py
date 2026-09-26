@@ -149,6 +149,7 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
             cls.__init__ = __init__  # type: ignore[misc]
 
     def __post_init__(self) -> None:
+        self._resolved = False
         if self._overlay_class is not None and not isinstance(
             self.ov, self._overlay_class
         ):
@@ -165,7 +166,26 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
         """Check the sequence-tier fields on their own. Runs at construction."""
 
     def compatible(self) -> None:
-        """Check the extents against the tuned overlay; raise :class:`Incompatible`."""
+        """Check the extents against the resolved overlay; raise :class:`Incompatible`."""
+
+    def resolve(self, dev) -> Self:
+        """Return a copy resolved for ``dev``: its overlay's knobs filled, from
+        the device and from this operator's extents.
+
+        The one hook that sees both. The default resolves the overlay from
+        the device alone; an operator whose extents decide a knob (a copy's
+        transfer size from its sizes) fills it first, when it was not given::
+
+            def resolve(self, dev):
+                ov = self.ov
+                if ov.transfer_size is None:
+                    ov = dataclasses.replace(ov, transfer_size=...)
+                return dataclasses.replace(self, ov=ov.resolved(dev).copy())
+
+        Identity for sharing a build is taken after this runs, so two ways
+        of spelling one array resolve to one design.
+        """
+        return dataclasses.replace(self, ov=self.ov.resolved(dev).copy())
 
     def reference(self, *inputs):
         raise NotImplementedError(
@@ -192,21 +212,10 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
     # -- library surface ---------------------------------------------------
 
     @classmethod
-    def overlay_defaults(cls, kwargs: dict) -> None:
-        """Fill, in place, overlay tunables this operator's own extent decides.
-
-        An overlay is tuned from the device alone, so a tunable whose right
-        value follows from the operator's shape (a copy's transfer size from
-        its sizes) is defaulted here, at construction, when it was not
-        given. The default fills nothing.
-        """
-
-    @classmethod
     def _split_kwargs(cls, kwargs: dict) -> tuple["Overlay", dict]:
         """Split keyword arguments into the overlay's and the operator's own."""
         overlay_cls = cls._overlay_class
         assert overlay_cls is not None
-        cls.overlay_defaults(kwargs)
         names = {f.name for f in dataclasses.fields(overlay_cls) if f.init}
         ov_kwargs = {k: kwargs.pop(k) for k in list(kwargs) if k in names}
         return overlay_cls(**ov_kwargs), kwargs
@@ -231,16 +240,36 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
             ),
         )
 
-    def tuned(self, dev) -> "Operator":
-        """A copy bound to its own tuned copy of the overlay, with :meth:`compatible` checked."""
-        ov = self.ov.tuned(dev).copy()
-        new = dataclasses.replace(self, ov=ov)
+    def resolved(self, dev) -> Self:
+        """This operator resolved for ``dev``: itself if it already is, else
+        :meth:`resolve`'s copy, bound to its own resolved overlay, with
+        :meth:`compatible` checked. The one place :meth:`resolve` is called.
+        """
+        if self._resolved:
+            return self
+        new = self.resolve(dev)
+        if not isinstance(new, type(self)) or not new.ov._resolved:
+            raise TypeError(
+                f"{type(self).__name__}.resolve() must return a {type(self).__name__} "
+                f"on a resolved overlay"
+            )
         # What a graph bound on this instance is part of it, not of a field:
         # the build works on the copy, and a copy that forgot would silently
         # drop the per-call value from the sequence.
         if self.used_values:
             vars(new)["_used_values"] = set(self.used_values)
         new.compatible()
+        new._resolved = True
+        return new
+
+    def copy(self) -> Self:
+        """A fresh instance for one build: its own copy of the overlay, so the
+        streams a design binds are this build's alone; resolution state and
+        the per-call values a graph bound are kept."""
+        new = dataclasses.replace(self, ov=self.ov.copy())
+        if self.used_values:
+            vars(new)["_used_values"] = set(self.used_values)
+        new._resolved = self._resolved
         return new
 
     @property
@@ -336,8 +365,7 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
             Target,
         )  # imports this package: a cycle at module scope
 
-        tuned = self if self.ov._tuned else self.tuned(self.dev)
-        return tuned.ov.tolerance(Target(self.dev, kernels_dir()))
+        return self.resolved(self.dev).ov.tolerance(Target(self.dev, kernels_dir()))
 
     # -- the image of one operator on its own -------------------------------
 
@@ -414,8 +442,8 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
         tuned ones. A standalone operator has no arena plan -- its buffers
         are the kernel's positional arguments.
         """
-        tuned = self.ov._tuned and self or self.tuned(self.dev)
-        return {b.name: ("arg", i, b.nbytes) for i, b in enumerate(tuned.buffers)}
+        resolved = self.resolved(self.dev)
+        return {b.name: ("arg", i, b.nbytes) for i, b in enumerate(resolved.buffers)}
 
     def _build(self):
         """Compile to an xclbin and an instruction stream, or, on an external

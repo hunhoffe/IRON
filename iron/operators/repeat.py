@@ -39,7 +39,7 @@ class RepeatOverlay(Overlay):
     s = StreamIn(transfer_size, dtype=dtype)
     d = StreamOut(transfer_size, dtype=dtype)
 
-    def tuning(self, dev) -> "RepeatOverlay":
+    def resolve(self, dev) -> "RepeatOverlay":
         return dataclasses.replace(self, transfer_size=self.transfer_size or self.cols)
 
     def design(self, target) -> list:

@@ -138,10 +138,10 @@ def test_every_traced_operator_tunes_from_the_device_alone():
     ffn, _ = _ffn()
     t = ffn.trace(x=(1, E))
     for op in t.operators:
-        op.tuned(
+        op.resolved(
             aie_utils.get_current_device()
         )  # every default fills; every extent is compatible
-    silu = next(s.op for s in t.steps if type(s.op) is SiLU).tuned(
+    silu = next(s.op for s in t.steps if type(s.op) is SiLU).resolved(
         aie_utils.get_current_device()
     )
     assert (silu.ov.num_aie_columns, silu.ov.num_channels, silu.ov.tile_size) == (
@@ -149,7 +149,7 @@ def test_every_traced_operator_tunes_from_the_device_alone():
         1,
         256,
     )
-    norm = next(s.op for s in t.steps if type(s.op) is WeightedRMSNorm).tuned(
+    norm = next(s.op for s in t.steps if type(s.op) is WeightedRMSNorm).resolved(
         aie_utils.get_current_device()
     )
     assert norm.ov.num_aie_columns == 1  # one row: one core
@@ -291,6 +291,32 @@ def test_swiglu_decode_shares_one_array_and_one_build_for_gate_and_up():
         m.swiglu_decode(z(H, E), z(H, E), z(H, E))
 
 
+def test_two_spellings_of_one_array_are_one_design():
+    """Identity is taken after resolution: a knob left to resolve and the same
+    knob given its resolved value name one array, and a sequence builds it
+    once. Every operator of a traced graph goes through the same point, so
+    the design counts here are the gate on it."""
+    from iron.common.image import OperatorSequence
+
+    a = GEMV(M=64, K=256, num_aie_columns=2, tile_size_input=2)
+    b = GEMV(M=64, K=256, num_aie_columns=2, tile_size_input=2, tile_size_output=2)
+    assert a.design_key() != b.design_key()  # as spelled
+    seq = OperatorSequence(
+        "two_spellings",
+        [(a, "x", "w", "y"), (b, "x2", "w", "z")],
+        input_args=["x", "x2", "w"],
+        output_args=["z"],
+        share_designs=True,
+    )
+    seq.prepare()
+    designs, _ = seq.unique_designs()
+    assert len(designs) == 1 and designs[0].ov.tile_size_output == 2
+    ffn, _ = _ffn()
+    seq = ffn.trace(x=(1, E)).sequence()
+    seq.prepare()
+    assert len(seq.unique_designs()[0]) == 6
+
+
 def test_swiglu_prefill_traces_over_a_sequence():
     import iron.operators.swiglu_prefill.op as m
     from iron.operators.gemm.op import GEMM
@@ -371,7 +397,7 @@ def test_llama_decode_traces_and_tunes():
     assert len(q_ovs) == 1
     # Every operator tunes and is compatible on an 8-column device.
     for op in t.operators:
-        op.tuned(aie_utils.get_current_device())
+        op.resolved(aie_utils.get_current_device())
 
 
 def test_llama_prompt_traces_over_the_same_caches():
@@ -424,7 +450,7 @@ def test_llama_prompt_traces_over_the_same_caches():
         ("StridedCopy", "in_offset")
     ]
     for op in t.operators:
-        op.tuned(aie_utils.get_current_device())
+        op.resolved(aie_utils.get_current_device())
 
 
 def test_a_bound_value_survives_tuning():
@@ -444,6 +470,6 @@ def test_a_bound_value_survives_tuning():
         return copy(x, out_offset=a)
 
     f.trace(x=(64,))
-    assert [v.name for v in copy.tuned(aie_utils.get_current_device()).values] == [
+    assert [v.name for v in copy.resolved(aie_utils.get_current_device()).values] == [
         "out_offset"
     ]

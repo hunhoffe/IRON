@@ -63,7 +63,7 @@ def test_flm_gemm_lowers_and_so_does_its_configuration_module(M, K, N, tmp_path)
     op = flm.GEMM(M=M, K=K, N=N)
     (tmp_path / "shape").mkdir()
     lower(op, tmp_path / "shape")
-    tuned = op.tuned(aie_utils.get_current_device())
+    tuned = op.resolved(aie_utils.get_current_device())
     rM, rK, rN = tuned._reference_shape
     reference = dataclasses.replace(
         tuned,
@@ -189,5 +189,5 @@ def test_prefill_steps_lower_at_llama_size(make, tmp_path):
     descriptor's 20-bit step, so B unrolls), the cache write's 2048-wide
     reorder (legalized), and MHA reading (seq, heads, d)."""
     op = make(PREFILL)
-    op.tuned(aie_utils.get_current_device())
+    op.resolved(aie_utils.get_current_device())
     lower(op, tmp_path)

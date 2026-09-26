@@ -33,7 +33,7 @@ from iron.common.declare import (
     Overlay,
     StreamIn,
     StreamOut,
-    Untunable,
+    Unresolvable,
     param,
     auto,
 )
@@ -66,12 +66,12 @@ class MemCopyOverlay(Overlay):
     s = StreamIn(line_size, per=num_cores)
     d = StreamOut(line_size, per=num_cores)
 
-    def tuning(self, dev) -> "MemCopyOverlay":
+    def resolve(self, dev) -> "MemCopyOverlay":
 
         cores = self.num_cores
         if cores is None:
             if dev is None:
-                raise Untunable("num_cores defaults from the device; none given")
+                raise Unresolvable("num_cores defaults from the device; none given")
             cores = self.shim_columns(dev, self.num_channels) * self.num_channels
         tile_size = 1024 if self.tile_size is None else self.tile_size
         return dataclasses.replace(

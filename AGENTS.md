@@ -146,7 +146,7 @@ reuse lint
    - An operator module holds:
      - the operator, declared as two classes (`iron/common/declare/`,
        `OPERATOR_MODEL_PLAN.md`). The **overlay** (`XOverlay(Overlay)`) is the
-       array configuration: `auto()` fields filled by `tuning(dev)` from the
+       array configuration: `auto()` fields filled by `resolve(dev)` from the
        device alone, `StreamIn`/`StreamOut` members in tile units, `Resident`
        values the cores read (trip counts), and `design(target)`, which builds
        ObjectFIFOs and Workers and binds each stream to a fifo's shim end. The
@@ -307,7 +307,7 @@ Data movement pattern: L3 → Shim DMA → L2 → L1 (tile local) → Compute
    if it needs more than one module: a hand-written design, its own
    reference, a README, a device test of its own)
 2. Declare the overlay (`class XOverlay(Overlay)`):
-   - `auto()` fields with device defaults in `tuning(dev)`; `param()` fields
+   - `auto()` fields with device defaults in `resolve(dev)`; `param()` fields
      only for what a host shape names
    - `StreamIn`/`StreamOut` members in tile units (`per=` a column count)
    - a `Resident` for every trip count the core reads, so the array never
