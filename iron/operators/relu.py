@@ -17,7 +17,7 @@ class ReLU(UnaryElementwise):
     )
 
     def kernel(self, target):
-        return eltwise.relu_sized(self.line_size)
+        return eltwise.relu_sized(self.tile_size)
 
     def reference(self, x):
         """CPU reference: ``max(x, 0)``."""

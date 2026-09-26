@@ -80,3 +80,16 @@ def test_transpose_tiling_that_fits_is_still_accepted(aie_columns):
     Transpose(
         M=2048, N=128, num_aie_columns=aie_columns, num_channels=1, m=256, n=32, s=8
     ).resolved(from_name("npu2", n_cols=8))
+
+
+def test_a_tile_past_what_one_core_holds_is_refused_not_split():
+    """A row an elementwise kernel cannot hold is an error at resolution; the
+    library never halves it, since a norm's reference is the whole row.
+    """
+    from iron.common import Unresolvable
+    from iron.operators.rms_norm import RMSNorm
+
+    dev = from_name("npu2", n_cols=8)
+    with pytest.raises(Unresolvable, match="tile_size=16384 exceeds the 8192"):
+        RMSNorm(rows=1, tile_size=16384).resolved(dev)
+    assert RMSNorm(rows=2, tile_size=8192).resolved(dev).tile_size == 8192

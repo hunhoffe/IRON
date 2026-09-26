@@ -296,7 +296,7 @@ class Tracer:
                 f"value, bind one handle at every site or use two instances"
             )
         if name not in bound:
-            op.use_value(name)
+            op.use_value(name, value.name)
             bound[name] = value
             member = next(v for v in op.values if v.name == name)
             self.bindings.append(Binding(op, member, value, scale))
@@ -316,10 +316,19 @@ class Tracer:
                 f"{len(outs)} output(s); got {len(operands)}"
             )
         for h, b in zip(operands, ins + outs):
-            if h.elements != b.elements:
+            # A buffer takes an operand of another rank with the same count
+            # (a flat buffer, a stack); at the same rank the shapes must agree,
+            # or a transposed weight would pass on its element count.
+            shape = tuple(b.shape)
+            wrong = (
+                tuple(h.shape) != shape
+                if len(h.shape) == len(shape)
+                else h.elements != b.elements
+            )
+            if wrong:
                 raise ValueError(
-                    f"{type(op).__name__}.{b.name} is {b.shape} "
-                    f"({b.elements} elements); operand {h!r} has {h.elements}"
+                    f"{type(op).__name__}.{b.name} is {shape} "
+                    f"({b.elements} elements); operand {h!r} is {tuple(h.shape)}"
                 )
             if bfp.dtype_name(h.dtype) != bfp.dtype_name(b.dtype):
                 raise TypeError(

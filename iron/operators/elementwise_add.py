@@ -10,10 +10,10 @@ from iron.common.testing import Testing, binary_elementwise_cases
 class ElementwiseAdd(BinaryElementwise):
     """AIE-accelerated element-wise addition."""
 
-    test = Testing(binary_elementwise_cases([1024, 2048, 4096, 8192]))
+    test = Testing(binary_elementwise_cases([1024, 2048, 4096, 8192], 4096))
 
     def kernel(self, target):
-        return eltwise.add_sized(self.line_size)
+        return eltwise.add_sized(self.tile_size)
 
     def reference(self, a, b):
         return a + b

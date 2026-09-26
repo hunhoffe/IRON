@@ -76,13 +76,13 @@ class RMSNorm(Elementwise):
     x = In(
         rows,
         tile_size,
-        tile=(Elementwise.line_size,),
+        tile=(tile_size,),
         per=(num_aie_columns, Elementwise.num_channels),
     )
     y = Out(
         rows,
         tile_size,
-        tile=(Elementwise.line_size,),
+        tile=(tile_size,),
         per=(num_aie_columns, Elementwise.num_channels),
     )
 
@@ -98,10 +98,10 @@ class RMSNorm(Elementwise):
         return False
 
     def kernel(self, target):
-        return norm.rms_norm_eps(self.line_size)
+        return norm.rms_norm_eps(self.tile_size)
 
     def kernel_call(self, kernel, elem_in, elem_out) -> None:
-        kernel(elem_in, elem_out, self.line_size, self.epsilon)
+        kernel(elem_in, elem_out, self.tile_size, self.epsilon)
 
     def reference(self, x, w=None):
         """CPU reference: row-wise RMS normalization, optionally weighted."""
@@ -121,21 +121,21 @@ class WeightedRMSNorm(RMSNorm):
     x = In(
         RMSNorm.rows,
         RMSNorm.tile_size,
-        tile=(RMSNorm.line_size,),
+        tile=(RMSNorm.tile_size,),
         per=(RMSNorm.num_aie_columns, RMSNorm.num_channels),
     )
     # The weight row is one line, shared by every column of a channel; the
     # shim budget counts a replicate= stream once per channel.
     w = In(
         RMSNorm.tile_size,
-        tile=(RMSNorm.line_size,),
+        tile=(RMSNorm.tile_size,),
         per=(RMSNorm.num_channels,),
         replicate=True,
     )
     y = Out(
         RMSNorm.rows,
         RMSNorm.tile_size,
-        tile=(RMSNorm.line_size,),
+        tile=(RMSNorm.tile_size,),
         per=(RMSNorm.num_aie_columns, RMSNorm.num_channels),
     )
 
@@ -150,9 +150,9 @@ class WeightedRMSNorm(RMSNorm):
         tile_ty = self.x.tile
         weights_ty = self.w.tile
         cols, chans = self.num_aie_columns, self.num_channels
-        depth = 1 if self.line_size > bank_elements(self.x.dtype) else 2
-        rms_norm = norm.rms_norm_eps(self.line_size)
-        eltwise_mul = eltwise.mul_sized(self.line_size)
+        depth = 1 if self.tile_size > bank_elements(self.x.dtype) else 2
+        rms_norm = norm.rms_norm_eps(self.tile_size)
+        eltwise_mul = eltwise.mul_sized(self.tile_size)
         of_ins = [
             ObjectFifo(tile_ty, name=f"in1_{i}_{j}", depth=depth)
             for i in range(cols)
@@ -175,7 +175,7 @@ class WeightedRMSNorm(RMSNorm):
         n_cores = cols * chans
         counts = [target.rtp(_I32, name=f"count_{k}") for k in range(2 * n_cores)]
         barriers = [target.barrier() for _ in range(2 * n_cores)]
-        line_size, epsilon = self.line_size, self.epsilon
+        tile_size, epsilon = self.tile_size, self.epsilon
 
         def core_norm(of_in, of_out, rms, count, barrier):
             barrier.wait_for_value(1)
@@ -183,7 +183,7 @@ class WeightedRMSNorm(RMSNorm):
             for _ in range_(n):
                 elem_in = of_in.acquire(1)
                 elem_out = of_out.acquire(1)
-                rms(elem_in, elem_out, line_size, epsilon)
+                rms(elem_in, elem_out, tile_size, epsilon)
                 of_in.release(1)
                 of_out.release(1)
 
@@ -194,7 +194,7 @@ class WeightedRMSNorm(RMSNorm):
             for _ in range_(n):
                 elem_in = of_in.acquire(1)
                 elem_out = of_out.acquire(1)
-                mul(elem_in, elem_w, elem_out, line_size)
+                mul(elem_in, elem_w, elem_out, tile_size)
                 of_in.release(1)
                 of_out.release(1)
             of_w.release(1)

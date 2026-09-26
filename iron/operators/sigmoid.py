@@ -25,7 +25,7 @@ class Sigmoid(UnaryElementwise):
     default_tile: ClassVar[int] = _LUT_LINE
 
     def kernel(self, target):
-        return activation.sigmoid(self.line_size)
+        return activation.sigmoid(self.tile_size)
 
     def reference(self, x):
         """CPU reference: ``1 / (1 + exp(-x))``."""

@@ -305,7 +305,7 @@ class Operator(metaclass=_OperatorMeta):
         # A per-call value a graph bound is built in (a device parameter, a
         # patched descriptor, a core that reads it), so it tells designs apart.
         if self.used_values:
-            own += (("values", tuple(sorted(self.used_values))),)
+            own += (("values", tuple(sorted(self.bound_values.items()))),)
         return (type(self).__qualname__, own)
 
     def array_key(self):
@@ -322,6 +322,11 @@ class Operator(metaclass=_OperatorMeta):
         if self._resolved:
             return self
         new = self.resolve(dev)
+        if new is self:
+            raise TypeError(
+                f"{type(self).__name__}.resolve() must return a copy, "
+                f"dataclasses.replace(self, ...), not self"
+            )
         if not isinstance(new, type(self)):
             raise TypeError(
                 f"{type(self).__name__}.resolve() must return a {type(self).__name__}"
@@ -336,7 +341,7 @@ class Operator(metaclass=_OperatorMeta):
         # the build works on the copy, and a copy that forgot would silently
         # drop the per-call value from the sequence.
         if self.used_values:
-            vars(new)["_used_values"] = set(self.used_values)
+            vars(new)["_used_values"] = dict(self.bound_values)
         new.compatible()
         new._resolved = True
         return new
@@ -348,7 +353,7 @@ class Operator(metaclass=_OperatorMeta):
         """
         new = dataclasses.replace(self)
         if self.used_values:
-            vars(new)["_used_values"] = set(self.used_values)
+            vars(new)["_used_values"] = dict(self.bound_values)
         new._resolved = self._resolved
         if self._resolved:
             # What compatible() records is part of a resolved instance; a
@@ -414,17 +419,29 @@ class Operator(metaclass=_OperatorMeta):
             return name in self.used_values
         return True
 
-    def use_value(self, name: str) -> None:
-        """Record that a graph binds the per-call value ``name`` on this instance."""
+    def use_value(self, name: str, bound_to: str | None = None) -> None:
+        """Record that a graph binds the per-call value ``name`` on this
+        instance, to its own value ``bound_to``.
+
+        The graph value is part of what is built: two instances alike in
+        every field that read different graph values are two designs with
+        two device symbols, not one.
+        """
         if not any(isinstance(m, _Value) and m.name == name for m in self._members):
             raise TypeError(
                 f"{type(self).__name__} declares no per-call value {name!r}"
             )
-        vars(self).setdefault("_used_values", set()).add(name)
+        vars(self).setdefault("_used_values", {})[name] = bound_to
 
     @property
     def used_values(self) -> frozenset:
-        return frozenset(self.__dict__.get("_used_values", ()))
+        """The names of the per-call values a graph binds on this instance."""
+        return frozenset(self.bound_values)
+
+    @property
+    def bound_values(self) -> dict[str, str | None]:
+        """Per-call value name -> the graph value it is bound to."""
+        return dict(self.__dict__.get("_used_values", {}))
 
     # -- graph functions ---------------------------------------------------
 

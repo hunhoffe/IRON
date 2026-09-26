@@ -21,7 +21,7 @@ class SiLU(UnaryElementwise):
     num_channels: int = auto(1, repr=False, init=False)
 
     def kernel(self, target):
-        return activation.silu_sized(self.line_size)
+        return activation.silu_sized(self.tile_size)
 
     def reference(self, x):
         """CPU reference: ``x * sigmoid(x)``."""

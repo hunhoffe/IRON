@@ -43,11 +43,11 @@ class AXPY(BinaryElementwise):
     scalar_factor: float = param(default=3.0, array=True)
 
     def kernel(self, target):
-        return datamovement.axpy(self.line_size)
+        return datamovement.axpy(self.tile_size)
 
     def kernel_call(self, kernel, elem_a, elem_b, elem_out) -> None:
         # saxpy takes the scalar between its inputs and its output.
-        kernel(elem_a, elem_b, self.scalar_factor, elem_out, self.line_size)
+        kernel(elem_a, elem_b, self.scalar_factor, elem_out, self.tile_size)
 
     def reference(self, a, b):
         """CPU reference: ``scalar_factor * a + b`` in fp32, rounded once, as

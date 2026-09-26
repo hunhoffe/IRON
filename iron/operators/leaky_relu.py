@@ -40,10 +40,10 @@ class LeakyReLU(UnaryElementwise):
     def kernel(self, target):
         # The factory holds what the line length must satisfy: a whole
         # number of the architecture's vectors (16 on aie2, 32 on aie2p).
-        return activation.leaky_relu(self.line_size)
+        return activation.leaky_relu(self.tile_size)
 
     def kernel_call(self, kernel, elem_in, elem_out) -> None:
-        kernel(elem_in, elem_out, self.line_size, self.alpha)
+        kernel(elem_in, elem_out, self.tile_size, self.alpha)
 
     def reference(self, x):
         """CPU reference: ``x`` where positive, ``alpha * x`` where not."""

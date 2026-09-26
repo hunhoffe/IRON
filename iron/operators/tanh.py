@@ -25,7 +25,7 @@ class Tanh(UnaryElementwise):
     default_tile: ClassVar[int] = _LUT_LINE
 
     def kernel(self, target):
-        return activation.tanh(self.line_size)
+        return activation.tanh(self.tile_size)
 
     def reference(self, x):
         """CPU reference: ``tanh(x)``."""

@@ -26,7 +26,7 @@ class LayerNorm(UnaryElementwise):
     tile_cap: ClassVar[int] = 8192
 
     def kernel(self, target):
-        return norm.layer_norm(self.line_size)
+        return norm.layer_norm(self.tile_size)
 
     def reference(self, x):
         """CPU reference: each ``tile_size`` row normalised on its own, no affine."""

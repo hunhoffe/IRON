@@ -290,6 +290,21 @@ today**.
 
 ## Progress
 
+- (this commit) Audit, batch A: the silent-wrong-answer bugs. A per-call
+  value's graph binding is part of what is built: `use_value(name,
+  bound_to)` records the graph value, `design_key` and the device symbol
+  carry it, so two instances alike in every field that read different
+  graph values are two designs with two symbols (they were one, and the
+  later value won). An elementwise tile past the line one core holds is
+  refused at resolution instead of halved (`line_size` is gone: the tile
+  is the line; RMSNorm, LayerNorm and Dequant references keyed on the
+  whole row while the device saw half of it), and Dequant checks its
+  group size divides the line. An explicit instance called in a graph
+  checks its operands' shapes at equal rank, not their element counts (a
+  transposed weight passed). `resolve()` returning `self` is an error, not
+  a silent mutation of the caller's instance. The llama profile's prompt
+  FFN lines say the cap they always were. Both suites identical to
+  baseline; the real-shape equivalence check unchanged.
 - `dcfe49c` `explain()` (decision 3B's last item) and rank-3 Repeat.
   `op.explain()` prints the array tier, the sequence tier and each value's
   route: written once per build (with its number once resolved), per call

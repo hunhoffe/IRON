@@ -25,10 +25,17 @@ from .target import Target
 def device_symbol(op: Operator, value: BoundValue) -> str:
     """The device symbol of a per-call value: stable across processes, unique per instance.
 
-    What the host writes through the parameter scratchpad. The operator
-    gets the first word, through its ``value_symbol`` hook.
+    What the host writes through the parameter scratchpad: the instance's
+    name, the value's, and the graph value's when a graph binds one, so
+    two instances alike in every field that read different graph values
+    write through different symbols. The operator gets the first word,
+    through its ``value_symbol`` hook.
     """
-    return op.value_symbol(value) or f"{op.name}_{value.name}"
+    own = op.value_symbol(value)
+    if own is not None:
+        return own
+    bound = op.bound_values.get(value.name)
+    return f"{op.name}_{value.name}" + (f"_{bound}" if bound else "")
 
 
 def build_design(

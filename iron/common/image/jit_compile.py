@@ -94,9 +94,9 @@ def _params_key(kwargs: dict) -> str:
         # A per-call value a graph bound on an operator is part of what it
         # builds (a device parameter, a patched descriptor), but not a field,
         # so its repr leaves it out.
-        used = getattr(value, "used_values", None)
+        used = getattr(value, "bound_values", None)
         if used:
-            text += f" using {sorted(used)}"
+            text += f" using {sorted(used.items())}"
         if _ADDRESS.search(text):
             raise ValueError(
                 f"design parameter {name!r} stringifies to {text!r}, which "

@@ -174,6 +174,44 @@ def test_slices_are_views_into_the_parent_in_bytes():
         h.reshape(3, 3)
 
 
+def test_alike_instances_bound_to_different_values_are_different_designs():
+    """Two copies alike in every field, one indexed by ``a`` and one by ``b``,
+    write through two symbols and build twice; two bound to one value share.
+    """
+    from iron.common.design.build import device_symbol
+
+    c1, c2, c3 = (iron.state((4, 64, 16)) for _ in range(3))
+
+    @iron.graph
+    def f(x, *, a: Scratchpad[np.int32], b: Scratchpad[np.int32]):
+        Copy(x, c1[:, a])
+        Copy(x, c2[:, b])
+        Copy(x, c3[:, a])
+
+    t = f.trace(x=(4, 16))
+    by_value = {b.value.name: b for b in t.bindings}
+    assert len(t.bindings) == 3 and set(by_value) == {"a", "b"}
+    first, second, third = t.bindings
+    assert first.op.bound_values == {"out_offset": "a"}
+    assert first.op.design_key() != second.op.design_key()
+    assert first.op.design_key() == third.op.design_key()
+    symbols = [device_symbol(b.op, b.member) for b in t.bindings]
+    assert symbols[0] != symbols[1] and symbols[0] == symbols[2]
+    assert symbols[0].endswith("_out_offset_a") and symbols[1].endswith("_out_offset_b")
+
+
+def test_an_explicit_instance_checks_its_operands_shapes():
+    q = GEMV(M=256, K=E, num_aie_columns=8, tile_size_input=4, tile_size_output=32)
+    w_t = z(E, 256)  # the weight transposed: the same element count
+
+    @iron.graph
+    def step(x):
+        return q(w_t, x)
+
+    with pytest.raises(ValueError, match=r"GEMV.A is \(256, 2048\)"):
+        step.trace(x=(E,))
+
+
 def test_binding_two_handles_to_one_instance_is_an_error():
     copy = Copy(input_buffer_size=64, output_buffer_size=64)
 

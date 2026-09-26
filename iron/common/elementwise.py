@@ -28,7 +28,7 @@ calls::
 
     class ReLU(UnaryElementwise):
         def kernel(self, target):
-            return eltwise.relu_sized(self.line_size)
+            return eltwise.relu_sized(self.tile_size)
 
         def reference(self, x):
             return np.maximum(x, 0)
@@ -67,12 +67,13 @@ _I32 = np.ndarray[(1,), np.dtype[np.int32]]  # type: ignore[misc]
 
 
 class Elementwise(Operator):
-    """The array for an elementwise kernel over lines of ``line_size`` elements.
+    """The array for an elementwise kernel over lines of ``tile_size`` elements.
 
     Subclasses declare the operands with the line as their tile, one lane
     per (column, channel) (see the two below), and implement :meth:`kernel`.
-    ``tile_cap`` is the largest line the kernel holds; a line spanning more
-    than one local-memory bank drops the fifo depth to one.
+    ``tile_cap`` is the largest line the kernel holds, so a larger tile is
+    refused rather than split; a line spanning more than one local-memory
+    bank drops the fifo depth to one.
     """
 
     # None: every column the device's shim budget allows, one channel each,
@@ -80,8 +81,6 @@ class Elementwise(Operator):
     num_aie_columns: int = auto()
     num_channels: int = auto(1)
     tile_size: int = auto()
-    # min(tile_size, tile_cap); filled by resolve, never set by a caller.
-    line_size: int = auto(repr=False)
 
     # The lines each core processes: written once per build, before the
     # first transfer, so the array does not depend on the extent.
@@ -92,6 +91,11 @@ class Elementwise(Operator):
 
     def resolve(self, dev) -> Self:
         tile_size = self.default_tile if self.tile_size is None else self.tile_size
+        if tile_size > self.tile_cap:
+            raise Unresolvable(
+                f"tile_size={tile_size} exceeds the {self.tile_cap}-element line "
+                f"one core holds ({type(self).__name__}.tile_cap)"
+            )
         cols = self.num_aie_columns
         if dev is not None:
             if cols is None:
@@ -99,21 +103,16 @@ class Elementwise(Operator):
             self.check_shim_columns(dev, cols, self.num_channels)
         elif cols is None:
             raise Unresolvable("num_aie_columns defaults from the device; none given")
-        return dataclasses.replace(
-            self,
-            num_aie_columns=cols,
-            tile_size=tile_size,
-            line_size=min(tile_size, self.tile_cap),
-        )
+        return dataclasses.replace(self, num_aie_columns=cols, tile_size=tile_size)
 
     def compatible(self) -> None:
         (out,) = self.outputs
-        share = self.cores * self.line_size
+        share = self.cores * self.tile_size
         if out.elements % share:
             raise Incompatible(
                 f"{out.name} ({out.elements} elements) must be a multiple of "
-                f"num_aie_columns * num_channels * line_size ({share}): every "
-                f"core streams whole {self.line_size}-element lines"
+                f"num_aie_columns * num_channels * tile_size ({share}): every "
+                f"core streams whole {self.tile_size}-element lines"
             )
 
     @property
@@ -124,14 +123,14 @@ class Elementwise(Operator):
     def lines(self) -> int:
         """How many lines the operands hold; each core streams an equal share."""
         (out,) = self.outputs
-        return out.elements // self.line_size
+        return out.elements // self.tile_size
 
     # -- the kernel --------------------------------------------------------
 
     def kernel(self, target: Target) -> ExternalFunction:
         """The ``ExternalFunction`` each core calls, over one line.
 
-        Usually a factory from :mod:`aie.iron.kernels` at ``self.line_size``;
+        Usually a factory from :mod:`aie.iron.kernels` at ``self.tile_size``;
         ``target.kernel(...)`` declares one upstream does not offer.
         """
         raise NotImplementedError(f"{type(self).__name__} declares no kernel()")
@@ -147,7 +146,7 @@ class Elementwise(Operator):
         """Call the kernel on this core's acquired elements: inputs, then the
         output, then the line length.
         """
-        kernel(*elements, self.line_size)
+        kernel(*elements, self.tile_size)
 
     # -- the array ----------------------------------------------------------
 
@@ -220,12 +219,12 @@ class UnaryElementwise(Elementwise):
 
     x = In(
         size,
-        tile=(Elementwise.line_size,),
+        tile=(Elementwise.tile_size,),
         per=(Elementwise.num_aie_columns, Elementwise.num_channels),
     )
     y = Out(
         size,
-        tile=(Elementwise.line_size,),
+        tile=(Elementwise.tile_size,),
         per=(Elementwise.num_aie_columns, Elementwise.num_channels),
     )
 
@@ -240,16 +239,16 @@ class BinaryElementwise(Elementwise):
 
     a = In(
         size,
-        tile=(Elementwise.line_size,),
+        tile=(Elementwise.tile_size,),
         per=(Elementwise.num_aie_columns, Elementwise.num_channels),
     )
     b = In(
         size,
-        tile=(Elementwise.line_size,),
+        tile=(Elementwise.tile_size,),
         per=(Elementwise.num_aie_columns, Elementwise.num_channels),
     )
     y = Out(
         size,
-        tile=(Elementwise.line_size,),
+        tile=(Elementwise.tile_size,),
         per=(Elementwise.num_aie_columns, Elementwise.num_channels),
     )

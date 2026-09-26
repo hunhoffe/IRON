@@ -547,6 +547,18 @@ def test_a_profile_is_checked_as_it_is_written_and_as_it_is_read():
         assert MV(M=512, K=128).columns == 8
 
 
+def test_resolve_must_return_a_copy():
+    class InPlace(MV):
+        def resolve(self, dev):
+            self.columns = 1
+            return self
+
+    op = InPlace(M=1024, K=128)
+    with pytest.raises(TypeError, match="must return a copy"):
+        op.resolved(FakeDev())
+    assert not op._resolved
+
+
 def test_inference_binds_the_fields_from_the_operands():
     op = MV.from_operands(
         (3, 1024, 128),

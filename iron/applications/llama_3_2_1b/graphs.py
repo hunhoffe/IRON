@@ -95,8 +95,8 @@ def profile(config, max_seq_len) -> Profile:
     p.add(RMSNorm, tile_size=E, num_aie_columns=cols)
     p.add(RMSNorm, rows=1, tile_size=E, num_aie_columns=1)  # decode: one core
     p.add(ElementwiseAdd, tile_size=E)
-    p.add(ElementwiseMul, tile_size=F)
-    p.add(SiLU, tile_size=F)
+    p.add(ElementwiseMul, tile_size=min(F, ElementwiseMul.tile_cap))  # the FFN row
+    p.add(SiLU, tile_size=min(F, SiLU.tile_cap))  # exceeds one core's line
     narrowest = min(H * D, G * D, E, F)
     p.add(
         GEMM,

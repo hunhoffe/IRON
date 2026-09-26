@@ -9,7 +9,7 @@ from aie.iron.kernels import datamovement
 from aie.iron.kernels.datamovement import expand_ref
 from ml_dtypes import bfloat16
 
-from iron.common import In, UnaryElementwise, auto, param
+from iron.common import In, UnaryElementwise, Unresolvable, auto, param
 from iron.common.testing import Case, Testing, device_columns
 
 
@@ -52,9 +52,9 @@ class Dequant(UnaryElementwise):
     """AIE-accelerated int4 -> bf16 dequantization: the elementwise design
     over a packed input.
 
-    A core takes ``line_size`` values as ``in_tile`` packed bytes (two 4-bit
+    A core takes ``tile_size`` values as ``in_tile`` packed bytes (two 4-bit
     values per byte plus a bf16 scale and zero point per ``group_size``) and
-    produces ``line_size`` bf16 values, so its two streams carry different
+    produces ``tile_size`` bf16 values, so its two streams carry different
     tiles.
     """
 
@@ -64,7 +64,7 @@ class Dequant(UnaryElementwise):
     # The packed input's length: two 4-bit values per byte plus a bf16 scale
     # and zero point per group. Derived from size unless given.
     packed: int | None = param(default=None, repr=False)
-    # The packed size of one line; filled by resolve beside ``line_size``.
+    # The packed size of one line; filled by resolve from ``tile_size``.
     in_tile: int = auto(repr=False)
 
     default_tile: ClassVar[int] = 4096
@@ -78,6 +78,10 @@ class Dequant(UnaryElementwise):
     )
 
     def validate(self) -> None:
+        if self.size % self.group_size:
+            raise ValueError(
+                f"size={self.size} is not whole groups of {self.group_size}"
+            )
         expected = (self.size // 2) + (self.size // self.group_size) * 2
         if self.packed is None:
             self.packed = expected
@@ -89,11 +93,15 @@ class Dequant(UnaryElementwise):
 
     def resolve(self, dev):
         op = super().resolve(dev)
-        packed = (op.line_size // 2) + (op.line_size // self.group_size) * 2
+        if op.tile_size % self.group_size:
+            raise Unresolvable(
+                f"tile_size={op.tile_size} is not whole groups of {self.group_size}"
+            )
+        packed = (op.tile_size // 2) + (op.tile_size // self.group_size) * 2
         return dataclasses.replace(op, in_tile=packed)
 
     def kernel(self, target):
-        return datamovement.expand(self.line_size, self.group_size)
+        return datamovement.expand(self.tile_size, self.group_size)
 
     def kernel_call(self, kernel, elem_in, elem_out) -> None:
         # The line length is a compile flag, not an argument.

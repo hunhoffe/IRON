@@ -22,7 +22,7 @@ class GELU(UnaryElementwise):
     tile_cap: ClassVar[int] = 8192
 
     def kernel(self, target):
-        return activation.gelu_sized(self.line_size)
+        return activation.gelu_sized(self.tile_size)
 
     def reference(self, x):
         """CPU reference: the tanh approximation the kernel computes."""
