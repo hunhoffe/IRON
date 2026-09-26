@@ -49,16 +49,16 @@ def param(
     A callable ``default`` is computed from the operator at construction,
     for a parameter its other fields determine when neither the caller nor
     an operand's shape gives it (``default=lambda op: op.rows * op.repeat``);
-    :meth:`~.operator.Operator.check_derived` is the one-line check that a
-    value given as well agrees.
+    :meth:`~.operator.Operator.check_derived` checks that a value given as
+    well agrees.
 
-    A ``param()`` may appear in a shape. Which tier it is follows from use: a
-    field named in an operand's ``tile=``/``per=``/``depth=`` configures the
-    array (changing it rebuilds the array); any other rebuilds the
-    instruction stream only, unless it says ``array=True``, which is how a
-    field the array reads but no tile names (a kernel's epilogue) declares
-    itself. ``default`` is keyword-only so a checker reads it: a ``param()``
-    without one is a required constructor argument.
+    A ``param()`` may appear in a shape. Its tier follows from use: a field
+    named in an operand's ``tile=``/``per=``/``depth=`` configures the array,
+    so changing it rebuilds the array; any other field rebuilds only the
+    instruction stream, unless it is marked ``array=True`` because the array
+    reads it though no tile names it (a kernel's epilogue). ``default`` is
+    keyword-only so a type checker sees it; a ``param()`` without one is a
+    required constructor argument.
     """
     if callable(default):
         return _specifier("param", None, repr, init, array=array, derive=default)
@@ -170,9 +170,9 @@ class _Optional:
     """A dimension that is present only when greater than one.
 
     ``In(optional(num_batches), M, K)`` declares ``(M, K)`` for a single batch
-    and ``(num_batches, M, K)`` otherwise, which is how batched operators
-    already spell their host shapes; ``In(rows, optional(seq), cols)`` takes
-    a matrix or a stack of them. Inference reads the rank to tell the two
+    and ``(num_batches, M, K)`` otherwise, the convention batched operators
+    use for their host shapes; ``In(rows, optional(seq), cols)`` takes a
+    matrix or a stack of them. Inference reads the rank to tell the two
     apart, so a declaration has at most one.
     """
 

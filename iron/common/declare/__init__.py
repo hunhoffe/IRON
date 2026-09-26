@@ -3,16 +3,17 @@
 
 """The operator model's declaration layer: operators and their members.
 
-An operator is one class. Its fields sort by when a change rebuilds: the
-array tier is what an operand's tile names, plus what says ``array=True``,
-and one array serves every extent; the other fields size the host buffers
-and reach only the runtime sequence. Values a graph binds per call are
-:class:`Value`, :class:`Scratchpad` or :class:`DispatchTime` members.
+An operator is one class. Its fields fall into two tiers by what a change
+rebuilds. Fields named in an operand's tile, plus fields marked
+``array=True``, form the array tier; one array serves every extent of the
+other fields, which size the host buffers and reach only the runtime
+sequence. Values a graph binds per call are :class:`Value`,
+:class:`Scratchpad` or :class:`DispatchTime` members.
 
-Declarations are class-level. A dimension is a dataclass field declared with
-:func:`param`, a knob the library resolves is one declared with :func:`auto`,
-and a shape is written in the class body using the field's bare name; an
-operand with ``tile=`` is its own stream into the array::
+Declarations are class-level. :func:`param` declares a dimension field,
+:func:`auto` declares a knob the library resolves, and a shape in the class
+body uses the field's bare name. An operand with ``tile=`` is its own
+stream into the array::
 
     class GEMV(Operator):
         M: int = param()
@@ -26,26 +27,25 @@ operand with ``tile=`` is its own stream into the array::
         C = Out(optional(num_batches), M, tile=(tile_size_output,), per=(num_aie_columns,))
         tiles = Value(np.int32, derive=lambda op: op.M // (op.num_aie_columns * op.tile_size_output))
 
-The shape rule: a host buffer's dimension is a ``param()`` field or an
-integer literal, nothing else. Not a knob, not a per-call value, not an
-expression. That is what makes inference a lookup (:mod:`.infer`) and what
-lets the checks in :mod:`.creation` run once, as a class body finishes. A
-tile's dimension may also be a knob: choosing the tile is what resolution
-is for, and inference never reads a tile. A :class:`Profile` applied in a
-scope gives the knobs a call site leaves open, by operator shape, before
-resolution sees them.
+A host buffer's dimension is a ``param()`` field or an integer literal:
+never a knob, a per-call value or an expression. This keeps inference a
+lookup (:mod:`.infer`) and lets :mod:`.creation` check a class once, as its
+body finishes. A tile's dimension may also be a knob, since resolution
+chooses the tile and inference never reads one. A :class:`Profile` applied
+in a scope fills the knobs a call site leaves open, by operator shape,
+before resolution runs.
 
-Generating MLIR is :mod:`iron.common.design`'s job, not this package's; it
-reads the declarations made here. What little mlir-aie reaches this far --
-the device a name is keyed on, the shim's DMA budget (:mod:`.shim`) -- is a
-question about the target, not a design being built.
+:mod:`iron.common.design` generates MLIR from these declarations; this
+package does not. The little of mlir-aie it touches (the device a name is
+keyed on, the shim's DMA budget in :mod:`.shim`) describes the target, not
+a design.
 
-The package reads bottom-up: :mod:`.field` is what a class body writes,
-:mod:`.member` what it declares alongside its fields, :mod:`.bound` what an
-instance's attribute gives back, :mod:`.infer` how operand shapes reach a
-declaration's dimension fields, :mod:`.operator` the class itself, and
-:mod:`.creation` the checks it goes through as its body finishes.
-:mod:`.naming` is how an instance spells its own label.
+Module by module: :mod:`.field` is what a class body writes, :mod:`.member`
+what it declares alongside its fields, :mod:`.bound` what an instance's
+attribute returns, :mod:`.infer` how operand shapes fill a declaration's
+dimension fields, :mod:`.operator` the class itself, :mod:`.creation` the
+checks run as a class body finishes, and :mod:`.naming` how an instance
+builds its label.
 """
 
 from .field import (

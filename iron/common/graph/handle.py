@@ -156,8 +156,8 @@ class State:
         return f"State({self.name or ''}{list(self.shape)})"
 
     # Inside a graph function a state is viewed like a handle: the tracer
-    # says what stands for it (a handle when tracing, its host tensor when
-    # the reference runs).
+    # decides what stands for it (a handle when tracing, its host tensor
+    # when the reference runs).
     def _as_operand(self):
         from .trace import current  # imports this module
 

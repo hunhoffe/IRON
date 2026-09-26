@@ -12,9 +12,9 @@ the preamble (values, barriers, parameter sync), then either derives the
 fill/drain sequence from the operands' tiles or hands a :class:`Sequence`
 to the operator's ``sequence(rt)`` override.
 
-``build_design`` is also the one design function every declared operator
-compiles through, so the compile and fusion paths (``xclbin_design``,
-``fuse_mlir``) see nothing new: they call it with the operator bound by name.
+Every declared operator compiles through ``build_design``, so the compile
+and fusion paths (``xclbin_design``, ``fuse_mlir``) call it with the
+operator bound by name.
 
 One module per participant: :mod:`.target` is what an operator's ``array()``
 receives, :mod:`.runtime` what an operator's ``sequence(rt)`` receives,

@@ -381,7 +381,7 @@ class OperatorSequence:
                 )
         # Every operator resolved for the device, once, before anything takes
         # its identity: unique_designs() then sees the knobs as they will be
-        # built, so two spellings of one array are one design.
+        # built, so two operators that describe one array are one design.
         dev = aie_utils.get_current_device()
         resolved: dict[int, Operator] = {}
         for op, *_ in self.runlist:

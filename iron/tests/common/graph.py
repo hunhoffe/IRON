@@ -329,7 +329,7 @@ def test_two_spellings_of_one_array_are_one_design():
 
     a = GEMV(M=64, K=256, num_aie_columns=2, tile_size_input=2)
     b = GEMV(M=64, K=256, num_aie_columns=2, tile_size_input=2, tile_size_output=2)
-    assert a.design_key() != b.design_key()  # as spelled
+    assert a.design_key() != b.design_key()  # as given
     seq = OperatorSequence(
         "two_spellings",
         [(a, "x", "w", "y"), (b, "x2", "w", "z")],

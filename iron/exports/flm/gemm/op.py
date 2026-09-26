@@ -9,7 +9,7 @@ rounding mode. Everything the xclbin depends on, and nothing else; its
 ``config_name`` is the xclbin's stem. M, K, N, the activation and the
 clamp bounds are values written to the cores and reach only the
 instruction stream, so every shape sharing a configuration shares one
-xclbin. That split is what this operator exists for, and :meth:`GEMM._build`
+xclbin. That split is the point of this operator; :meth:`GEMM._build`
 compiles the two halves separately.
 
 ``design.py`` keeps the fixed geometry and the L1 budget; README.md has the
@@ -161,11 +161,11 @@ class GEMM(Operator):
 
     A = In(M, K, tile=(a_l2,), per=(rows,), depth=A_DEPTH)
     # On AIE2P B is quantized to bfp16ebs8, so it is declared as a count of
-    # those blocks -- the unit the array, the core and every descriptor into
-    # B already count in. Declaring it in bytes instead made the sequence's
-    # offsets and lengths address a ui8 buffer with block-unit numbers, so a
-    # transfer moved a ninth of what it named. On AIE2 it is a (K, N) element
-    # count, pre-packed.
+    # those blocks, the unit the array, the core and every descriptor into B
+    # count in. Declared in bytes, the sequence's offsets and lengths would
+    # address a ui8 buffer with block-unit numbers and a transfer would move
+    # a ninth of what it named. On AIE2 it is a (K, N) element count,
+    # pre-packed.
     B = In(
         select(bfp16_b, (packed_blocks,), (K, N)),
         dtype=b_dtype,
@@ -221,7 +221,7 @@ class GEMM(Operator):
             raise ValueError(f"K ({self.K}) must be a multiple of {MIN_K}")
         self.check_derived("packed_blocks")
         # A mode the mask leaves out reaches the kernel's default arm, which
-        # is NONE -- an unactivated result rather than an error. Refuse.
+        # is NONE: an unactivated result rather than an error. Refuse.
         if (
             self.epilogue is not Epilogue.NONE
             and self.epilogue not in self.epilogue_modes
@@ -325,7 +325,7 @@ class GEMM(Operator):
     @property
     def epilogue_mask(self) -> int:
         """Bitmask of the modes compiled into the epilogue. Mode 0 is always
-        present -- the kernel falls back to it.
+        present; the kernel falls back to it.
         """
         mask = 1
         for m in self.epilogue_modes:
@@ -336,9 +336,9 @@ class GEMM(Operator):
     def config_name(self) -> str:
         """Stem of the artifacts that do not depend on the shape: the xclbin's.
 
-        ``ck`` needs naming separately because retuning CT_MAX_K_FOR_N moves
-        it while tn is unmoved, and tile_ma is caller-overridable. Omitting it
-        once served an xclbin built at one ck to a request for another.
+        ``ck`` is named separately because retuning CT_MAX_K_FOR_N moves it
+        while tn stays, and tile_ma is caller-overridable. Without it, an
+        xclbin built at one ck could serve a request for another.
         """
         t = self._tuned
         return (
@@ -577,7 +577,7 @@ class GEMM(Operator):
             barrier.wait_for_value(1)
             # Derived rather than sent, saving an RTP word: column c has work
             # in block j iff (j*COLS + c)*N_TILE < N. Both divisors are powers
-            # of two, so this must leave no __divsi3 -- check the .o.
+            # of two, so this must leave no __divsi3; check the .o.
             n_tiles = my_rtp[RTP_N_VAL] // N_TILE
             n_work = (n_tiles - my_col[0] + COLS - 1) // COLS
             n_drain = ((n_tiles + COLS - 1) // COLS) - n_work

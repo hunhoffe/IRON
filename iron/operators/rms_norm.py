@@ -49,9 +49,9 @@ class RMSNorm(Elementwise):
 
     ``rows`` rows of ``tile_size`` elements; :class:`WeightedRMSNorm` is the
     form with a learned weight row, which a graph call with a weight picks.
-    ``tile_size`` is the row length and is shape-bearing (the host buffers
-    are ``rows x tile_size``), so it is a dimension here rather than the
-    knob the template declares.
+    ``tile_size`` is the row length and appears in the host shape (``rows x
+    tile_size``), so it is a ``param()`` here rather than the knob the base
+    declares.
     """
 
     test = Testing(_cases, tolerance=Tolerance.relative(0.04, 1e-6))
@@ -59,8 +59,8 @@ class RMSNorm(Elementwise):
     rows: int = param()
     # Required here, though the base defaults it: every field is keyword-only.
     tile_size: int = param()  # pyright: ignore
-    # One core by default: a core normalizes whole rows, and how many rows
-    # there are is the extent. Call sites with many rows spread them.
+    # One core by default: a core normalizes whole rows, and the row count is
+    # the extent. Call sites with many rows spread them over columns.
     num_aie_columns: int = auto(1)
     # RMSNorm eps; Llama 1e-5 (default), Gemma 1e-6
     epsilon: float = param(default=1e-5, array=True)

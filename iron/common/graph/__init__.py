@@ -27,7 +27,7 @@ sizes, the value bindings. It is pure bookkeeping and needs no toolchain.
 :meth:`GraphFunction.compile` hands that to :class:`OperatorSequence` for
 the image (a fused ELF on NPU2, per-step xclbins on NPU1) and returns a
 :class:`CompiledGraph` to call. Calling an uncompiled graph with real
-tensors compiles for their shapes, says so once, and dispatches.
+tensors compiles for their shapes, prints a note, and dispatches.
 """
 
 from .compiled import CompiledGraph, GraphFunction, graph

@@ -67,9 +67,9 @@ class DequantBFP(Operator):
     # Each buffer is declared in the unit its transfers count in. The q4nx
     # input is bytes, because a block interleaves three tables at 5 bits per
     # weight and the fill walks it bytewise. The output is bfp16ebs8 blocks,
-    # because that is what the drains index -- declaring it in its 9-byte
-    # equivalent would make every offset and length address a ninth of what
-    # it names. Filled by validate() from K, N and the interleave.
+    # because the drains index blocks; declared in its 9-byte equivalent,
+    # every offset and length would address a ninth of what it names.
+    # Filled by validate() from K, N and the interleave.
     quantized_bytes: int = param(default=lambda op: op.quantized_size(), repr=False)
     packed_blocks: int = param(
         default=lambda op: op.K * op.N // BFP16_GROUP, repr=False
@@ -78,9 +78,9 @@ class DequantBFP(Operator):
     # tile_n flm.GEMM reads B at, or the GEMM reads the right bytes in the
     # wrong order.
     tile_n: int = auto()
-    # cols follows the device. ROWS is structural -- it is baked into the
-    # split offsets and the join -- so it is not a field; halves is, because
-    # a stream's replication count has to be declared to be indexed.
+    # cols follows the device. ROWS is baked into the split offsets and the
+    # join, so it is not a field; halves is, because a stream's replication
+    # count must be declared to be indexed.
     cols: int = auto(repr=False)
     halves: int = auto(HALVES, repr=False)
 
@@ -105,8 +105,8 @@ class DequantBFP(Operator):
     # -- checks ----------------------------------------------------------------
 
     def validate(self) -> None:
-        # Not a ValueError: tile_n=128 is a legitimate thing for flm.GEMM to
-        # pick, and this operator simply does not emit that order yet.
+        # NotImplementedError rather than ValueError: flm.GEMM may legitimately
+        # pick tile_n=128; this operator does not emit that order yet.
         if self.tile_n is not None and self.tile_n != N_TILE:
             raise NotImplementedError(
                 f"tile_n must be {N_TILE}; this operator emits that order only. "

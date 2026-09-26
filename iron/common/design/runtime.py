@@ -33,7 +33,7 @@ class Transfers:
     """What an operator's sequence issues, over either way of issuing it.
 
     A concrete sequence supplies ``op`` and the ``fill``/``drain``/``group``
-    surface; this decides what goes through it -- the operator's
+    surface; this decides what goes through it: the operator's
     ``sequence(rt)`` override, or the one derived from the declarations.
     :class:`Sequence` lowers a transfer to MLIR tasks;
     :class:`~iron.common.external.ExternalSequence` emits it as words for a

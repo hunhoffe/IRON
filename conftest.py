@@ -20,7 +20,7 @@ def npu_runtime():
     """Release the loaded NPU runtime after a test that ran on hardware.
 
     ``DefaultNPURuntime`` is None until something loads an image, so a test
-    that only compiled has nothing to release -- and must not be reported as
+    that only compiled has nothing to release, and must not be reported as
     an error for it.
     """
     yield

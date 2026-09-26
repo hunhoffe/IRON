@@ -3,12 +3,12 @@
 
 """The operator: one class declaring the array, the buffers and the sequence.
 
-Its fields sort by when a change rebuilds: the array tier is what a tile
-names (plus what says ``array=True``), and one array serves every extent;
-the rest sizes the host buffers and reaches the runtime sequence alone.
-Calling the class binds it: :func:`~iron.common.declare.infer` turns operand
-shapes into the extents, and the instance's buffer attributes answer in
-elements.
+Its fields fall into two tiers by what a change rebuilds: the fields a tile
+names, plus those marked ``array=True``, configure the array, and one array
+serves every extent; the rest size the host buffers and reach only the
+runtime sequence. Calling the class binds it:
+:func:`~iron.common.declare.infer` turns operand shapes into the extents,
+and the instance's buffer attributes report shapes in elements.
 """
 
 from __future__ import annotations
@@ -53,11 +53,10 @@ _T = TypeVar("_T")
 class _OperatorMeta(type):
     """``GEMV(w, h)`` inside a graph function records a step; anything else constructs.
 
-    The class tells the two apart by whether it received graph handles (or
-    host tensors, which a graph closes over as weights); see
-    :mod:`iron.common.graph`. Outside a graph the call constructs as usual.
-    To a checker the two are the two overloads below: a call with operands
-    is a graph step and yields a handle, a call by keyword constructs.
+    A call with graph handles (or host tensors, which a graph closes over as
+    weights) records a step; see :mod:`iron.common.graph`. Any other call
+    constructs. The two overloads below tell a type checker the same: a
+    call with operands yields a handle, a call by keyword constructs.
     """
 
     if TYPE_CHECKING:
@@ -88,7 +87,9 @@ class _OperatorMeta(type):
 
 
 def _check_shipped(cls: type) -> None:
-    """What a class declared with ``image=`` must say, since nothing builds it."""
+    """Check a class declared with ``image=``: nothing builds it, so it must pin
+    every endpoint itself.
+    """
     if "array" in vars(cls):
         raise DeclarationError(
             f"{cls.__name__} runs a shipped image, so nothing builds its array(); "
@@ -108,7 +109,7 @@ def _check_shipped(cls: type) -> None:
 
 
 class _ArrayView:
-    """What :meth:`Operator.array` sees of its operator: the array tier.
+    """The array tier of an operator, as :meth:`Operator.array` sees it.
 
     Reading a field no tile names and that does not declare ``array=True``
     raises, so an array cannot come to depend on an extent by accident
@@ -148,13 +149,13 @@ class _ArrayView:
         setattr(object.__getattribute__(self, "_op"), name, value)
 
 
-# Keyword-only to a checker, as every declared field is passed by keyword
-# (a required field after one with a default is keyword-only at runtime too,
-# see field._specifier). ``param`` is a field specifier, so a ``param()``
-# without a ``default=`` is a required constructor argument; ``auto`` is not
-# listed, since pyright reads a specifier's default only from a ``default=``
-# keyword and ``auto(2)`` gives it positionally: unlisted, an ``auto()`` field
-# is one with a default of type Any, which is what it is.
+# kw_only_default: every declared field is passed by keyword (at runtime a
+# required field after one with a default is keyword-only too, see
+# field._specifier). ``param`` is listed as a field specifier so a ``param()``
+# without ``default=`` is a required constructor argument. ``auto`` is not
+# listed: pyright reads a specifier's default only from a ``default=`` keyword,
+# and ``auto(2)`` passes it positionally. Unlisted, an ``auto()`` field is one
+# with a default of type Any, which is accurate.
 @dataclass_transform(kw_only_default=True, field_specifiers=(param,))
 @dataclasses.dataclass(eq=False, repr=True)
 class Operator(metaclass=_OperatorMeta):
@@ -195,8 +196,8 @@ class Operator(metaclass=_OperatorMeta):
         self._derive_params()
         self.validate()
         self._bind()
-        # Every rule is answerable once every knob is known, so the extents
-        # are checked where the operator is written rather than at resolution.
+        # Once every knob is known the extents can be checked, so the check
+        # runs at construction rather than at resolution.
         if not any(getattr(self, n) is None for n in self._auto_fields):
             self.compatible()
 
@@ -216,8 +217,8 @@ class Operator(metaclass=_OperatorMeta):
 
     def check_derived(self, *names: str) -> None:
         """Raise ``ValueError`` if a computed-default parameter was given a
-        value its rule disagrees with: for one a shape may bind that the
-        other fields nonetheless determine (``out_rows = rows * repeat``).
+        value its rule disagrees with. For a parameter a shape may bind but
+        the other fields also determine (``out_rows = rows * repeat``).
         """
         for name in names:
             given, expected = getattr(self, name), self._derived_params[name](self)
@@ -239,15 +240,15 @@ class Operator(metaclass=_OperatorMeta):
         """Return a copy resolved for ``dev``: every ``auto()`` filled, from
         the device and from this operator's extents; raise :class:`Unresolvable`.
 
-        The one hook that sees both. The default fills nothing. A knob left
-        ``None`` is an error once this returns::
+        This is the only hook that sees both. The default fills nothing. A
+        knob left ``None`` is an error once this returns::
 
             def resolve(self, dev):
                 cols = self.columns or self.shim_columns(dev)
                 return dataclasses.replace(self, columns=cols)
 
-        Identity for sharing a build is taken after this runs, so two ways
-        of spelling one array resolve to one design.
+        Identity for sharing a build is taken after this runs, so two
+        operators that describe one array resolve to one design.
         """
         return dataclasses.replace(self)
 
@@ -258,7 +259,8 @@ class Operator(metaclass=_OperatorMeta):
         the kernel tree, and ``kernel()``/``rtp()``/``barrier()``. Bind the
         shim end of a fifo to every operand's lane (``self.A.lane(i).bind(
         fifo.prod())``) and every ``Value`` to the buffer a core reads it
-        from. Sees the array tier alone: a field no tile names raises.
+        from. Only the array tier is visible here: reading a field no tile
+        names raises.
         """
         raise NotImplementedError(f"{type(self).__name__}.array() is not implemented")
 
@@ -385,7 +387,7 @@ class Operator(metaclass=_OperatorMeta):
     def resolved(self, dev) -> Self:
         """This operator resolved for ``dev``: itself if it already is, else
         :meth:`resolve`'s copy, every knob filled and :meth:`validate` and
-        :meth:`compatible` checked. The one place :meth:`resolve` is called.
+        :meth:`compatible` checked. Nothing else calls :meth:`resolve`.
         """
         if self._resolved:
             return self
@@ -405,9 +407,9 @@ class Operator(metaclass=_OperatorMeta):
                 f"{type(self).__name__}.resolve() left {missing} unset for {dev}"
             )
         new.validate()
-        # What a graph bound on this instance is part of it, not of a field:
-        # the build works on the copy, and a copy that forgot would silently
-        # drop the per-call value from the sequence.
+        # Values a graph bound on this instance live outside its fields, so
+        # replace() does not carry them. The build works on the copy, and
+        # losing them would silently drop the per-call value from the sequence.
         if self.used_values:
             vars(new)["_used_values"] = dict(self.bound_values)
         new.compatible()
@@ -492,8 +494,8 @@ class Operator(metaclass=_OperatorMeta):
         instance, to its own value ``bound_to``.
 
         The graph value is part of what is built: two instances alike in
-        every field that read different graph values are two designs with
-        two device symbols, not one.
+        every field but reading different graph values are two designs with
+        two device symbols.
         """
         if not any(isinstance(m, _Value) and m.name == name for m in self._members):
             raise TypeError(
@@ -579,11 +581,11 @@ class Operator(metaclass=_OperatorMeta):
     @property
     def name(self) -> str:
         """This instance's label: the class, every shown field as resolved
-        for the device, the device. It names the per-call value
-        symbols a host writes through and the kernel instances a chained
-        image carries; nothing on disk, which the compile cache keys by
-        content. A name describes what is built, so it is the resolved
-        operator's.
+        for the device, and the device. It names the per-call value symbols
+        a host writes through and the kernel instances a chained image
+        carries. Nothing on disk is keyed by it; the compile cache keys by
+        content. The label describes what is built, so it comes from the
+        resolved operator.
         """
         dev = aie_utils.get_current_device()
         if dev is None:
@@ -596,11 +598,10 @@ class Operator(metaclass=_OperatorMeta):
     def generator(self, image: str = "elf"):
         """The design generator :class:`CompilableDesign` runs for this operator.
 
-        An override point, not a forwarder: an operator whose design is
-        exported text rather than derived from the declaration replaces this
-        (see :func:`from_spec`, and swiglu_prefill_stream, which loads its
-        group from the exported module). Everything else takes the default,
-        which is ``build_design`` over the declaration.
+        An operator whose design is exported text rather than derived from
+        the declaration overrides this (see :func:`from_spec`, and
+        swiglu_prefill_stream, which loads its group from the exported
+        module). The default is ``build_design`` over the declaration.
         """
         from ..design import (
             generator_for,
@@ -637,10 +638,10 @@ class Operator(metaclass=_OperatorMeta):
     def buffer_map(self) -> dict[str, tuple[str, int, int]]:
         """Each buffer as ``(arena, position, nbytes)``, for an image's record.
 
-        From the tuned operator: a shape may follow a tunable the device
-        fills (flm/gemm's B layout), and the built image's buffers are the
-        tuned ones. A standalone operator has no arena plan -- its buffers
-        are the kernel's positional arguments.
+        Taken from the resolved operator, since a shape may depend on a knob
+        the device fills (flm/gemm's B layout) and the built image's buffers
+        are the resolved ones. A standalone operator has no arena plan; its
+        buffers are the kernel's positional arguments.
         """
         resolved = self.resolved(self.dev)
         return {b.name: ("arg", i, b.nbytes) for i, b in enumerate(resolved.buffers)}

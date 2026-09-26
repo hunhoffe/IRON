@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Construction cases for every declared operator, in the keyword spelling.
+"""Construction cases for every declared operator, as keyword arguments.
 
 One matrix, reused: the shapes each operator reads, varied over the shape
 and dtype decisions it makes, with the tuning knobs at one valid value.
@@ -47,8 +47,8 @@ CASES = [
         [
             # M must be a multiple of 256 and N of 512.
             dict(M=256, K=64, N=512),
-            # b_col_maj / c_col_maj transpose the declared shapes; they are the
-            # reason a shape function has to stay ordinary Python.
+            # b_col_maj / c_col_maj transpose the declared shapes (GEMM's
+            # select()).
             dict(M=256, K=64, N=512, b_col_maj=True),
             dict(M=256, K=64, N=512, c_col_maj=True),
             # f32 output at the default 64-tile overflows a core's memory; smaller tiles.
@@ -205,9 +205,9 @@ def dtype_name(dtype):
     """Canonical, stable name for a spec dtype.
 
     ``np.dtype(bfloat16).name`` round-trips, but going through ``np.dtype``
-    first normalises the several spellings an operator may hand back (a numpy
+    first normalises the several forms an operator may hand back (a numpy
     scalar type, a ``np.dtype``, or ml_dtypes' ``bfloat16``) to one string, so
-    a snapshot does not churn on an equivalent-but-differently-spelled dtype.
+    a snapshot does not churn on an equivalent dtype written differently.
     """
     if dtype in _DTYPE_ALIASES:
         return _DTYPE_ALIASES[dtype]

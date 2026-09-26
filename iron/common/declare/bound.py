@@ -3,9 +3,9 @@
 
 """What an instance's member attribute returns, and the resolvers behind it.
 
-A declaration is class-level and symbolic; binding it to an instance turns
-every :class:`~iron.common.declare.field.DimRef` into an integer, which is
-what the resolvers at the foot of this module do.
+A declaration is class-level and symbolic. Binding it to an instance turns
+every :class:`~iron.common.declare.field.DimRef` into an integer; the
+resolvers at the end of this module do that.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ class BoundStream:
         self.replicate = member.replicate
         self.depth = member.depth
         self.via = member.via
-        # The buffer this is the own stream of (In(..., tile=)), else None.
+        # The buffer whose own stream this is (In(..., tile=)), else None.
         self.buffer: "BoundBuffer | None" = None
         self._handle_slots: list[Any] | None = None
 
@@ -166,16 +166,16 @@ class BoundBuffer:
         self.name = member.name
         self.direction = member.direction
         # The buffer's own stream (In(..., tile=)), bound on the same
-        # instance: what its tile, lanes and handles answer for.
+        # instance. Its tile, lanes and handles come from here.
         self.lanes: BoundStream | None = (
             BoundStream(member.stream, op) if member.stream is not None else None
         )
         if self.lanes is not None:
             self.lanes.buffer = self
 
-    # Resolved on use, not at construction: a shape or dtype may follow a
-    # knob the device fills (flm/gemm's B layout), and an unresolved
-    # operator is still a valid thing to hold.
+    # Resolved on use rather than at construction: a shape or dtype may
+    # depend on a knob the device fills (flm/gemm's B layout), and an
+    # unresolved operator must still be usable as a value.
     @property
     def shape(self) -> tuple[int, ...]:
         return _resolve_shape(self.member.dims, self._op)
@@ -195,10 +195,10 @@ class BoundBuffer:
         # is not a numpy dtype, so np.dtype() raises on it.
         return self.elements * bfp.itemsize(self.dtype)
 
-    # The host's view. Block floating point is the one place the host and the
-    # array disagree on the unit: numpy has no block-float dtype, so a host
-    # buffer is the equivalent run of bytes, while the array, the sequence and
-    # every descriptor go on counting blocks.
+    # The host's view. Only block floating point makes the host and the array
+    # disagree on the unit: numpy has no block-float dtype, so the host buffer
+    # is the equivalent run of bytes while the array, the sequence and every
+    # descriptor count blocks.
     @property
     def host_shape(self) -> tuple[int, ...]:
         return (self.nbytes,) if bfp.is_bfp(self.dtype) else tuple(self.shape)
@@ -211,10 +211,10 @@ class BoundBuffer:
     def flat_type(self):
         """The runtime-sequence argument type: the buffer flattened to 1-D.
 
-        In the buffer's own element units, which are the units its transfers
-        are expressed in. A packed operand declared in block-float blocks
-        lowers to a memref of blocks, so a descriptor's offset and length
-        count blocks -- the same thing the array and the core count.
+        In the buffer's own element units, the units its transfers use. A
+        packed operand declared in block-float blocks lowers to a memref of
+        blocks, so a descriptor's offset and length count blocks, as the
+        array and the core do.
         """
         return np.ndarray[(self.elements,), np.dtype[self.dtype]]  # type: ignore[misc]
 

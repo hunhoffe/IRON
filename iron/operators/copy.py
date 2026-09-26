@@ -3,8 +3,8 @@
 
 """A copy between two views: ``Copy(k, keys[i][:, pos])``.
 
-Each side is a walk over its buffer (offset, sizes, strides), which is what a
-DMA is given; the shim channels split the walk on its highest non-unit axis
+Each side is a walk over its buffer (offset, sizes, strides), the form a DMA
+takes; the shim channels split the walk on its highest non-unit axis
 and each share is legalized for the shim. A per-call value indexing a view
 reaches the copy as ``in_offset``/``out_offset``, an element offset.
 """
@@ -91,9 +91,9 @@ class Copy(Operator):
             Case(_kv_slot(_SEQ, 0), id="kv_slot0"),
             Case(_kv_slot(_SEQ, 5), id="kv_slot5"),
             Case(_kv_slot(_SEQ, _SEQ - 1), id="kv_slot_last"),
-            # The KV-cache write is what num_channels exists to widen, so
-            # it carries the strided arms too: the flat cases split a
-            # stride-1 run, these split head_dim.
+            # num_channels exists to widen the KV-cache write, so the
+            # strided arms cover it too: the flat cases split a stride-1
+            # run, these split head_dim.
             Case(_kv_slot(_SEQ, 5, num_channels=2), id="kv_slot5_two_channels"),
             Case(_kv_slot(_SEQ, 5, num_channels=4), id="kv_slot5_four_channels"),
             Case(_kv_slot(2048, 1000), id="kv_llama_full", extensive=True),
@@ -177,8 +177,8 @@ class Copy(Operator):
 
         The highest non-unit axis is split across the channels; each share
         is then legalized for the shim (an axis past its slot's wrap is
-        factored or unrolled, order preserved), so a reorder as wide as a
-        sequence lowers rather than failing three tools down.
+        factored or unrolled, order preserved), so a wide reorder lowers
+        here instead of failing later in the toolchain.
         """
         sizes, strides = _pad4(walk.sizes, walk.strides)
         highest = max(i for i, sz in enumerate(sizes) if sz >= 1)
@@ -253,7 +253,7 @@ def _walk_offsets(sizes, strides, offset):
 
 
 def _channel_offsets(walk: Walk, addend: int, num_channels: int):
-    """Per channel, the flat offsets of its share: design's split, exactly."""
+    """Per channel, the flat offsets of its share, split as the design splits it."""
     sizes, strides = _pad4(walk.sizes, walk.strides)
     highest = max(idx for idx, sz in enumerate(sizes) if sz >= 1)
     per_channel = sizes[highest] // num_channels

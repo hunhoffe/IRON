@@ -9,9 +9,10 @@ built. So it declares them beside itself, as :class:`Testing` on the class,
 and ``iron/operators/test.py`` runs every declaration against the
 operator's ``reference()`` on a device.
 
-``iron/tests/common/cases.py`` is a different matrix and stays: one small
-pinned case per shape decision, constructed device-free and lowered by the
-toolchain gate. These cases are the device's, sized to stress it.
+``iron/tests/common/cases.py`` is a separate matrix: one small pinned case
+per shape decision, constructed without a device and lowered by the
+toolchain gate. The cases here run on the device and are sized to stress
+it.
 
 A declaration is data. Nothing here imports pytest or torch, so an
 operator module stays importable without them; the runner turns the data
@@ -63,14 +64,14 @@ class Case:
 class Testing:
     """How an operator is checked against its reference on a device.
 
-    ``cases`` is what to construct: :class:`Case` objects or plain keyword
-    dicts, or a callable of the operator class returning them, which is
-    what an operator whose shapes follow the device's width declares. ``draw`` is extra
+    ``cases`` lists what to construct: :class:`Case` objects or plain
+    keyword dicts, or a callable of the operator class returning them, for
+    an operator whose shapes follow the device's width. ``draw`` is extra
     :func:`iron.common.harness.vectors` arguments, or a callable of the
-    operator returning them (an input that must satisfy the kernel's
+    operator returning them (for an input that must satisfy the kernel's
     preconditions: a packed quantization, an angle table).
 
-    ``tolerance`` is the gate. Left out, it is the contract of the one kernel
+    ``tolerance`` is the gate. Left out, it is the contract of the kernel
     the operator runs (:meth:`~iron.common.declare.Operator.reference_tolerance`),
     and an operator whose kernel declares none must state one here. An
     operator that only moves data states :meth:`Tolerance.exact`, since any

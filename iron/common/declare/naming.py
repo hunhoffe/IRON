@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""How a declared instance spells its own name.
+"""Labels for declared instances.
 
-The label an operator carries through a graph and into the symbols a
-host writes through. Nothing on disk is keyed by it: the compile cache
-keys by content.
+An operator's label follows it through a graph and into the symbols a host
+writes through. Nothing on disk is keyed by it; the compile cache keys by
+content.
 """
 
 from __future__ import annotations

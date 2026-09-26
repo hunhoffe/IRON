@@ -7,8 +7,8 @@
 subclass is processed and none can forget to be. It applies ``dataclass``,
 resolves the field objects the class body captured in its shapes to names,
 re-attaches every field as a :class:`DimRef`, checks the shape rule, and
-records the members in declaration order. What it cannot prove then -- an
-operator's extents against its resolved knobs -- is left to
+records the members in declaration order. Checking an operator's extents
+against its resolved knobs needs an instance, so that is left to
 :meth:`Operator.compatible`.
 """
 
@@ -94,8 +94,8 @@ def _check_dim_ref(
 
     A host buffer's dimension is a ``param()`` field or an integer: never an
     ``auto()`` (inference would cycle through tuning) and never an expression.
-    A stream's tile dimension may also be an ``auto()``, since choosing the
-    tile is what tuning is for; inference never reads a stream.
+    A stream's tile dimension may also be an ``auto()``, since tuning chooses
+    the tile and inference never reads a stream.
     """
     if isinstance(spec, _Optional):
         _check_dim_ref(cls, member, spec.ref, what, allow_tunable=allow_tunable)

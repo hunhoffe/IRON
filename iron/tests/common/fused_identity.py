@@ -6,7 +6,7 @@
 Each is what lets one build reuse another's work: a kernel object shared by
 the designs (and graphs) whose recipes agree, a device aiecc has placed
 before, a whole image found without fusing it again. A name derived from a
-position instead -- which step a design is, where a kernel's design sits --
+position instead (which step a design is, where a kernel's design sits)
 compiles once per position and moves when a graph gains a step.
 
 No toolchain and no NPU: the fused text and the key are generated in

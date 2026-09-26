@@ -12,8 +12,8 @@ The array is ``num_cores`` cores (or, with ``bypass``, memtile forwards)
 each streaming ``line_size``-element lines; the cores loop over one
 ``tile_size`` each, so no trip count reaches the array. The sequence copies
 a flat ``size`` buffer through it: whole partitions split evenly across the
-cores, and a remainder handled by re-reading already-copied data to pad a
-full line, which is the hand-written sequence kept as an override.
+cores, and a remainder padded to a full line by re-reading already-copied
+data. That sequence is written by hand in :meth:`MemCopy.sequence`.
 """
 
 import dataclasses

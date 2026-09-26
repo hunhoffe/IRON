@@ -106,7 +106,7 @@ def test_the_default_column_count_is_the_most_that_leave_whole_tiles():
     assert GEMM(M=256, K=64, N=512).resolved(npu1).num_aie_columns == 4
     assert Transpose(M=64, N=64).resolved(npu2).num_aie_columns == 1
     assert Transpose(M=64, N=256).resolved(npu2).num_aie_columns == 4
-    # Nothing fits: one column, and compatible() names the rule (no bare max()).
+    # Nothing fits: one column, and compatible() names the rule.
     with pytest.raises(Incompatible, match=r"rows \(16\) must be a multiple of the 3"):
         Softmax(rows=16, cols=16, num_channels=3).resolved(npu2)
     with pytest.raises(

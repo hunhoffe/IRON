@@ -133,12 +133,11 @@ class GEMM(Operator):
         # matmul_vectorized_2x2_mmul works in r x s x t blocks, so a tile that
         # does not divide into them cannot be compiled for.
         #
-        # aie2p unconditionally, which is what these checks have always
-        # assumed and what their messages name, because the source is
-        # aie_kernels/aie2p/mm.cc. A device is not known here anyway: this
-        # runs at construction, before resolution picks one. array() asks for
-        # the geometry of the device it is actually building for, which on
-        # npu1 is the looser (4, 8, 4).
+        # aie2p's geometry whatever the device: the messages name
+        # aie_kernels/aie2p/mm.cc, and no device is known here anyway, since
+        # this runs at construction, before resolution picks one. array()
+        # asks for the geometry of the device it builds for, which on npu1
+        # is the looser (4, 8, 4).
         r, s, t = _mac_dims(
             self.dtype_in,
             self.dtype_out,
@@ -590,15 +589,15 @@ class GEMM(Operator):
                     # row-blocks. When that outermost stride overflows the
                     # shim's 20-bit iteration step (see _hw_stride_ok
                     # above), issue one descriptor per row-block instead,
-                    # carrying the row jump in the OFFSET -- which has no
-                    # such limit -- and leaving the outer dimension
-                    # degenerate. Same bytes, same order, same number of
-                    # objects; only the descriptor is reshaped.
+                    # carrying the row jump in the OFFSET (which has no such
+                    # limit) and leaving the outer dimension degenerate.
+                    # Same bytes, same order, same number of objects; only
+                    # the descriptor is reshaped.
                     #
                     # These extra tasks are safe against the two shim
                     # limits neither the toolchain nor the verifier models.
                     # BD ids: all of a (tb, pingpong) iteration's tasks stay
-                    # live until tg.finish() below, so they stay distinct --
+                    # live until tg.finish() below, so they stay distinct:
                     # 2 iterations x (2 C + 2 A + 2 B) = 12 of 16. Channel
                     # task queue: the C channel goes from 2 outstanding to
                     # current_tb_n_rows x 2 = 4, which is where A and B

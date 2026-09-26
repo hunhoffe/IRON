@@ -101,9 +101,9 @@ class AIELlama:
         assert position < self.max_seq_len
         # The softmax's valid row length is the context length: the kernel masks
         # every column from there on before the softmax, so the cache's unwritten
-        # tail contributes nothing. It used to be written as a running sum of
-        # context lengths, which iron/tests/common/llama_reference.py shows
-        # drifting from the CPU reference from the second token on (§18).
+        # tail contributes nothing. A running sum of context lengths is wrong
+        # here: iron/tests/common/llama_reference.py shows it drifting from
+        # the CPU reference from the second token on.
         return self.forward_graph(
             config.weights.embed([token_id]).reshape(1, config.emb_dim),
             self.angles[position : position + 1],

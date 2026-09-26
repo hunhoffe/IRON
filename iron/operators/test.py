@@ -10,9 +10,9 @@ runs each: construct, draw inputs with :func:`vectors`, dispatch, and
 judge every output element against ``reference()`` by the declared
 tolerance, or else by the contract of the kernel the operator runs.
 
-An operator whose device test is more than that -- a composite compared
-step by step, a shipped binary checked against its own accumulator --
-keeps its own ``test.py`` beside it.
+An operator whose device test is more than that (a composite compared step
+by step, a shipped binary checked against its own accumulator) has its own
+``test.py`` beside it.
 """
 
 import aie.utils as aie_utils
@@ -33,7 +33,7 @@ if aie_utils.get_current_device() is None:
 
 
 def _declared():
-    """Every operator in the catalog that says how to test it, with its cases.
+    """Every operator in the catalog that declares its cases, with those cases.
 
     Read from the catalog's own table, so an operator added there is covered
     without touching this module.

@@ -3,10 +3,10 @@
 
 """The device test harness: draw vectors, run an operator, check and time it.
 
-Everything is numpy, as an operator's ``reference`` is: a draw becomes the
+Everything is numpy, like an operator's ``reference``: a draw becomes the
 device buffer it is handed to, and mlir-aie's ``compare`` judges what comes
-back. The light half, how an operator *declares* the shapes it is
-tested at, is :mod:`iron.common.testing`, which imports no pytest.
+back. How an operator declares the shapes it is tested at is in
+:mod:`iron.common.testing`, which imports no pytest.
 """
 
 from __future__ import annotations
@@ -37,9 +37,8 @@ class Vectors:
 def vectors(op, *, seed=42, scale=4.0, normal=(), centered=(), **given) -> Vectors:
     """Random inputs for ``op``'s declared buffers, and its reference's outputs.
 
-    Not a golden model: the expected outputs are ``op.reference()`` on the
-    inputs drawn here, so this pairs a draw with the operator's own
-    reference rather than with an independent oracle.
+    The expected outputs are ``op.reference()`` on the inputs drawn here,
+    not an independent oracle.
 
     Each ``In`` buffer, in declaration order, is a uniform draw of its declared
     shape and dtype times ``scale`` (a normal draw for the names in
@@ -190,8 +189,8 @@ def _nbytes(buf) -> int:
 
     Reads the numpy view rather than the backend buffer handle: ``buffer_object()``
     returns a ``pyxrt.bo`` under XRT but an opaque handle under HRX, so ``.size()`` is
-    not part of the Tensor interface. The view is also the more honest number -- it is
-    the payload, not the (page-rounded) allocation.
+    not part of the Tensor interface. The view is also the payload size, not the
+    page-rounded allocation.
     """
     return buf.data.nbytes
 

@@ -26,7 +26,7 @@ def swiglu_prefill(
     False, ``w_gate`` and ``w_up`` are ``(embedding_dim, hidden_dim)`` and
     ``w_down`` is ``(hidden_dim, embedding_dim)``: the ``(K, N)`` layout
     GEMM's ``B`` takes, so a checkpoint's projection weights go in as they
-    are. When True each is stored transposed, which is what the decode-side
+    are. When True each is stored transposed, the layout the decode-side
     GEMV reads, so a pipeline running both against the same weight buffers
     does not need a second copy of each.
     """

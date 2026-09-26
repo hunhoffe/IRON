@@ -20,7 +20,7 @@ from iron.operators.rope.op import reference
 
 
 def _block_major_expected(x, angles, rows, angle_rows):
-    """Device convention spelled out row by row: row r uses angle row
+    """The device convention written out row by row: row r uses angle row
     r // (rows // angle_rows).
     """
     cols = x.shape[-1]

@@ -7,8 +7,8 @@ A graph function is compiled once per input signature (shapes and dtypes):
 each is a *version*, its own image. Every version reads the same weights
 and states, and on a full ELF they share one scratch arena
 (:class:`~iron.common.image.ArenaPlan`), so a weight is on the device once
-and a state one version writes is where the next reads it. Nothing asks for
-this: calling the function with a new shape compiles a version into the
+and a state one version writes is where the next reads it. This needs no
+setup: calling the function with a new shape compiles a version into the
 arena its other versions already use.
 """
 
@@ -349,9 +349,9 @@ class CompiledGraph:
     ) -> None:
         """Copy every closed-over weight into its buffer, once per storage.
 
-        ``release``, if given, is called with each piece of each weight --
-        a flat view of at most ``piece_bytes`` -- as soon as it is in its
-        buffer, for the weight's owner to drop the host copy's pages. In an
+        ``release``, if given, is called with each piece of each weight (a
+        flat view of at most ``piece_bytes``) as soon as it is in its
+        buffer, so the weight's owner can drop the host copy's pages. In an
         arena that is the last time the weight is read: a grown arena keeps
         the device's contents.
         """

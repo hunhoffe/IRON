@@ -34,8 +34,8 @@ run in CI with mlir-aie's configuration.
   Compile-time = baked into the artifact (array *or* sequence; which one is
   derived from where the field is used); dispatch-time = never baked.
 - **1A** The array's dependency set is *declared*: a field is array-tier iff
-  it appears in an operand's `tile=`/`per=`, in a stream's dtype, or says so
-  itself, `param(..., array=True)`/`auto(..., array=True)`.
+  it appears in an operand's `tile=`/`per=`, in a stream's dtype, or is
+  marked `param(..., array=True)`/`auto(..., array=True)`.
   `array(target)` receives a view exposing only those and raises on any other
   read. No learned read-sets.
 - **2B** `In(*shape, dtype=, tile=, per=, depth=, via=)` absorbs `StreamIn`:
@@ -46,7 +46,7 @@ run in CI with mlir-aie's configuration.
   resident when derived, a per-call value when a graph binds it;
   `Scratchpad[T]`/`DispatchTime[T]` remain the graph's per-call annotations
   (a `DispatchTime` value is never compiled in). `design_key` carries the
-  bound values and `explain()` prints each value's route.
+  bound values and `explain()` prints how each value reaches the device.
 - **4B** `Shipped(GEMM, image=Xclbin(url=, sha256=))`: the shipped binary is
   a subclass; `image=` is consumed by `__init_subclass__` (replaces
   `External`, the `Xclbin` member, `prebuilt()`/`build()`; every operand needs
@@ -86,8 +86,7 @@ is additive.
 
 GEMV (rung 3):
 
-The shipped header (`iron/operators/gemv/op.py`; the sketch this
-replaced used `columns`/`tile_in`/`tile_out`, which the code never did):
+The header as shipped (`iron/operators/gemv/op.py`):
 
 ```python
 class GEMV(Operator):
@@ -145,14 +144,15 @@ knob, redeclares operands with `via=`, keeps `sequence()`.
 Precedence, once, before identity is taken: **explicit call-site value >
 profile entry > `resolve(dev)` proposal > `auto(default)`**. Proposals apply
 only to still-`auto` fields, so an explicit knob can never be overridden;
-identity after resolution, so two spellings of one array build one image.
+identity is taken after resolution, so two descriptions of one array build
+one image.
 Profile entries name compile-time knobs only; dispatch fields never enter a
 key; a miss never searches; search never runs inside `array()`/`sequence()`
 or a build.
 
-A profile is a data artifact applied in a scope: shipped, as `Profile`.
-Not built: a `GEMV.Tuning` synthesised from the `auto()` fields (`choices=`,
-`legal=` are accepted and recorded, nothing reads them yet).
+A profile is data applied in a scope: shipped, as `Profile`. Not built: a
+`GEMV.Tuning` synthesised from the `auto()` fields (`choices=` and `legal=`
+are accepted and recorded; nothing reads them yet).
 
 Not built. Per-kernel budget: the kernel declares `stack_bytes`/`static_bytes`/`lanes`
 (optional; upstream `KernelContract.stack_bytes`); the template sums against
@@ -172,12 +172,14 @@ profiles are exported slices. Nothing in an operator class knows it exists.
 
 ## Steps
 
-Every step below is done; the log under Progress records each, and this
-text stays as the rationale. Each separately reviewable; each ends at the full device-free run against the
-baseline and the toolchain run (`iron/tests/toolchain`, its own conftest;
-4 failures on `26ce43f`, all needing a device) against its (80 failed / 1680 passed / 38 skipped on `26ce43f`: 40 need
-`pyxrt`, 35 need a device, 5 re-bind a device after clearing it); each fix
-minimal. `pyright` and `ruff check` clean at every commit.
+Every step below is done; the Progress log records each, and this text
+stays as the rationale. Each step is separately reviewable and ends with the
+full device-free run compared against its baseline (80 failed / 1680 passed
+/ 38 skipped on `26ce43f`: 40 need `pyxrt`, 35 need a device, 5 re-bind a
+device after clearing it) and the toolchain run compared against its
+(`iron/tests/toolchain`, its own conftest; 4 failures on `26ce43f`, all
+needing a device). Each fix is minimal. `pyright` and `ruff check` are
+clean at every commit.
 
 0. **Toolchain from source** — done. mlir-aie `aie2p-kernel-peano-opt` (the
    only ref with `linalg.mv(output_rows=)`, which PR 221's GEMV calls) per
@@ -288,59 +290,58 @@ today**.
 
 ## Progress
 
-- `9d59de7` Audit, batch E: docs and tests. README names the paths
-  that exist (`iron/operators/test.py -k AXPY`, the packages under
-  `iron/common`); AGENTS states the elementwise rule with the channel
-  count and the cap, and says how to bind a device on a host without one.
-  This plan's GEMV listing is the shipped header, its decisions use the
-  shipped vocabulary, and the tuning paragraphs say "not built". Fifteen
-  docstrings and comments that narrated history state the present. One
-  `npu2` fixture in `iron/tests/conftest.py` replaces nine copies, and
-  the two tests that bound a device without restoring it use it. The
-  lowering cases list each class once, and say so. Three test files for
-  the public surface that had none: the elementwise template (default
-  split, the two refusals, the resident count, a sweep inherited by an
-  operator written by inheritance), `vectors`/`verify_buffer`, and the
-  case sweeps. Writing the harness test found that `vectors()` drew
-  bfloat16 inputs as small integers, since ml_dtypes' bfloat16 has no
-  numpy float kind, so `centered=` did nothing and ReLU's device test
-  never saw a negative input: bfloat16 draws as the float it is. That
-  changes every device test's inputs, which no host can run; the
-  tolerances are the kernels' contracts, judged the same way. Both
-  suites identical to baseline.
-- `f14f212` Audit, batch D, second half: names and tests. One name
-  per concept: Copy's `num_aie_channels` is `num_channels`, Copy's and
-  Repeat's `transfer_size` is `tile_size` (it is the tile), MHA's
-  `num_of_pipelines` is `num_pipelines`. A `Testing` sweep is a callable
-  of the operator class, so the shared sweeps read the class's `tile_cap`
-  and shim budget and the elementwise templates carry the default sweep:
-  ReLU, GELU, LayerNorm, ElementwiseAdd and ElementwiseMul declare no
-  test of their own (a hello-world operator inherits one), Dequant's and
-  AXPY's byte-identical copies of the shared sweeps are the shared sweeps,
+- `9d59de7` Audit, batch E: docs and tests. README names paths that
+  exist (`iron/operators/test.py -k AXPY`, the packages under
+  `iron/common`). AGENTS states the elementwise divisibility rule with the
+  channel count and the cap, and how to bind a device on a host without
+  one. This plan's GEMV listing matches the shipped header, its decisions
+  use the shipped vocabulary, and the tuning paragraphs are marked "not
+  built". Fifteen docstrings and comments that narrated history now
+  describe the present. One `npu2` fixture in `iron/tests/conftest.py`
+  replaces nine copies; the two tests that bound a device without
+  restoring it use it. The lowering cases list each class once. Three new
+  test files cover public surface that had none: the elementwise template
+  (default split, the two refusals, the resident count, a sweep inherited
+  by a subclass), `vectors`/`verify_buffer`, and the case sweeps. Writing
+  the harness test found that `vectors()` drew bfloat16 inputs as small
+  integers (ml_dtypes' bfloat16 has no numpy float kind), so `centered=`
+  did nothing and ReLU's device test never saw a negative input; bfloat16
+  now draws as a float. That changes every device test's inputs, which no
+  host here can run; the tolerances are the kernels' contracts, judged
+  the same way. Both suites identical to baseline.
+- `f14f212` Audit, batch D, second half: names and tests. One name per
+  concept: Copy's `num_aie_channels` becomes `num_channels`, Copy's and
+  Repeat's `transfer_size` becomes `tile_size` (it is the tile), MHA's
+  `num_of_pipelines` becomes `num_pipelines`. A `Testing` sweep is a
+  callable of the operator class, so the shared sweeps read the class's
+  `tile_cap` and shim budget and the elementwise templates carry the
+  default sweep: ReLU, GELU, LayerNorm, ElementwiseAdd and ElementwiseMul
+  declare no test of their own (a hello-world operator inherits one),
+  Dequant and AXPY use the shared sweeps instead of byte-identical copies,
   and the length list is written once. `WeightedRMSNorm.tile_cap = 4096`
-  says what its sweep hardcoded. The `aie.iron` imports inside eleven
-  `array()` bodies are module imports, as the template's are. Both suites
-  identical to baseline; the case sets on NPU2 are unchanged. Left, and
-  measured: `WeightedRMSNorm.array` and `MemCopy.array` restate the
-  template's array, Copy spells its channel split three times, MHA's
-  `via=` pins are inert on a built image, and nine spellings of an int32
-  RTP word type.
-- `04c3b6a` Audit, batch D, first half: structure. A `param()` may
-  have a callable default, computed from the operator when neither the
-  caller nor an operand's shape gives it (`out_rows = rows * repeat`), and
-  `check_derived(name)` is the one-line check that a value given as well
-  agrees: the seven None-then-fill-in-`validate()` blocks (Repeat, Dequant,
-  RoPE, Copy's two walks and output size, MHA's three lengths, flm's packed
-  sizes) are gone, their fields are plain `int`/`Walk` and the asserts that
-  guarded them with it (Copy's `walks`, MHA's `_lengths` asserts). A
-  callable default is what a checker reads as a default, which `derive=`
-  as a keyword would not have been. `compatible()` runs at construction
-  once every knob is given, so an operator states each extent rule once:
-  GEMM's M and K rules are `validate()`'s alone and N waits for the column
-  count; MHA's padding rule is one `check_derived`; flm's `_check_shape
-  (error)`, which parametrised over `ValueError` against `Incompatible`
-  (a `ValueError`), takes no argument. One `tiling.fifo_depth(elements,
-  dtype)` for the bank rule four operators spelled (Transpose's as a
+  states what its sweep hardcoded. The `aie.iron` imports inside eleven
+  `array()` bodies are module-level, as the template's are. Both suites
+  identical to baseline; the case sets on NPU2 are unchanged. Noted and
+  left: `WeightedRMSNorm.array` and `MemCopy.array` restate the template's
+  array, Copy writes its channel split three times, MHA's `via=` pins are
+  inert on a built image, and the int32 RTP word type is written nine
+  ways.
+- `04c3b6a` Audit, batch D, first half: structure. A `param()` may have
+  a callable default, computed from the operator when neither the caller
+  nor an operand's shape gives it (`out_rows = rows * repeat`), and
+  `check_derived(name)` checks that a value given as well agrees. This
+  removes the seven None-then-fill-in-`validate()` blocks (Repeat,
+  Dequant, RoPE, Copy's two walks and output size, MHA's three lengths,
+  flm's packed sizes): their fields are plain `int`/`Walk`, and the asserts
+  that guarded them (Copy's `walks`, MHA's `_lengths`) are gone. A checker
+  reads a callable default as a default; it would not have read a
+  `derive=` keyword. `compatible()` runs at construction once every knob
+  is given, so an operator states each extent rule once: GEMM's M and K
+  rules live in `validate()` alone and N waits for the column count; MHA's
+  padding rule is one `check_derived`; flm's `_check_shape(error)`, which
+  was parametrised over `ValueError` against `Incompatible` (itself a
+  `ValueError`), takes no argument. One `tiling.fifo_depth(elements,
+  dtype)` replaces the bank rule four operators wrote out (Transpose's as a
   literal 4096). The llama profile's transpose tile fits a context shorter
   than 256. Both suites identical to baseline; real-shape equivalence
   unchanged.
@@ -353,64 +354,66 @@ today**.
   checked; `Scratchpad`, `DispatchTime` and `Profile` are reachable as
   `iron.X`. Construction is keyword-only at runtime as it is to the
   checker (`MV(3, M=..)` bound a field by position), and a positional
-  call outside a graph says where operands go. Compare mode runs each
+  call outside a graph reports where operands go. Compare mode runs each
   step as the xclbin path does, dispatch scalars included. A slice's
-  layout is `(type, offset, length)` as its docstring said, so a
+  layout is `(type, offset, length)` as its docstring says, so a
   full-ELF view of a slice is sized right. An operator whose streams are
   all replicated spans the device. A host without an NPU skips the
   device tests instead of aborting the session, and `--iterations`
-  repeats only the tests that take `npu_runtime` (the device-free tree
-  ran five times over). One `device_name()`; a standalone xclbin is built
-  for the xclbin image. Gates now compare failure sets with the iteration
-  ids stripped: identical.
+  repeats only the tests that take `npu_runtime` (before, the device-free
+  tree ran five times over). One `device_name()`; a standalone xclbin is
+  built for the xclbin image. Gates compare failure sets with the
+  iteration ids stripped: identical.
 - `dd395e4` Audit, batch B: the newcomer bugs. One
   `Operator.resolve_columns(dev, given, num_channels, fits=)` is the
   column-budget rule everywhere: the count given, checked against the
-  shim budget, or the most the budget allows that leaves whole tiles by
-  the operator's own `fits`, else one and `compatible()` names the rule.
-  Elementwise, Softmax, RoPE, GEMV, Transpose and GEMM use it (six
-  spellings gone, with Softmax's bare `max()` on an empty sequence and
-  Transpose resolving to a count it then refused). The knob-free hello
-  world resolves at 1024 elements. GEMM's column count is a knob the
-  device fills (it was `auto(8)`, a constant no device could change, so
-  every GEMM failed on NPU1); its M and K rules stay at construction, N
-  waits for the count; the llama profile no longer says what GEMM picks
-  on its own. Overriding an inherited field without an annotation is a
-  `DeclarationError` naming the fix, where dataclass kept the base's
-  default in silence. Toolchain: four GEMM-on-NPU1 cases that skipped now
-  pass; both suites otherwise identical to baseline. At the scaled-down
-  test shape each GEMM now takes the width its own N fills (8 or 4) where
-  the profile gave all of them 4; the real shape is unchanged.
+  shim budget; otherwise the most the budget allows that leaves whole
+  tiles by the operator's own `fits`; otherwise one, with `compatible()`
+  naming the rule. Elementwise, Softmax, RoPE, GEMV, Transpose and GEMM
+  use it. Six copies of the rule are gone, and with them Softmax's bare
+  `max()` on an empty sequence and Transpose resolving to a count it then
+  refused. The knob-free hello world resolves at 1024 elements. GEMM's
+  column count is a knob the device fills (it was `auto(8)`, a constant
+  no device could change, so every GEMM failed on NPU1); its M and K
+  rules stay at construction and N waits for the count; the llama profile
+  no longer states what GEMM picks on its own. Overriding an inherited
+  field without an annotation is a `DeclarationError` naming the fix,
+  where dataclass silently kept the base's default. Toolchain: four
+  GEMM-on-NPU1 cases that skipped now pass; both suites otherwise
+  identical to baseline. At the scaled-down test shape each GEMM takes
+  the width its own N fills (8 or 4) where the profile gave all of them
+  4; the real shape is unchanged.
 - `ca956de` Audit, batch A: the silent-wrong-answer bugs. A per-call
   value's graph binding is part of what is built: `use_value(name,
-  bound_to)` records the graph value, `design_key` and the device symbol
-  carry it, so two instances alike in every field that read different
-  graph values are two designs with two symbols (they were one, and the
-  later value won). An elementwise tile past the line one core holds is
-  refused at resolution instead of halved (`line_size` is gone: the tile
-  is the line; RMSNorm, LayerNorm and Dequant references keyed on the
-  whole row while the device saw half of it), and Dequant checks its
-  group size divides the line. An explicit instance called in a graph
-  checks its operands' shapes at equal rank, not their element counts (a
-  transposed weight passed). `resolve()` returning `self` is an error, not
-  a silent mutation of the caller's instance. The llama profile's prompt
-  FFN lines say the cap they always were. Both suites identical to
-  baseline; the real-shape equivalence check unchanged.
+  bound_to)` records the graph value, and `design_key` and the device
+  symbol carry it, so two instances alike in every field but reading
+  different graph values are two designs with two symbols (they were one,
+  and the later value won). An elementwise tile past the line one core
+  holds is refused at resolution instead of halved (`line_size` is gone:
+  the tile is the line; the RMSNorm, LayerNorm and Dequant references
+  used the whole row while the device saw half of it), and Dequant checks
+  that its group size divides the line. An explicit instance called in a
+  graph checks its operands' shapes at equal rank, not only their element
+  counts (a transposed weight passed). `resolve()` returning `self` is an
+  error, not a silent mutation of the caller's instance. The llama
+  profile's prompt FFN lines state the cap they always had. Both suites
+  identical to baseline; the real-shape equivalence check unchanged.
 - `dcfe49c` `explain()` (decision 3B's last item) and rank-3 Repeat.
-  `op.explain()` prints the array tier, the sequence tier and each value's
-  route: written once per build (with its number once resolved), per call
-  as a scratchpad word or a regenerated stream, or unused. `optional()`
-  may sit on any axis of a declaration (one per declaration; the rank says
-  whether it is present), so `Repeat` declares `In(rows, optional(seq),
-  cols)` and takes the cache `(G, L, D)` as it is: the four reshapes
-  around llama's two repeats are gone (17 → 13; the rest split heads out
-  of a projection's flat output, which is the projection's rank, not the
-  graph's), the profile's `transfer_size=D` line with them, since a row's
-  last axis is the default. The real-shape equivalence check against the
-  explicit graph stays identical. Both suites identical to baseline.
+  `op.explain()` prints the array tier, the sequence tier and how each
+  value reaches the device: written once per build (with its number once
+  resolved), per call as a scratchpad word or a regenerated stream, or
+  unused. `optional()` may sit on any axis of a declaration (one per
+  declaration; the rank says whether it is present), so `Repeat` declares
+  `In(rows, optional(seq), cols)` and takes the cache `(G, L, D)` as it
+  is. The four reshapes around llama's two repeats are gone (17 → 13; the
+  rest split heads out of a projection's flat output, which is the
+  projection's rank, not the graph's), and so is the profile's
+  `transfer_size=D` line, since a row's last axis is the default. The
+  real-shape equivalence check against the explicit graph stays
+  identical. Both suites identical to baseline.
 - `dcfe49c` Review of the open typing item (Step 7, "open, noted": a
-  per-call value at a graph call site is not a parameter a checker knows).
-  Probed with pyright. The constructor form can be typed: a `Value` that
+  per-call value at a graph call site is not a parameter a checker knows),
+  probed with pyright. The constructor form can be typed: a `Value` that
   is a descriptor-typed dataclass field (`__set__` takes `T | Handle`,
   `__get__` returns the bound value) makes `MV(M=, K=, start="x")` and
   `MV(..., strat=5)` errors and `op.start` a typed read, at the price of
@@ -422,14 +425,14 @@ today**.
   caught at trace time only (it is: `TypeError: has no per-call value`).
   Recommendation: leave it. The constructor form is the rarer one for a
   value (a number there is a resident, which `derive=` already covers),
-  and the annotation tax lands on every operator for a check the graph
+  and the annotation would land on every operator for a check the graph
   form, where values are actually bound, cannot get.
 - `8738ce5` Profiles. `Profile` (`declare/profile.py`, exported from
-  `iron.common`) is data: `add(cls, **fields)` lines whose `param()`
+  `iron.common`) is data: `add(cls, **fields)` entries whose `param()`
   fields select operators by shape (one left out matches any value) and
   whose `auto()` fields are the knobs given. Applied in a `with` scope, the
   operator metaclass fills the knobs a call leaves open before
-  construction, so the precedence the plan asked for holds by
+  construction, so the precedence the plan asks for holds by
   construction: explicit call-site value, then the most specific matching
   entry per knob (equal specificity that disagrees is an error at the
   call), then the declared default or what `resolve(dev)` proposes.
@@ -438,20 +441,21 @@ today**.
   and prefill were tuned with, keyed by shape, plus the GEMMs' width and
   row tile and MHA's pipelines, now derived from the model's shape and
   `max_seq_len` (the three `LlamaGraph` parameters are gone; the
-  scaled-down test shape needs nothing said). The graph function carries
-  it, `iron.graph(profile=)`, so a trace, a compile and a host reference
-  run all see it. What the call sites still spell, each load-bearing: the
-  projections' half-head output tile (q's shape is o's when H·D = E) and
+  scaled-down test shape needs nothing given). The graph function carries
+  the profile (`iron.graph(profile=)`), so a trace, a compile and a host
+  reference run all see it. The call sites still give, each load-bearing:
+  the projections' half-head output tile (q's shape is o's when H·D = E),
   the score row's tile (its size is the FFN's when H·L = F), the prefill
   cache copies' transfer size, and the layout flags and dimensions that
-  are not knobs. Knob keywords at the graph's call sites 37 → 6. **Unverified on
-  hardware:** a device-free check traces the graph at the real shape on
-  NPU2 and NPU1 (decode) and at 512 and 2048 prompt rows (NPU2) with the
-  profile against the explicit graph at `9c546fa`, and every resolved
-  operator is identical; at the scaled-down test shape the prompt norms
-  now span the device's eight columns where they inherited GEMM's four.
-  The bit-identical-logits run on a device (`applications/llama_3_2_1b/
-  test.py`) has not been done. Both suites identical to baseline.
+  are not knobs. Knob keywords at the graph's call sites 37 → 6.
+  **Unverified on hardware:** a device-free check traces the graph at the
+  real shape on NPU2 and NPU1 (decode) and at 512 and 2048 prompt rows
+  (NPU2) with the profile against the explicit graph at `9c546fa`, and
+  every resolved operator is identical; at the scaled-down test shape the
+  prompt norms now span the device's eight columns where they inherited
+  GEMM's four. The bit-identical-logits run on a device
+  (`applications/llama_3_2_1b/test.py`) has not been done. Both suites
+  identical to baseline.
 - `6a4f30e` Step 8, last: `iron.common.image`, `.design` and `.graph`
   re-export what something imports through them and nothing else (image 29
   → 6, design 9 → 7, graph 12 → 10); everything else is imported from its
@@ -463,19 +467,18 @@ today**.
   keyword the graph passes one (class, name) at a time, and requires every
   one to change some resolved operator or fail somewhere
   (`tests/common/graph.py::test_llama_names_only_the_knobs_that_matter`,
-  0.2 s). What it found and what went: `num_aie_columns=cols` on every
-  GEMV, elementwise op and RoPE (their own resolution spans the device,
-  which is what `cols` is); `num_channels=1` and `s=8` on Transpose,
+  0.2 s). Removed as redundant: `num_aie_columns=cols` on every GEMV,
+  elementwise op and RoPE (their own resolution spans the device, which
+  is what `cols` is); `num_channels=1` and `s=8` on Transpose,
   `tile_k=64`/`tile_n=64` on GEMM and `num_channels=1` on the prompt norm
   (the defaults restated); the attention-context GEMV's `tile_out=4` (its
-  input tile). What stays, each proven load-bearing: the tile choices
-  decode ran with (`tile_out=`, `tile_size=`, Transpose's `m`/`n`),
-  Repeat's transfer size, and the graph's three parameters
-  (`num_aie_columns`, `num_of_pipelines`, `tile_m`), which the GEMMs and
-  the prompt norms take and the scaled-down shape needs. Knob keywords in
-  the graph 53 → 37 by count; the remaining tile choices retire only into
-  a measured profile, which needs the device. Both suites identical to
-  baseline.
+  input tile). Kept, each proven load-bearing: the tile choices decode
+  ran with (`tile_out=`, `tile_size=`, Transpose's `m`/`n`), Repeat's
+  transfer size, and the graph's three parameters (`num_aie_columns`,
+  `num_of_pipelines`, `tile_m`), which the GEMMs and the prompt norms take
+  and the scaled-down shape needs. Knob keywords in the graph 53 → 37;
+  the remaining tile choices can retire only into a measured profile,
+  which needs the device. Both suites identical to baseline.
 - `a50cbc7` Step 8: exports. `iron.common.declare` exports the sixteen
   names an operator is written with (`Operator`, `In`, `Out`, `Value`,
   `Scratchpad`, `DispatchTime`, `Shim`, `Xclbin`, `param`, `auto`,
@@ -483,18 +486,17 @@ today**.
   before the merge); the bound members, `BufferView`, `DimRef`,
   `ValueSpec`, `infer`/`infer_kwargs` and `get_shim_dma_limit` are the
   library's and are imported from their modules. `iron.common` is the one
-  doorway for an author: those sixteen plus the elementwise templates and
-  `DesignGenerator`; `Artifacts`/`Design`/`Step` re-exports with no user
+  import an author needs: those sixteen plus the elementwise templates and
+  `DesignGenerator`. `Artifacts`/`Design`/`Step` re-exports with no user
   are gone, and with them the import-order workaround they existed for
-  (`image/fusion.py` now imports `DesignGenerator` from its module, which
-  is where the design-image cycle actually closed). Every file outside
-  `iron/common` imports from `iron.common`, none from `.declare`.
-  RMSNorm's device sweep asks its class for the shim budget instead of
-  re-deriving it. pyright: 0 errors, 0 warnings. Both suites identical to
-  baseline. Measured and left: `iron.common.image/design/graph` each
-  re-export names nothing outside the package imports (image: 25 of 29);
-  they are library-internal doorways, pruned in a step of their own if
-  wanted.
+  (`image/fusion.py` now imports `DesignGenerator` from its module, where
+  the design-image cycle closes). Every file outside `iron/common` imports
+  from `iron.common`, none from `.declare`. RMSNorm's device sweep asks
+  its class for the shim budget instead of re-deriving it. pyright: 0
+  errors, 0 warnings. Both suites identical to baseline. Measured and
+  left: `iron.common.image/design/graph` each re-export names nothing
+  outside the package imports (image: 25 of 29); they are
+  library-internal, and can be pruned in a step of their own.
 - `7f8575b` Step 7, last: ruff and pyright cover the whole `iron`
   package (operators, exports, applications, every test), not only
   `iron/common`; both are clean (pyright: 0 errors). What it took: a
@@ -638,8 +640,8 @@ today**.
   (was `tuning`) sees the device and its own fields; `resolved(dev)` on
   both is idempotent and the only caller of `resolve`. The sequence
   resolves every operator in `prepare()`, before `unique_designs()` takes
-  identity, so two spellings of one array are one design (test added; ffn
-  6 designs / swiglu 4, as before). `for_extent`, `specialised` gone;
+  identity, so two descriptions of one array are one design (test added;
+  ffn 6 designs / swiglu 4, as before). `for_extent`, `specialised` gone;
   `Untunable` → `Unresolvable`. Failure set identical to baseline.
 - `da31c8b` Step 2a: `dim()`/`tunable()` → `param()`/`auto()`. `param`
   is a field specifier with keyword `default=`, so a missing required field

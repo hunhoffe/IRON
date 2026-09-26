@@ -48,7 +48,7 @@ class TracedStep:
 
     @property
     def names(self) -> list:
-        """Buffer names in declaration order, as the runlist spells them."""
+        """Buffer names in declaration order, as the runlist uses them."""
         return [h.buffer_name for h in self.slots]
 
 

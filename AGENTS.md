@@ -250,7 +250,7 @@ xclbin (NPU binary) + insts.bin (instruction sequence)
 ```
 
 **No build context.** An operator takes the device that is current and
-nothing else; the rest is a fact (`iron.common.kernels.kernels_dir()`), an
+nothing else. Everything else is a fixed path (`iron.common.kernels.kernels_dir()`), an
 environment choice (`MLIR_AIE_KERNEL_SOURCES`), or a keyword on the build
 itself (`compile(record="disk")`). On a host without an NPU, bind one to
 resolve and compile against: `aie_utils.set_current_device(from_name("npu2",
@@ -334,8 +334,8 @@ Data movement pattern: L3 → Shim DMA → L2 → L1 (tile local) → Compute
    the symbol, the source, the argument types, aie2's LUT tables and the
    tolerance contract. Bind a further symbol of the same object with
    `fn.object_file.bind(symbol, arg_types)`. `target.kernel(...)` declares
-   one the factories do not cover -- a kernel whose compile flags are the
-   operator's own, like flm's `mm_fused.cc` -- and, with `source_text=`, one
+   a kernel the factories do not cover (one whose compile flags are the
+   operator's own, like flm's `mm_fused.cc`) and, with `source_text=`, one
    written in the operator's own file (the hello-world in
    `iron/tests/toolchain/inline_kernel.py`: a `vadd` in C++ text, the
    argument types the operands' tiles). An operator running one kernel
@@ -398,11 +398,12 @@ logits = net(x_tok, ang_tok, pos=n)
 
 The knobs a graph's operators run with can be a `Profile` rather than
 keywords at every call: entries keyed by operator class and shape, given to
-`iron.graph(profile=...)` (or applied in a `with profile:` scope), so a call
-that leaves a knob open takes the most specific entry's value and a call that gives one keeps
-it (`iron/applications/llama_3_2_1b/graphs.py::profile` is the worked
-example, and `test_llama_names_only_the_knobs_that_matter` proves each
-keyword the graph still spells is one the profile could not have given).
+`iron.graph(profile=...)` (or applied in a `with profile:` scope). A call
+that leaves a knob open takes the most specific entry's value; a call that
+gives one keeps it. `iron/applications/llama_3_2_1b/graphs.py::profile` is
+the worked example, and `test_llama_names_only_the_knobs_that_matter`
+checks that each keyword the graph still passes is one the profile could
+not have given.
 
 Operators with equal `array_key()` share one array; with equal
 `design_key()` they are one build; `op.explain()` prints which fields are

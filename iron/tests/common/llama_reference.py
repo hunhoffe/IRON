@@ -150,11 +150,10 @@ def test_the_prompt_matches_the_forward_and_leaves_decode_its_caches(cpu):
 
 
 def test_the_cumulative_vector_size_is_not_the_context_length(cpu):
-    """§18's first candidate. npu.py used to write the softmax's valid
-    length as a running sum of context lengths, so from the second token on
-    the softmax saw stale zero columns beyond the context as real keys.
-    Modelled here: it drifts from the forward where the correct context
-    length does not.
+    """A softmax valid length written as a running sum of context lengths
+    makes the softmax treat stale zero columns beyond the context as real
+    keys from the second token on. Modelled here: it drifts from the forward
+    where the correct context length does not.
     """
     config, prompt, first, expected = cpu
     graph = llama_graph(config)

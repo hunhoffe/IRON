@@ -5,7 +5,7 @@
 
 Buffers are the host ABI, and an operand declared with a tile is its own
 stream into the array, so direction, dtype and shim binding agree by
-construction. The rest name values no host buffer carries: a
+construction. The other members are values no host buffer carries: a
 :class:`Value` written once per build, or per call when a graph binds it,
 and a :class:`Scratchpad` or :class:`DispatchTime` written per call.
 """
@@ -48,7 +48,7 @@ class Xclbin:
     Given as ``image=`` when a class is declared (``class Shipped(GEMM,
     image=Xclbin(...))``). Every stream of such a class is pinned with
     ``via=`` and every derived value has an ``address``, because nothing else
-    says where its endpoints are; the library emits the sequence against
+    records where its endpoints are; the library emits the sequence against
     those pins.
     """
 
@@ -67,11 +67,11 @@ class Xclbin:
 class _Member(Generic[B]):
     """Base of everything declared unannotated in an Operator body.
 
-    ``__set_name__`` gives the member its name from the language, and the
-    class body gives it its order. On an instance, ``__get__`` returns the
-    bound form built as the class is created (a :class:`BoundBuffer`,
-    :class:`BoundStream` or :class:`BoundValue`), which is ``B``: what a
-    checker sees ``op.A`` as.
+    ``__set_name__`` gives the member its name and the class body gives it
+    its order. On an instance, ``__get__`` returns the bound form built as
+    the class is created (a :class:`BoundBuffer`, :class:`BoundStream` or
+    :class:`BoundValue`). ``B`` is that type, so a type checker sees
+    ``op.A`` as it.
     """
 
     name: str = ""

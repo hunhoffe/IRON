@@ -25,11 +25,11 @@ from .target import Target
 def device_symbol(op: Operator, value: BoundValue) -> str:
     """The device symbol of a per-call value: stable across processes, unique per instance.
 
-    What the host writes through the parameter scratchpad: the instance's
-    name, the value's, and the graph value's when a graph binds one, so
-    two instances alike in every field that read different graph values
-    write through different symbols. The operator gets the first word,
-    through its ``value_symbol`` hook.
+    The host writes the value through the parameter scratchpad under this
+    symbol: the instance's name, the value's name, and the graph value's
+    name when a graph binds one, so two instances alike in every field but
+    reading different graph values write through different symbols. An
+    operator may override it through its ``value_symbol`` hook.
     """
     own = op.value_symbol(value)
     if own is not None:
@@ -131,9 +131,9 @@ def _design_code(op: Operator) -> str:
     """A digest of the operator's class source, its declared bases included,
     for the cache key.
 
-    ``CompilableDesign`` hashes the design *function* by its code, and
-    that function is :func:`build_design` for every declared operator. The
-    code that actually varies is the classes', so it is spelled here.
+    ``CompilableDesign`` hashes the design function by its code, and that
+    function is :func:`build_design` for every declared operator. The code
+    that varies is the classes', so it is hashed here.
     """
     h = hashlib.sha256()
     for cls in reversed(type(op).__mro__):
@@ -165,7 +165,7 @@ def generator_for(op: Operator, image: str = "elf") -> DesignGenerator:
             "image": image,
             "dispatch": dispatch_parameters(op) if image != "elf" else [],
             "code": _design_code(op),
-            # Spelled here, not bound by name from the operator: the
+            # Passed explicitly rather than read from the operator: the
             # device reaches the cache key by identity, the kernel tree
             # by path (pointing IRON at another tree changes the key).
             "dev": op.dev,

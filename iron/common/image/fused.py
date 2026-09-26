@@ -62,7 +62,7 @@ def build_fused_mlir(seq, plan=None) -> str:
 def _design_sources(generator) -> list:
     """The modules a design is defined in: its function's, and its class's.
 
-    A design's own key spells the operator's class source; the fused key
+    A design's own key hashes the operator's class source; the fused key
     also takes its modules, since a helper beside the class is as much the
     design as the class is.
     """

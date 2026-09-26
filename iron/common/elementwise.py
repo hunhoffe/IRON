@@ -4,24 +4,24 @@
 """The shared elementwise design: N flat buffers in, one of the same size out.
 
 One array serves every elementwise kernel IRON ships. It places one core per
-(column, channel), each streaming fixed-size lines in and out; an operator
-declares a flat buffer per stream, the line as its tile, and its runtime
-sequence is derived -- the buffer is split evenly across the cores' fifos
-and drained back the same way.
+(column, channel), each streaming fixed-size lines in and out. An operator
+declares a flat buffer per stream with the line as its tile, and its
+runtime sequence is derived: the buffer is split evenly across the cores'
+fifos and drained back the same way.
 
 :class:`UnaryElementwise` and :class:`BinaryElementwise` are the two operand
-shapes, and nothing more: the array reads the operands it was declared
-with, so an operator with a third input needs no new code here.
+shapes. The array reads whatever operands are declared, so an operator with
+a third input needs no new code here.
 
 The core's trip count is a :class:`~iron.common.declare.Value` the sequence
 writes before the first transfer, so the array does not depend on the
 extent and one array serves every size (OPERATOR_MODEL_PLAN.md §3). This is
-where the template parts company with upstream's
+the one difference from upstream's
 :func:`aie.iron.algorithms.transform_parallel`, which is otherwise the same
-design: that one takes the tensor at build time and folds the trip count
-into the core program, and owns the runtime sequence so it can issue the
-taps. An array here returns workers and leaves the sequence to the
-library, which is what lets several operators fuse into one image.
+design: it takes the tensor at build time, folds the trip count into the
+core program, and owns the runtime sequence so it can issue the taps. An
+array here returns workers and leaves the sequence to the library, which
+lets several operators fuse into one image.
 
 A concrete operator is one small subclass, naming the kernel each core
 calls::
@@ -33,12 +33,12 @@ calls::
         def reference(self, x):
             return np.maximum(x, 0)
 
-:mod:`aie.iron.kernels` is where a kernel comes from: its factories return
-the ``ExternalFunction`` for a symbol, its source and its argument types,
-and handle aie2's LUT tables. An operator whose kernel takes more than the
-line length (leaky_relu's alpha) or takes its arguments in another order
-(axpy's scalar) overrides :meth:`Elementwise.kernel_call`; what it reads
-there is declared ``param(..., array=True)``, since the array bakes it.
+Kernels come from :mod:`aie.iron.kernels`: its factories return the
+``ExternalFunction`` for a symbol, its source and its argument types, and
+handle aie2's LUT tables. An operator whose kernel takes more than the line
+length (leaky_relu's alpha) or takes its arguments in another order (axpy's
+scalar) overrides :meth:`Elementwise.kernel_call`; a field read there is
+declared ``param(..., array=True)``, since the array bakes it in.
 """
 
 from __future__ import annotations
@@ -77,8 +77,8 @@ class Elementwise(Operator):
     bank drops the fifo depth to one.
     """
 
-    # None: the most columns the device's shim budget allows that leave
-    # every core whole lines, one channel each, default_tile lines.
+    # Left None, the columns resolve to the most the device's shim budget
+    # allows that give every core whole lines, and the tile to default_tile.
     num_aie_columns: int = auto()
     num_channels: int = auto(1)
     tile_size: int = auto()

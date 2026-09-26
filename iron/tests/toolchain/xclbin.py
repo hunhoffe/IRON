@@ -81,7 +81,7 @@ def test_flm_gemm_links_its_configuration_xclbin_and_its_own_instructions(npu2):
     assert design.name == op.config_name
     assert design.entry.directory != artifacts.entry.directory
     # The shape's own compile is instructions-only: its entry holds the
-    # stream and nothing else -- no second xclbin, no second kernel build.
+    # stream and nothing else: no second xclbin, no second kernel build.
     own = artifacts.entry
     assert own.xclbin is None and own.elf is None and own.objects == ()
     assert own.insts is not None

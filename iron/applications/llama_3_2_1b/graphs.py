@@ -14,16 +14,16 @@ alone. Both end in the same norm and head.
 
 Each shape compiles its own version of the one function, and every version
 runs in the function's one scratch arena (:mod:`iron.common.graph.compiled`):
-the weights and the caches -- the caches are :func:`iron.state`, the weights
-closed over from ``config.weights`` -- sit at one offset in every image and
-are uploaded once, so the caches a prompt writes are the ones the next
-decode step reads, and there is nothing to hand over.
+the weights (closed over from ``config.weights``) and the caches
+(:func:`iron.state`) sit at one offset in every image and are uploaded
+once, so the caches a prompt writes are the ones the next decode step
+reads, and there is nothing to hand over.
 
-The knobs the operators run with are a :class:`Profile`
-(:func:`profile`), the graph function's own, applied whenever its body runs: the tile choices decode
-and prefill were tuned with, keyed by operator shape, and the GEMMs' width
-and row tile and MHA's pipeline count, which follow the model's shape and
-``max_seq_len``. A call site spells a knob only where a shape does not
+The knobs the operators run with are a :class:`Profile` (:func:`profile`),
+the graph function's own, applied whenever its body runs: the tile choices
+decode and prefill were tuned with, keyed by operator shape, and the GEMMs'
+width and row tile and MHA's pipeline count, which follow the model's shape
+and ``max_seq_len``. A call site gives a knob only where a shape does not
 determine it.
 
 ``config`` is the model's shape (``n_heads``, ``n_kv_groups``, ``head_dim``,
@@ -71,8 +71,8 @@ def profile(config, max_seq_len) -> Profile:
     device's columns for its norms and elementwise ops, one row per tile,
     and MHA's pipelines and the GEMMs' row tile fit ``max_seq_len``.
 
-    Every value is one the graph ran with before it was a profile; none has
-    been re-measured. A tuner writing this profile replaces these lines.
+    These are the values the graph was tuned with; none has been
+    re-measured. A tuner writing this profile replaces these lines.
     """
     H, D = config.n_heads, config.head_dim
     E, F, V = config.emb_dim, config.hidden_dim, config.vocab_size
@@ -139,7 +139,7 @@ class LlamaGraph:
             # <grouped query attention>
             # Matrices are read as the checkpoint ships them, (out, in):
             # GEMV's (M, K). The projections into heads write half a head
-            # per tile; q's shape is o's when H * D == E, so it is said here.
+            # per tile; q's shape is o's when H * D == E, so it is given here.
             q, k, v = (GEMV(w, h, tile_size_output=D // 2) for w in (lw.q, lw.k, lw.v))
             q = RoPE(q.reshape(H, D), angles)
             k = RoPE(k.reshape(G, D), angles)
@@ -150,7 +150,7 @@ class LlamaGraph:
             v_all = Repeat(values[i], repeat=H // G)
             scores = GEMV(k_all, q)
             # One row of scores per column; its size is the FFN's when
-            # H * L == F, so the tile is said here.
+            # H * L == F, so the tile is given here.
             scores = ElementwiseMul(scores, scale, tile_size=L // cols)
             # The valid row length is the context length: the kernel masks
             # every column from there on, so the cache's unwritten tail

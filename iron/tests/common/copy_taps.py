@@ -4,7 +4,7 @@
 """The descriptors Copy issues for the copies llama makes, pinned.
 
 The descriptors are recorded as (offset, sizes, strides) per channel,
-exactly, and the copies spelled as views must issue them.
+exactly, and the copies written as views must issue them.
 """
 
 from typing import Any

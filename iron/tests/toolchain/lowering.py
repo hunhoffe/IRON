@@ -7,7 +7,7 @@ Needs the mlir-aie package (its bindings generate the MLIR, its ``aiecc``
 lowers it) but neither Peano nor a device: ``--get-npu-insts`` places,
 routes, assigns buffer addresses, lowers the DMAs and emits the runtime
 sequence's instructions without compiling a core. What that checks is
-everything the operator model owns: the array a ``design()`` builds is
+everything the operator model owns: the array an ``array()`` builds is
 placeable and routable, every descriptor a sequence issues is legal, the
 resident writes and barrier sets lower. What it cannot check is the
 kernels, which need Peano, and the numbers, which need hardware.

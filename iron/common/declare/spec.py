@@ -27,8 +27,8 @@ def from_spec(
 ) -> type:
     """An operator class from an exported description, at run time.
 
-    The dynamic escape for a design whose shapes come from a file rather
-    than a formula (swiglu_prefill_stream's stream-dse export). ``inputs``
+    For a design whose shapes come from a file rather than a formula
+    (swiglu_prefill_stream's stream-dse export). ``inputs``
     and ``outputs`` are literal shapes in argument order; ``params`` are
     the numbers that identify the instance (they become ``param()`` fields
     with those defaults and reach the name); ``key`` identifies the

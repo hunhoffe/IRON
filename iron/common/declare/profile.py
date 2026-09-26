@@ -8,9 +8,8 @@ dimensions and values for its knobs. Applied in a ``with`` scope, it fills
 the knobs a call leaves open as the operator is constructed, before
 :meth:`~.operator.Operator.resolve` sees it, so the precedence is the
 explicit call-site value, then the profile, then the knob's declared
-default or what resolution proposes. A profile
-is what a tuner writes and a graph applies; nothing in an operator class
-knows one exists.
+default or the value resolution proposes. A tuner writes a profile and a
+graph applies it; operator classes know nothing about profiles.
 """
 
 from __future__ import annotations

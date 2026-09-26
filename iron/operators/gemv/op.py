@@ -56,9 +56,9 @@ class GEMV(Operator):
     epilogue: str = param(default="none", repr=False, array=True)
 
     # A single batch carries no batch dimension at all, rather than one of
-    # extent 1, so the unbatched shapes stay exactly as they were. One fifo
-    # per column for each of A, B and C; B is the whole vector, sent to every
-    # column's own fifo (see sequence).
+    # extent 1, so an unbatched operator has 2-D shapes. One fifo per column
+    # for each of A, B and C; B is the whole vector, sent to every column's
+    # own fifo (see sequence).
     A = In(
         optional(num_batches),
         M,
@@ -107,16 +107,16 @@ class GEMV(Operator):
     def _legal_kernel_vector_size(self) -> int:
         """The vector width the matvec kernel is compiled at.
 
-        mv.cc requires ``DIM_K % VEC_SIZE == 0`` *and* ``DIM_K >= 2 * VEC_SIZE``
-        -- its inner loop carries a pipelining pragma that assumes at least two
-        iterations, and both are static_asserts, so getting this wrong is a C++
-        error from inside a kernel build rather than anything a caller can read.
-        The second condition is the one that is easy to miss: K == VEC_SIZE
-        divides evenly and still does not build.
+        mv.cc requires ``DIM_K % VEC_SIZE == 0`` and ``DIM_K >= 2 * VEC_SIZE``:
+        its inner loop carries a pipelining pragma that assumes at least two
+        iterations. Both are static_asserts, so getting this wrong is a C++
+        error from inside a kernel build rather than a message a caller can
+        read. The second condition is easy to miss: K == VEC_SIZE divides
+        evenly and still does not build.
 
         Left unset, the widest legal width for this K is chosen, so callers do
         not have to know the rule. Set explicitly, the value is checked and the
-        reason is spelled out here instead of in Peano's output.
+        reason reported here instead of in Peano's output.
         """
         legal = [
             size
@@ -198,11 +198,11 @@ class GEMV(Operator):
         K, cols = self.K, self.num_aie_columns
         tile_size_input, tile_size_output = self.tile_size_input, self.tile_size_output
 
-        # The kernels are declared and built by one object each. Constructing
-        # them here rather than at import is required, not stylistic: an
-        # ExternalFunction registers itself into a process-global set that
-        # CompilableDesign clears when it starts generating, so anything built
-        # before that is discarded.
+        # The kernels are declared and built by one object each. They must be
+        # constructed here rather than at import: an ExternalFunction
+        # registers itself into a process-global set that CompilableDesign
+        # clears when it starts generating, so anything built before that is
+        # discarded.
         matvec = linalg.mv(
             tile_size_input,
             K,

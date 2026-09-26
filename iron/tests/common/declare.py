@@ -655,7 +655,7 @@ def test_inference_binds_the_fields_from_the_operands():
 
 
 # --------------------------------------------------------------------------
-# Two behaviours the old shape functions existed to express, now declared
+# Two behaviours of declared shapes
 # --------------------------------------------------------------------------
 
 

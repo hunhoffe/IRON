@@ -4,10 +4,10 @@
 """Operand shapes to dimension fields: the lookup a declaration makes possible.
 
 A host buffer's dimension is a :func:`~iron.common.declare.param` field or an
-integer literal, nothing else (see the package docstring), so binding an
-operator to its operands is a lookup over the declared members rather than a
-solver. These take the class because that is all they read: its members, its
-name for the errors, and its fields.
+integer literal (see the package docstring), so binding an operator to its
+operands is a lookup over the declared members, not a solver. The functions
+take the class because that is all they read: its members, its fields, and
+its name for error messages.
 """
 
 from __future__ import annotations
@@ -25,11 +25,10 @@ from .member import _Buffer
 def infer(cls, *operand_shapes, outputs=(), **given) -> dict[str, Any]:
     """Bind dimension fields from operand shapes, in ``In`` declaration order.
 
-    A lookup, not a solver: each declared dimension is a field or a
-    literal. Returns ``{field: value}``; ``given`` pins values and is
-    checked for agreement.
-    ``outputs`` are the shapes of caller-supplied ``Out`` buffers, in
-    declaration order, which bind the same way.
+    Each declared dimension is a field or a literal, so this is a lookup.
+    Returns ``{field: value}``; ``given`` pins values and is checked for
+    agreement. ``outputs`` are the shapes of caller-supplied ``Out`` buffers,
+    in declaration order, which bind the same way.
     """
     ins = [
         m
