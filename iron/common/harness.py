@@ -63,7 +63,8 @@ def vectors(op, *, seed=42, scale=4.0, normal=(), centered=(), **given) -> Vecto
         # A buffer whose dtype follows tuning (flm GEMM's packed B) has none
         # until tuned; the unpacked operand a shape override asks for is bf16.
         dtype = np.dtype(bfloat16 if b.dtype is None else b.host_dtype)
-        if dtype.kind not in "fc":
+        # ml_dtypes' bfloat16 has no numpy kind of its own: a float, as here.
+        if dtype.kind not in "fc" and dtype != bfloat16:
             t = rng.integers(0, int(scale) + 1, shape).astype(dtype)
         else:
             draw = rng.standard_normal if b.name in normal else rng.random
@@ -288,6 +289,3 @@ def run_test(
         f"\nLatency (us): {latency_us:.1f}  Effective Bandwidth: {bandwidth_gbps:.6e} GB/s"
     )
     return Run(errors, latency_us, bandwidth_gbps)
-
-
-# -- one test per operator ------------------------------------------------------

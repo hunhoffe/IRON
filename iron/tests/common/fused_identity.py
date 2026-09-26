@@ -31,12 +31,7 @@ def _bind_npu2():
     aie_utils.set_current_device(from_name("npu2", n_cols=8))
 
 
-@pytest.fixture(autouse=True)
-def device():
-    previous = aie_utils.get_current_device()
-    _bind_npu2()
-    yield
-    aie_utils.set_current_device(previous)
+pytestmark = pytest.mark.usefixtures("npu2")  # a bound device, restored
 
 
 def _sequence(shapes):

@@ -179,17 +179,6 @@ CASES = [
             ),
         ],
     ),
-    # mlir-aie's LUT activations need a tile of at least 1024.
-    (
-        "sigmoid",
-        "Sigmoid",
-        [dict(size=1024, num_aie_columns=1, num_channels=1, tile_size=1024)],
-    ),
-    ("silu", "SiLU", [dict(size=1024, num_aie_columns=1, tile_size=256)]),
-    ("softmax", "Softmax", [dict(rows=16, cols=64)]),
-    # SwiGLUDecode / SwiGLUPrefill are graph functions and SwiGLUPrefillStream
-    # an OperatorSequence: none declares buffers of its own. Only the leaf
-    # operator of that family does, the per-group stream operator, covered here.
     (
         "tanh",
         "Tanh",
@@ -207,6 +196,7 @@ CASES = [
         ],
     ),
 ]
+assert len({(m, c) for m, c, _ in CASES}) == len(CASES), "a class is listed twice"
 
 _DTYPE_ALIASES = {bfloat16: "bfloat16"}
 

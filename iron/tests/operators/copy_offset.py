@@ -12,10 +12,8 @@ a mis-scaled addend (elements vs bytes) cannot land in the wrong slot
 undetected.
 """
 
-import aie.utils as aie_utils
 import numpy as np
 import pytest
-from aie.iron.device import from_name
 from ml_dtypes import bfloat16
 
 import iron
@@ -27,12 +25,7 @@ from iron.operators.copy import Copy
 N_KV, HEAD_DIM, SEQ = 8, 64, 128
 
 
-@pytest.fixture(autouse=True)
-def device():
-    previous = aie_utils.get_current_device()
-    aie_utils.set_current_device(from_name("npu2", n_cols=8))
-    yield
-    aie_utils.set_current_device(previous)
+pytestmark = pytest.mark.usefixtures("npu2")  # a bound device, restored
 
 
 @pytest.mark.supported_devices("npu2")

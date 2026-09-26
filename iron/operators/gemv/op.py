@@ -290,7 +290,7 @@ class GEMV(Operator):
         return workers
 
     def sequence(self, rt):
-        """The runtime sequence, kept as it was: B once per column in an outer
+        """The runtime sequence: B once per column in an outer
         group, then A/C per batch, coalesced into one iterated descriptor per
         column when the shim can hold it.
         """
@@ -332,8 +332,7 @@ class GEMV(Operator):
         # BD: within one batch the run is contiguous, the batch stride is the
         # full matrix, and the run is split into [run_hi, run_lo] only to fit
         # the shim's wrap field. iron.common.tiling states the general rules;
-        # this keeps GEMV's own (both halves <= 1023 elements, run_lo even) so
-        # the instruction stream stays what it was.
+        # this keeps GEMV's own (both halves <= 1023 elements, run_lo even).
         GRAN_ELEMS = 2  # 4-byte shim granularity / 2-byte bf16 element
         MAX_STRIDE = ((1 << 20) - 1) * GRAN_ELEMS
 

@@ -213,8 +213,7 @@ class MHA(Operator):
         )
         mha_object = matmul_QK.object_file
 
-        # mha.cc used to re-export a zero of its own over the (DIM_M, DIM_N)
-        # tile; upstream's standalone zero over the same tile is the same fill.
+        # Upstream's standalone zero over the (DIM_M, DIM_N) tile is the fill.
         zero_kernel = kernels.zero(tile_size=(B_q, B_kv), dtype=dtype)
         # The 16-bit passThroughLine, bound to the bf16 scale buffers.
         memcopy_kernel_scale = kernels.eltwise.passthrough(

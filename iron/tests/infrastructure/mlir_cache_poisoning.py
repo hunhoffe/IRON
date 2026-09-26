@@ -29,9 +29,7 @@ device), not to compile anything.
 
 import re
 
-import aie.utils as aie_utils
 import pytest
-from aie.iron.device import from_name
 
 import iron
 from iron.common.image import build_fused_mlir
@@ -41,12 +39,7 @@ SIZE = 1024
 TILE = 128
 
 
-@pytest.fixture(autouse=True)
-def device():
-    previous = aie_utils.get_current_device()
-    aie_utils.set_current_device(from_name("npu2", n_cols=8))
-    yield
-    aie_utils.set_current_device(previous)
+pytestmark = pytest.mark.usefixtures("npu2")  # a bound device, restored
 
 
 def _operator():

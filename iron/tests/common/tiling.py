@@ -34,7 +34,7 @@ def test_granularity_per_dtype():
 
 
 def test_channeled_unary_taps_are_reproduced():
-    # channeled_unary_design.py: chunk = size // cols // channels, fifo idx = i*ch + j,
+    # The channeled unary rule: chunk = size // cols // channels, fifo idx = i*ch + j,
     # tap = ((1,size), chunk*i*ch + chunk*j, [1,1,1,chunk], [0,0,0,1]).
     size, cols, ch = 4096, 4, 2
     chunk = size // cols // ch
@@ -76,7 +76,7 @@ def test_gemv_unbatched_taps_are_reproduced():
 
 
 def test_gemv_batched_coalesces_into_one_iterated_descriptor():
-    # gemv/op.py coalesced_tap: sizes [1, nb, run_hi, run_lo], strides [0, M*K, run_lo, 1]
+    # GEMV's batched fill: sizes [1, nb, run_hi, run_lo], strides [0, M*K, run_lo, 1]
     # with (run_hi, run_lo) = split_run((M//cols)*K).
     M, K, cols, nb = 256, 128, 8, 100
     run = (M // cols) * K  # 4096 > 1023: needs the hi/lo split
@@ -200,7 +200,7 @@ def test_legalize_factors_an_oversize_outer_dim_when_a_slot_is_free():
     from iron.common.tiling import legalize
 
     # mha's K_tiles case: a (2048, 64) tile of a 64-wide buffer is contiguous,
-    # so it is one linear transfer: what mha's legalize_tap did by hand.
+    # so it is one linear transfer.
     (acc,) = legalize(2048 * 64, 0, [1, 1, 2048, 64], [0, 0, 64, 1], bfloat16)
     assert acc == contiguous(2048 * 64, 0, 2048 * 64)
     # A non-contiguous tile with an oversize d1 is factored into the free d2;

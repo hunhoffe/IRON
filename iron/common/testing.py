@@ -7,8 +7,7 @@ An operator knows its own valid shapes: which column counts divide its
 size, how large a line its kernel holds, which layout flags change what is
 built. So it declares them beside itself, as :class:`Testing` on the class,
 and ``iron/operators/test.py`` runs every declaration against the
-operator's ``reference()`` on a device. What that replaced was one test
-module per operator, each a single call with the same body.
+operator's ``reference()`` on a device.
 
 ``iron/tests/common/cases.py`` is a different matrix and stays: one small
 pinned case per shape decision, constructed device-free and lowered by the

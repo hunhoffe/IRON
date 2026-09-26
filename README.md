@@ -128,7 +128,7 @@ If starting from `Ubuntu 24.04` you may need to update the Linux kernel to 6.11+
 
 1. To test your installation, you can try to build and run the example below:
    ```bash
-   pytest ./iron/operators/axpy/
+   pytest iron/operators/test.py -k AXPY
    ```
 
 ### Building/Using & Testing Operators
@@ -160,7 +160,7 @@ pytest iron/operators/
 To run a specific operator's tests:
 
 ``` bash
-pytest iron/operators/axpy/
+pytest iron/operators/test.py -k AXPY
 ```
 
 ### Git Hooks (Optional but Recommended)
@@ -197,14 +197,14 @@ See [iron/applications/llama_3_2_1b/README.md](./iron/applications/llama_3_2_1b/
 IRON uses a three-layer architecture:
 
 1. **Operators** (`iron/operators/`): High-level Python API for NPU operations
-   - Each operator has: `op.py` (the declared operator, with its array and the CPU reference), `test.py` (validation)
+   - Each operator is one declared class with its array and its CPU reference (a file at the root, or `op.py` in a package), and a `test = Testing(...)` that `iron/operators/test.py` runs; a few keep a `test.py` beside them for a device test of their own
 
 2. **AIE Kernels** ([mlir-aie `aie_kernels/`](https://github.com/Xilinx/mlir-aie/tree/main/aie_kernels)): Low-level C++ compute kernels
    - Organized by architecture: `generic/`, `aie2/`, `aie2p/`
    - Vectorized using AIE API for optimal performance
 
 3. **Common Infrastructure** (`iron/common/`): Compilation, device management, and utilities
-   - The declaration layer (`declare.py`), the derived runtime sequence (`build.py`, `tiling.py`) and graph functions (`graph.py`, `packaging.py`)
+   - The declaration layer (`declare/`), the design and its runtime sequence (`design/`, `tiling.py`), the images (`image/`) and graph functions (`graph/`)
    - MLIR-AIE compilation pipeline
    - XRT runtime integration
 

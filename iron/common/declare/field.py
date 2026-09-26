@@ -129,7 +129,7 @@ class DimRef:
 
     As a class is created, each field is re-attached to the
     class as a ``DimRef``, so ``GEMV.K`` names the dimension from
-    outside the class body while ``ov.K`` on an instance is the integer. A
+    outside the class body while ``op.K`` on an instance is the integer. A
     non-data descriptor: instance attributes take precedence.
     """
 

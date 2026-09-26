@@ -114,13 +114,12 @@ class OperatorSequence:
         self.name = name + "_shared" if share_designs else name
         self.input_args = input_args
         self.output_args = output_args
-        # Planned byte offsets per buffer name; None keeps the
-        # back-to-back layout this had before.
+        # Planned byte offsets per buffer name; None packs the buffers back
+        # to back.
         self.buffer_offsets = buffer_offsets
         # Pool intermediates whose lifetimes do not overlap. On by default:
         # the layout is inferred from the runlist, so a caller does not supply
-        # it. Pass False to fall back to packing every buffer back to back,
-        # which is what this did before planning existed.
+        # it. Pass False to pack every buffer back to back instead.
         self.plan_scratch = plan_scratch
         self.explicit_buffer_sizes = (
             buffer_sizes or {}

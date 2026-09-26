@@ -250,10 +250,12 @@ xclbin (NPU binary) + insts.bin (instruction sequence)
 ```
 
 **No build context.** An operator takes the device that is current and
-nothing else. What used to sit on a context object is either a fact
-(`iron.common.kernels.kernels_dir()`), an
+nothing else; the rest is a fact (`iron.common.kernels.kernels_dir()`), an
 environment choice (`MLIR_AIE_KERNEL_SOURCES`), or a keyword on the build
-itself (`compile(record="disk")`). Kernels are built with Peano; IRON has
+itself (`compile(record="disk")`). On a host without an NPU, bind one to
+resolve and compile against: `aie_utils.set_current_device(from_name("npu2",
+n_cols=8))` (`aie.iron.device.from_name`); the test tree's `npu2` fixture
+does that and restores the previous device. Kernels are built with Peano; IRON has
 no xchesscc path, and a kernel that needs one asks the `aie.iron.kernels`
 factory for it (`use_chess=True`) rather than IRON carrying a global flag.
 
@@ -290,8 +292,7 @@ Common operator parameters and their constraints:
 
 **Element-wise ops** (add, mul, relu, gelu, etc.):
 
-- `size % (num_aie_columns * tile_size) == 0`
-- `size % tile_size == 0`
+- `size % (num_aie_columns * num_channels * tile_size) == 0`, with `tile_size` at most the class's `tile_cap` (4096 elements unless it says otherwise); left out, the column count is the most that divide
 
 ### Memory Hierarchy
 

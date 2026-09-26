@@ -34,17 +34,19 @@ run in CI with mlir-aie's configuration.
   Compile-time = baked into the artifact (array *or* sequence; which one is
   derived from where the field is used); dispatch-time = never baked.
 - **1A** The array's dependency set is *declared*: a field is array-tier iff
-  it appears in an operand's `tile=`/`per=`/`depth=` or says so itself, `param(..., array=True)`.
+  it appears in an operand's `tile=`/`per=`, in a stream's dtype, or says so
+  itself, `param(..., array=True)`/`auto(..., array=True)`.
   `array(target)` receives a view exposing only those and raises on any other
   read. No learned read-sets.
 - **2B** `In(*shape, dtype=, tile=, per=, depth=, via=)` absorbs `StreamIn`:
   one declaration per operand; `op.A[view]` a region, `op.A.lane(i)` a shim
   endpoint, `op.A.tile` the fifo type. Shape args stay extent-only; `tile=`/
-  `per=` may be knobs. `Stream(...)` remains for the rare internal stream.
-- **3B** `Value(dtype, derive=..., address=, lock=)` replaces `Resident` and
-  `Scratchpad`; the call site decides the tier (an int is compiled in, a `DispatchTime`
-  graph parameter never is); `.read()` in a core body picks the lowering
-  per image. `design_key`/`explain()` print which values were baked.
+  `per=` may be knobs.
+- **3B** `Value(dtype, derive=..., address=, lock=)` replaces `Resident`: a
+  resident when derived, a per-call value when a graph binds it;
+  `Scratchpad[T]`/`DispatchTime[T]` remain the graph's per-call annotations
+  (a `DispatchTime` value is never compiled in). `design_key` carries the
+  bound values and `explain()` prints each value's route.
 - **4B** `Shipped(GEMM, image=Xclbin(url=, sha256=))`: the shipped binary is
   a subclass; `image=` is consumed by `__init_subclass__` (replaces
   `External`, the `Xclbin` member, `prebuilt()`/`build()`; every operand needs
@@ -84,35 +86,30 @@ is additive.
 
 GEMV (rung 3):
 
+The shipped header (`iron/operators/gemv/op.py`; the sketch this
+replaced used `columns`/`tile_in`/`tile_out`, which the code never did):
+
 ```python
 class GEMV(Operator):
-    M: int = param()                          # sequence-tier: only in a shape
-    K: int = param()                          # array-tier: in tile=(tile_in, K)
-    batches: int = param(default=1)
-    columns: int = auto()                     # shim budget of the device
-    tile_in: int = auto(2, choices=(1, 2, 4, 8))
-    tile_out: int = auto()                    # largest divisor of M//columns that fits L1
-    vector_width: int = auto()                # the kernel contract's vec_size
-    epilogue: str = param(default="none", array=True)   # read by array(), named by no tile
+    M: int = param()                    # sequence-tier: only in a shape
+    K: int = param()                    # array-tier: in A's tile
+    num_batches: int = param(default=1)
+    num_aie_columns: int = auto()       # the most the shim budget allows that divide M
+    tile_size_input: int = auto(2)
+    tile_size_output: int = auto()      # None: tile_size_input
+    kernel_vector_size: int = auto(repr=False, array=True)
+    epilogue: str = param(default="none", repr=False, array=True)
 
-    A = In(optional(batches), M, K, tile=(tile_in, K), per=columns, depth=2)
-    B = In(optional(batches), K,    tile=(K,),         per=columns, depth=1)
-    C = Out(optional(batches), M,   tile=(tile_out,),  per=columns, depth=2)
-    rows = Value(np.int32, derive=lambda op: op.M // op.columns)
+    A = In(optional(num_batches), M, K, tile=(tile_size_input, K), per=(num_aie_columns,), depth=2)
+    B = In(optional(num_batches), K, tile=(K,), per=(num_aie_columns,), depth=1)
+    C = Out(optional(num_batches), M, tile=(tile_size_output,), per=(num_aie_columns,), depth=2)
+    tiles = Value(np.int32, derive=lambda op: op.M // (op.num_aie_columns * op.tile_size_output))
 
-    def resolve(self, dev): ...   # device AND extents; proposals for auto fields
-    def check(self): ...          # after resolution
-    def array(self, target): ...  # sees only K, columns, tile_in, tile_out, vector_width, epilogue
-    def sequence(self, rt):
-        share = self.M // self.columns
-        with rt.group():
-            for i in range(self.columns):
-                rt.fill(self.B.lane(i), self.B[...])
-        with rt.group():
-            for i in range(self.columns):
-                rt.fill(self.A.lane(i), self.A[..., i*share:(i+1)*share, :])
-            for i in range(self.columns):
-                rt.drain(self.C.lane(i), self.C[..., i*share:(i+1)*share], wait=True)
+    def validate(self): ...             # the knobs against each other, at construction
+    def resolve(self, dev): ...         # the device and the extents: every auto() filled
+    def compatible(self): ...           # the extents against the resolved knobs
+    def array(self, target): ...        # sees the array tier alone
+    def sequence(self, rt): ...         # fills and drains per lane
     def reference(self, A, B): ...
 ```
 
@@ -153,17 +150,17 @@ Profile entries name compile-time knobs only; dispatch fields never enter a
 key; a miss never searches; search never runs inside `array()`/`sequence()`
 or a build.
 
-The library synthesises `GEMV.Tuning` from the `auto()` fields (`choices=`,
-`legal=`), so profiles and a tuner have a typed object without an authored
-nested class. A profile is a data artifact applied in a scope.
+A profile is a data artifact applied in a scope: shipped, as `Profile`.
+Not built: a `GEMV.Tuning` synthesised from the `auto()` fields (`choices=`,
+`legal=` are accepted and recorded, nothing reads them yet).
 
-Per-kernel budget: the kernel declares `stack_bytes`/`static_bytes`/`lanes`
+Not built. Per-kernel budget: the kernel declares `stack_bytes`/`static_bytes`/`lanes`
 (optional; upstream `KernelContract.stack_bytes`); the template sums against
 the *resolved* device's `core_memory_bytes`, chooses tile/depth, and checks
 with a breakdown in the error. One legality predicate validates a pin, bounds
 a default, prunes a search.
 
-Tuning digest, two content-keyed tiers: kernel tier (slow, once per kernel
+Not built. Tuning digest, two content-keyed tiers: kernel tier (slow, once per kernel
 digest × knob point × device type × toolchain; built on upstream
 `kernel_design` + `run_iters`; records metrics, L1 bytes, and the tolerance
 it was judged at) and operator/graph tier (fast: `design_key` minus tuned
@@ -175,7 +172,8 @@ profiles are exported slices. Nothing in an operator class knows it exists.
 
 ## Steps
 
-Each separately reviewable; each ends at the full device-free run against the
+Every step below is done; the log under Progress records each, and this
+text stays as the rationale. Each separately reviewable; each ends at the full device-free run against the
 baseline and the toolchain run (`iron/tests/toolchain`, its own conftest;
 4 failures on `26ce43f`, all needing a device) against its (80 failed / 1680 passed / 38 skipped on `26ce43f`: 40 need
 `pyxrt`, 35 need a device, 5 re-bind a device after clearing it); each fix
@@ -290,6 +288,26 @@ today**.
 
 ## Progress
 
+- (this commit) Audit, batch E: docs and tests. README names the paths
+  that exist (`iron/operators/test.py -k AXPY`, the packages under
+  `iron/common`); AGENTS states the elementwise rule with the channel
+  count and the cap, and says how to bind a device on a host without one.
+  This plan's GEMV listing is the shipped header, its decisions use the
+  shipped vocabulary, and the tuning paragraphs say "not built". Fifteen
+  docstrings and comments that narrated history state the present. One
+  `npu2` fixture in `iron/tests/conftest.py` replaces nine copies, and
+  the two tests that bound a device without restoring it use it. The
+  lowering cases list each class once, and say so. Three test files for
+  the public surface that had none: the elementwise template (default
+  split, the two refusals, the resident count, a sweep inherited by an
+  operator written by inheritance), `vectors`/`verify_buffer`, and the
+  case sweeps. Writing the harness test found that `vectors()` drew
+  bfloat16 inputs as small integers, since ml_dtypes' bfloat16 has no
+  numpy float kind, so `centered=` did nothing and ReLU's device test
+  never saw a negative input: bfloat16 draws as the float it is. That
+  changes every device test's inputs, which no host can run; the
+  tolerances are the kernels' contracts, judged the same way. Both
+  suites identical to baseline.
 - `f14f212` Audit, batch D, second half: names and tests. One name
   per concept: Copy's `num_aie_channels` is `num_channels`, Copy's and
   Repeat's `transfer_size` is `tile_size` (it is the tile), MHA's

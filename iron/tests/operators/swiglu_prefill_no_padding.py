@@ -6,18 +6,17 @@
 error at trace time, and an aligned one traces with the extents it was given.
 """
 
-import aie.utils as aie_utils
 import numpy as np
 import pytest
-from aie.iron.device import from_name
 from ml_dtypes import bfloat16
 
 from iron.operators.gemm.op import GEMM
 from iron.operators.swiglu_prefill.op import swiglu_prefill
 
+pytestmark = pytest.mark.usefixtures("npu2")
+
 
 def _trace(seq_len, embedding_dim=2048, hidden_dim=2048):
-    aie_utils.set_current_device(from_name("npu2", n_cols=8))
     z = lambda *s: np.zeros(s, dtype=bfloat16)  # noqa: E731
     ffn = swiglu_prefill(
         z(embedding_dim, hidden_dim),

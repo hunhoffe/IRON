@@ -40,9 +40,7 @@ class Target:
         # the sequence writes (bind it to the runtime-parameter buffer).
         self.image = image
         # The function itself rather than a method: a method would restate
-        # every declare_kernel parameter, and would have to track them. It did
-        # not -- it carried a `prebuilt` argument the factory has no notion
-        # of, and dropped it in silence.
+        # every declare_kernel parameter, and would have to track them.
         self.kernel = declare_kernel
         self.rtp = partial(Buffer, use_write_rtp=True)
         self.barriers: list[Any] = []

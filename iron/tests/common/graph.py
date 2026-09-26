@@ -35,22 +35,7 @@ def z(*shape, dtype=bfloat16):
     return np.zeros(shape, dtype=dtype)
 
 
-@pytest.fixture(autouse=True)
-def device():
-    """Trace against a real eight-column NPU2.
-
-    The shim budget these graphs size themselves from used to be faked at 16
-    here, which is what eight columns of NPU2 actually offers; binding the
-    device says the same thing without the stub, and an operator that reads
-    ``dev.cols`` gets an answer.
-    """
-    import aie.utils as aie_utils
-    from aie.iron.device import from_name
-
-    previous = aie_utils.get_current_device()
-    aie_utils.set_current_device(from_name("npu2", n_cols=8))
-    yield
-    aie_utils.set_current_device(previous)
+pytestmark = pytest.mark.usefixtures("npu2")  # a bound device, restored
 
 
 def _ffn():

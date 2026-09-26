@@ -3,8 +3,8 @@
 
 """Every exported operator is a declared one, or a graph-function factory.
 
-The regression net the arg-spec snapshot used to be: each module imports,
-each class is an ``Operator``, and its arg spec comes from declared buffers.
+Each module imports, each class is an ``Operator``, and its arg spec comes
+from declared buffers.
 """
 
 import importlib

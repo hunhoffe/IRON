@@ -3,9 +3,8 @@
 
 """The descriptors Copy issues for the copies llama makes, pinned.
 
-llama's graphs used to spell every copy as sizes, strides and offsets; the
-descriptors those issued are recorded here as (offset, sizes, strides) per
-channel, exactly, and the same copies spelled as views must issue them.
+The descriptors are recorded as (offset, sizes, strides) per channel,
+exactly, and the copies spelled as views must issue them.
 """
 
 from typing import Any
@@ -15,6 +14,8 @@ import pytest
 
 from iron.common.tiling import Walk
 from iron.operators.copy import Copy, _kv_slot
+
+pytestmark = pytest.mark.usefixtures("npu2")
 
 G, D, L, E, N = 8, 64, 128, 2048, 16  # kv groups, head dim, context, embed, rows
 

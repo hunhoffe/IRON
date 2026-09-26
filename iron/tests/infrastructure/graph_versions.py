@@ -17,10 +17,8 @@ The function below writes its state at one shape and reads it at the other:
 state``.
 """
 
-import aie.utils as aie_utils
 import numpy as np
 import pytest
-from aie.iron.device import from_name
 from ml_dtypes import bfloat16
 
 import iron
@@ -31,12 +29,7 @@ E = 1024
 TILE = 128
 
 
-@pytest.fixture(autouse=True)
-def device():
-    previous = aie_utils.get_current_device()
-    aie_utils.set_current_device(from_name("npu2", n_cols=8))
-    yield
-    aie_utils.set_current_device(previous)
+pytestmark = pytest.mark.usefixtures("npu2")  # a bound device, restored
 
 
 def _numbers(n, seed):

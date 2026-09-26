@@ -185,21 +185,7 @@ def test_empty_graph():
 # --- integration with OperatorSequence's arena layout -----------------------
 
 
-@pytest.fixture(autouse=True)
-def device():
-    """Operators read the ShimDMA limit at construction, so one must be set.
-
-    Without it get_current_device() returns None and construction dies with
-    "'NoneType' object has no attribute 'resolve'" -- which reads like a bug in
-    the code under test rather than a missing fixture.
-    """
-    import aie.utils as aie_utils
-    from aie.iron.device import from_name
-
-    previous = aie_utils.get_current_device()
-    aie_utils.set_current_device(from_name("npu2", n_cols=8))
-    yield
-    aie_utils.set_current_device(previous)
+pytestmark = pytest.mark.usefixtures("npu2")  # a bound device, restored
 
 
 def _two_step_sequence(buffer_offsets):

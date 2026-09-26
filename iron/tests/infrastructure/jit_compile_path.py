@@ -28,13 +28,7 @@ from iron.common.image.jit_compile import (
 )
 from iron.operators import ElementwiseAdd
 
-
-@pytest.fixture(autouse=True)
-def device():
-    previous = aie_utils.get_current_device()
-    aie_utils.set_current_device(from_name("npu2", n_cols=8))
-    yield
-    aie_utils.set_current_device(previous)
+pytestmark = pytest.mark.usefixtures("npu2")  # a bound device, restored
 
 
 def _captured(name, trace_size=0, adds=2):
@@ -68,10 +62,8 @@ def test_captured_graph_compiles_to_an_elf():
 def test_kernel_objects_land_in_the_entry_under_bare_names():
     """The fused MLIR's link_with names objects without a directory.
 
-    IRON used to copy them there itself, because object_files= only feeds the
-    artifact hash. It no longer does: the designs declare ExternalFunctions
-    and CompilableDesign compiles them straight into the entry. The
-    requirement is unchanged, so this still checks it.
+    The designs declare ExternalFunctions and CompilableDesign compiles them
+    straight into the entry; a fused link must find them by bare name.
     """
     objects = _captured("jitpath_stage").artifacts.entry.objects
     assert objects, "no kernel objects in the cache entry"

@@ -8,9 +8,7 @@ One module for the whole catalog. An operator declares the shapes it is
 tested at as :class:`~iron.common.testing.Testing` beside itself, and this
 runs each: construct, draw inputs with :func:`vectors`, dispatch, and
 judge every output element against ``reference()`` by the declared
-tolerance, or else by the contract of the kernel the operator runs. What
-it replaced was one test module per operator, each a single call with
-this body.
+tolerance, or else by the contract of the kernel the operator runs.
 
 An operator whose device test is more than that -- a composite compared
 step by step, a shipped binary checked against its own accumulator --
