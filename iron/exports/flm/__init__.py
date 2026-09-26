@@ -5,7 +5,7 @@
 
 Operators are re-exported lazily (PEP 562):
 
-    from iron.operators.flm import GEMM, Shipped  # imports iron.operators.flm.gemm.*
+    from iron.exports.flm import GEMM, Shipped  # imports iron.exports.flm.gemm.*
 """
 
 import importlib
@@ -15,9 +15,9 @@ _OPERATOR_MODULES = {
     "GEMM": "gemm.op",
     # q4nx weights to the bfp16 B that GEMM reads, without a host-side pack.
     "DequantBFP": "dequant.op",
-    # The shipped overlay itself, downloaded as a pinned binary, as a second
-    # overlay for GEMM: GEMM(Shipped(), ...). NPU2 only; exists so the port
-    # can be measured against what it was ported from.
+    # The shipped binary itself, downloaded and pinned, as a second form of
+    # GEMM: Shipped(...). NPU2 only; exists so the port can be measured
+    # against what it was ported from.
     "Shipped": "gemm.shipped",
 }
 

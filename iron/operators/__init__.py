@@ -40,16 +40,11 @@ _OPERATOR_MODULES = {
     "Transpose": "transpose",
 }
 
-# Sub-packages whose operator names would collide with the table above.
-_SUBPACKAGES = ("flm",)
-
-__all__ = sorted(set(_OPERATOR_MODULES) | set(_SUBPACKAGES))
+__all__ = sorted(_OPERATOR_MODULES)
 
 
 def __getattr__(name):
     """Import the operator that defines `name`, on first access."""
-    if name in _SUBPACKAGES:
-        return importlib.import_module(f".{name}", __name__)
     module = _OPERATOR_MODULES.get(name)
     if module is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
@@ -57,4 +52,4 @@ def __getattr__(name):
 
 
 def __dir__():
-    return sorted(set(globals()) | set(_OPERATOR_MODULES) | set(_SUBPACKAGES))
+    return sorted(set(globals()) | set(_OPERATOR_MODULES))

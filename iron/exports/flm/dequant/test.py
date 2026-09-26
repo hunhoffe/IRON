@@ -11,15 +11,15 @@ import aie.utils as aie_utils
 from aie.dialects._aie_enum_gen import AIEArch
 
 from iron.common.harness import run_test
-from iron.operators.flm.dequant.op import DequantBFP
-from iron.operators.flm.dequant.reference import (
+from iron.exports.flm.dequant.op import DequantBFP
+from iron.exports.flm.dequant.reference import (
     dequantize,
     f32_to_bf16_floor,
     random_q4nx,
     reference,
     scatter_runs,
 )
-from iron.operators.flm.gemm.op import GEMM
+from iron.exports.flm.gemm.op import GEMM
 
 # K = 512 is one k-tile, where flm.GEMM at tile_n = 128 wins on NPU2. It
 # defaults to 64 regardless, which is the order this operator emits.

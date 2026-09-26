@@ -12,7 +12,7 @@ from aie.dialects.aie import get_target_model
 from aie.dialects._aie_enum_gen import AIEArch
 
 from iron.operators import GEMM as GenericGEMM
-from iron.operators.flm.gemm.design import (
+from iron.exports.flm.gemm.design import (
     BFP16_GROUP,
     BFP16_GROUP_BYTES,
     CT_MAX_K_FOR_N,
@@ -26,9 +26,9 @@ from iron.operators.flm.gemm.design import (
     _default_l1,
     l1_budget,
 )
-from iron.operators.flm.gemm.op import GEMM
-from iron.operators.flm.gemm.reference import apply_epilogue
-from iron.operators.flm.gemm.shipped import Shipped
+from iron.exports.flm.gemm.op import GEMM
+from iron.exports.flm.gemm.reference import apply_epilogue
+from iron.exports.flm.gemm.shipped import Shipped
 from iron.common.harness import record_metric, run_test, vectors
 
 # Unpacked so the parameter tables below stay column-aligned.

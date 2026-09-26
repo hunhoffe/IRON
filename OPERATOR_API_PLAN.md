@@ -284,7 +284,11 @@ today**.
 
 ## Progress
 
-- (this commit) Step 7, rung 4a: flm's GEMM, its shipped binary and
+- (this commit) Step 7, rung 4b: `iron/operators/flm` → `iron/exports/flm`
+  (`git mv`; every import and path rewritten; `iron.operators` lists
+  IRON's own operators alone, its `_SUBPACKAGES` gone; `iron/exports` is
+  a pytest testpath). Both suites identical to baseline.
+- `21eddaa` Step 7, rung 4a: flm's GEMM, its shipped binary and
   DequantBFP are one class each, so every shipped operator now is. The
   shipped binary is a subclass declared with the image, `class
   Shipped(GEMM, image=Xclbin(...))`: it pins the knobs (`init=False`),

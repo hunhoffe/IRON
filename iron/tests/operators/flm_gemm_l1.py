@@ -6,7 +6,7 @@
 import pytest
 from aie.iron.device import NPU1, NPU2
 
-from iron.operators.flm.gemm.design import (
+from iron.exports.flm.gemm.design import (
     A_DEPTH,
     BFP16_GROUP,
     BFP16_GROUP_BYTES,

@@ -42,7 +42,7 @@ from iron.common.declare import (
 from iron.common.kernels import lut_sources
 from iron.common.tiling import Access
 from iron.common.tiling import run_dims
-from iron.operators.flm.gemm.design import (
+from iron.exports.flm.gemm.design import (
     A_DEPTH,
     B_DEPTH,
     BFP16_GROUP,
@@ -78,7 +78,7 @@ from iron.operators.flm.gemm.design import (
     l1_budget,
     rtp_layout,
 )
-from iron.operators.flm.packing import pack_b, packed_b_size
+from iron.exports.flm.packing import pack_b, packed_b_size
 
 
 def _device_name() -> str:
@@ -961,7 +961,7 @@ class GEMM(Operator):
 
         Flat uint8 bfp16ebs8 blocks on NPU2, flat bf16 on NPU1. Packing to
         consumption order is what makes both B hops linear descriptors. See
-        :mod:`iron.operators.flm.packing`.
+        :mod:`iron.exports.flm.packing`.
         """
         t = self._tuned
         return pack_b(
@@ -982,7 +982,7 @@ class GEMM(Operator):
 
     def reference(self, A, B):
         """CPU reference: ``C = epilogue(A @ B)``."""
-        from iron.operators.flm.gemm.reference import reference
+        from iron.exports.flm.gemm.reference import reference
 
         return reference(A, B, self.epilogue, self.clamp)
 
