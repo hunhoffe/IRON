@@ -565,7 +565,10 @@ class Operator(metaclass=_OperatorMeta):
     def extent_unit(self, buffer: str) -> int | None:
         """The rows of operand ``buffer`` one lane takes at a time under a
         bound, when it is not the stream tile's rows (GEMV's A moves in
-        output tiles, several input tiles each); ``None`` for the tile's.
+        output tiles, several input tiles each); ``None`` for the tile's;
+        ``0`` when the operand is not shortened under a bound at all (GEMM
+        and MHA stream every row and bound their compute), so no word of
+        tiles per lane is made for it.
         """
         return None
 
@@ -653,7 +656,7 @@ class Operator(metaclass=_OperatorMeta):
             for b in self._members:
                 if isinstance(b, _Buffer) and b.stream is not None:
                     axis = bound[b.name].extent_axis(e)
-                    if axis is not None:
+                    if axis is not None and self.extent_unit(b.name) != 0:
                         word = _ExtentWord(type(self), e, b.name, axis)
                         bound[word.name] = BoundValue(word, self)
                         words.append(word)

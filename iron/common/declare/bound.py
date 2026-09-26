@@ -268,20 +268,7 @@ class BoundBuffer:
 
     def extent_axis(self, extent: Extent) -> int | None:
         """The axis of this operand that ``extent``'s field sizes, or None."""
-        axis = 0
-        for d in self.member.dims:
-            if isinstance(d, _Optional):
-                if _resolve_dim(d.ref, self._op) <= 1:
-                    continue  # omitted at this rank
-                d = d.ref
-            if isinstance(d, _Select):
-                branch = d.when_true if _flag_value(d.flag, self._op) else d.when_false
-                axis += len(_resolve_shape(branch, self._op))
-                continue
-            if isinstance(d, DimRef) and d.name == extent.field.name:
-                return axis
-            axis += 1
-        return None
+        return _axis_of(self.member.dims, extent.field.name, self._op)
 
     @property
     def bounded(self) -> tuple[Extent, int, "BoundValue"] | None:
@@ -431,6 +418,30 @@ def _flag_value(flag, instance) -> bool:
     if isinstance(flag, Field):
         return bool(getattr(instance, flag.name))
     return bool(flag)
+
+
+def _axis_of(dims, field: str, instance) -> int | None:
+    """The axis of the shape ``dims`` resolves to that ``field`` sizes, or None:
+    through the optional dimensions present at this rank and the branch a
+    select takes.
+    """
+    axis = 0
+    for d in dims:
+        if isinstance(d, _Optional):
+            if _resolve_dim(d.ref, instance) <= 1:
+                continue  # omitted at this rank
+            d = d.ref
+        if isinstance(d, _Select):
+            branch = d.when_true if _flag_value(d.flag, instance) else d.when_false
+            inner = _axis_of(branch, field, instance)
+            if inner is not None:
+                return axis + inner
+            axis += len(_resolve_shape(branch, instance))
+            continue
+        if isinstance(d, DimRef) and d.name == field:
+            return axis
+        axis += 1
+    return None
 
 
 def _resolve_shape(dims, instance) -> tuple[int, ...]:

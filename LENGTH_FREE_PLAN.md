@@ -141,6 +141,23 @@ sets), pyright and ruff clean, and a Progress entry.
 
 ## Progress
 
+- `(this commit)` Step 4, GEMM and MHA bound their compute. Both stream
+  every row as before (their A and Q patterns use all four descriptor
+  dimensions) and say so with `extent_unit() == 0`, so no word of tiles per
+  lane is made for them. GEMM's `valid = Extent(M)` derives
+  `n_tiles_valid`, the whole row blocks the bound covers times the column
+  tiles; under a bound each core computes that many tiles and passes the
+  rest through, the same acquires and releases with no kernel call. MHA's
+  `valid = Extent(seq_pad)` derives the Q blocks per pipeline and KV blocks
+  per Q block the cores attend over (`q_blocks_valid`, `kv_blocks_valid`)
+  and the mask lengths `s_q`/`s_kv` from the call's rows; each of the three
+  cores attends over those and passes the rest of what the DMAs stream
+  through, the PV core's first, middle and last blocks kept. The values a
+  bounded build alone reads are optional residents, so an unbounded build
+  is what it was. A bound reaches an operand through a `select()` shape by
+  the branch the flag takes. Bounded GEMM and MHA use no size patch, so
+  they lower through aiecc today: three more toolchain cases pass. Both
+  suites identical to baseline.
 - `9869c85` Step 3, the hand-written sequences. A `Walk` carries the
   axis a graph bounds; a copy's view operands put a bound on their walk
   and bind `src_valid`/`dst_valid`, and `Copy._taps` keeps a bounded walk

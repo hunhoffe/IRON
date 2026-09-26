@@ -221,6 +221,9 @@ def test_mha_sequence_is_one_descriptor_set_per_kv_group(monkeypatch):
         "kv_blocks": 16,
         "s_q": 1000,
         "s_kv": 1000,
+        # Read only under a bound; the preamble skips them unbound.
+        "q_blocks_valid": 2,
+        "kv_blocks_valid": 16,
     }
     log = []
     for s in op.streams.values():

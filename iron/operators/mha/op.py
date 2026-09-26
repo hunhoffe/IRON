@@ -25,6 +25,7 @@ from aie.iron.controlflow import range_
 from ml_dtypes import bfloat16
 
 from iron.common import (
+    Extent,
     In,
     Operator,
     Out,
@@ -101,13 +102,37 @@ class MHA(Operator):
         per=(q_shims,),
         via=Shim(7),
     )
+    # The padded length, or fewer rows per call (``Q[:n]`` in a graph). The
+    # DMAs stream every row either way; the cores attend over the blocks the
+    # bound covers and pass the rest through, so the quadratic work follows
+    # the call.
+    valid = Extent(seq_pad)
     # The cores' trip counts, and the unpadded lengths for masking.
     q_blocks_per_pipeline = Value(
         np.int32, derive=lambda op: op.seq_pad // (op.B_q * op.num_pipelines)
     )
     kv_blocks = Value(np.int32, derive=lambda op: op.seq_pad // op.B_kv)
-    s_q = Value(np.int32, derive=lambda op: op.seq_len)
-    s_kv = Value(np.int32, derive=lambda op: op.seq_len)
+    s_q = Value(np.int32, derive=lambda op: op.valid_tokens)
+    s_kv = Value(np.int32, derive=lambda op: op.valid_tokens)
+    # Under a bound: the Q blocks per pipeline and the KV blocks per Q block
+    # the cores compute; the totals above are what they pass through.
+    q_blocks_valid = Value(
+        np.int32,
+        derive=lambda op: op.seq_padding(op.valid_tokens)
+        // (op.B_q * op.num_pipelines),
+        optional=True,  # nothing reads it unbounded
+    )
+    kv_blocks_valid = Value(
+        np.int32, derive=lambda op: -(-op.valid_tokens // op.B_kv), optional=True
+    )
+
+    @property
+    def valid_tokens(self) -> int:
+        """The rows attended over: the call's bound, else ``seq_len``."""
+        return self.valid if "valid" in self.bound_extents else self.seq_len
+
+    def extent_unit(self, buffer: str) -> int:
+        return 0  # nothing is shortened: the cores bound their compute
 
     # -- checks ----------------------------------------------------------------
 
@@ -313,6 +338,22 @@ class MHA(Operator):
             )
             scaleOF.append(ObjectFifo(s_ty, depth=of_depth, name=f"scaleOF{i}"))
 
+        # Under a bound each core computes the Q blocks and, per Q block,
+        # the KV blocks the bound covers, then passes the rest of what the
+        # DMAs stream through untouched: the same acquires and releases,
+        # no kernel call. The unbounded bodies are as they were.
+        bounded = "valid" in self.bound_extents and target.image == "elf"
+        words = (
+            [
+                self.q_blocks_valid.param,
+                self.kv_blocks_valid.param,
+                self.s_q.param,
+                self.s_kv.param,
+            ]
+            if bounded
+            else []
+        )
+
         def batched_matmul_qk(
             of_q,
             of_k,
@@ -323,33 +364,45 @@ class MHA(Operator):
             mha_rtps,
             barrier,
             idx_buffer,
+            *valid,
         ):
             barrier.wait_for_value(1)
             loop_idx_q = mha_rtps[0]
             loop_idx_kv = mha_rtps[1]
+            q_valid = valid[0].read() if bounded else loop_idx_q
+            kv_valid = valid[1].read() if bounded else loop_idx_kv
+
+            def kv_block(elem_in_q, compute: bool):
+                elem_in_k = of_k.acquire(1)
+                elem_a_out = of_a_out.acquire(1)
+                if compute:
+                    zero(elem_a_out)
+                    matmul_QK(elem_in_q, elem_in_k, elem_a_out, idx_buffer)
+                of_k.release(1)
+                of_a_out.release(1)
+                if compute:
+                    idx_buffer[0] += 1
+
+            def q_block(compute: bool):
+                elem_in_q = of_q.acquire(1)
+                for _ in range_(kv_valid if compute else loop_idx_kv):
+                    kv_block(elem_in_q, compute)
+                if bounded and compute:
+                    for _ in range_(loop_idx_kv - kv_valid):
+                        kv_block(elem_in_q, False)
+                if compute:
+                    idx_buffer[0] = 0
+                    idx_buffer[1] += num_pipelines
+                of_q.release(1)
 
             for _ in range_(sys.maxsize):
                 idx_buffer[0] = 0
                 idx_buffer[1] = q_block_bias
-
-                for _ in range_(loop_idx_q):
-                    elem_in_q = of_q.acquire(1)
-
-                    for _ in range_(loop_idx_kv):
-                        elem_in_k = of_k.acquire(1)
-                        elem_a_out = of_a_out.acquire(1)
-
-                        zero(elem_a_out)
-                        matmul_QK(elem_in_q, elem_in_k, elem_a_out, idx_buffer)
-
-                        of_k.release(1)
-                        of_a_out.release(1)
-
-                        idx_buffer[0] += 1
-                    idx_buffer[0] = 0
-                    idx_buffer[1] += num_pipelines
-
-                    of_q.release(1)
+                for _ in range_(q_valid):
+                    q_block(True)
+                if bounded:
+                    for _ in range_(loop_idx_q - q_valid):
+                        q_block(False)
 
         def softmax(
             of_in_a,
@@ -363,48 +416,62 @@ class MHA(Operator):
             barrier,
             idx_buffer,
             scale_buffer,
+            *valid,
         ):
             # The index buffer counts how many Q and KV blocks this worker has
             # processed; from it the kernel infers its position in A and P.
             barrier.wait_for_value(1)
             loop_idx_q = mha_rtps[0]
             loop_idx_kv = mha_rtps[1]
-            S_q_effective = mha_rtps[2]
-            S_kv_effective = mha_rtps[3]
+            S_q_effective = valid[2].read() if bounded else mha_rtps[2]
+            S_kv_effective = valid[3].read() if bounded else mha_rtps[3]
+            q_valid = valid[0].read() if bounded else loop_idx_q
+            kv_valid = valid[1].read() if bounded else loop_idx_kv
+
+            def kv_block(compute: bool):
+                elt_of_out_p = of_out_p.acquire(1)
+                elt_of_in_a = of_in_a.acquire(1)
+                elt_of_out_scale = of_out_scale.acquire(1)
+                if compute:
+                    partial_softmax(
+                        elt_of_in_a,
+                        elt_of_out_p,
+                        scale_buffer,
+                        idx_buffer,
+                        inv_scale,
+                        B_q,
+                        B_kv,
+                        S_q_effective,
+                        S_kv_effective,
+                    )
+                    memcopy_kernel_scale(scale_buffer, elt_of_out_scale, 4 * B_q)
+                of_in_a.release(1)
+                of_out_p.release(1)
+                of_out_scale.release(1)
+                if compute:
+                    idx_buffer[0] += 1
+
+            def q_block(compute: bool):
+                if compute:
+                    init_scale_buffer(scale_buffer, B_q)
+                for _ in range_(kv_valid if compute else loop_idx_kv):
+                    kv_block(compute)
+                if bounded and compute:
+                    for _ in range_(loop_idx_kv - kv_valid):
+                        kv_block(False)
+                if compute:
+                    idx_buffer[0] = 0
+                    idx_buffer[1] += num_pipelines
 
             for _ in range_(sys.maxsize):
                 # Required, otherwise the buffer is kept across warmup.
                 idx_buffer[0] = 0
                 idx_buffer[1] = q_block_bias
-
-                for _ in range_(loop_idx_q):
-                    init_scale_buffer(scale_buffer, B_q)
-
-                    for _ in range_(loop_idx_kv):
-                        elt_of_out_p = of_out_p.acquire(1)
-                        elt_of_in_a = of_in_a.acquire(1)
-                        elt_of_out_scale = of_out_scale.acquire(1)
-
-                        partial_softmax(
-                            elt_of_in_a,
-                            elt_of_out_p,
-                            scale_buffer,
-                            idx_buffer,
-                            inv_scale,
-                            B_q,
-                            B_kv,
-                            S_q_effective,
-                            S_kv_effective,
-                        )
-                        memcopy_kernel_scale(scale_buffer, elt_of_out_scale, 4 * B_q)
-
-                        of_in_a.release(1)
-                        of_out_p.release(1)
-                        of_out_scale.release(1)
-
-                        idx_buffer[0] += 1
-                    idx_buffer[0] = 0
-                    idx_buffer[1] += num_pipelines
+                for _ in range_(q_valid):
+                    q_block(True)
+                if bounded:
+                    for _ in range_(loop_idx_q - q_valid):
+                        q_block(False)
 
         def batched_matmul_pv(
             of_p,
@@ -418,16 +485,29 @@ class MHA(Operator):
             mha_rtps,
             barrier,
             idx_buffer,
+            *valid,
         ):
             barrier.wait_for_value(1)
             loop_idx_q = mha_rtps[0]
-            loop_idx_kv = mha_rtps[1]
+            loop_idx_kv_total = mha_rtps[1]
+            q_valid = valid[0].read() if bounded else loop_idx_q
+            loop_idx_kv = valid[1].read() if bounded else loop_idx_kv_total
+
+            def pass_through(n):
+                # KV blocks past the bound: consumed, not attended over.
+                for _ in range_(n):
+                    of_p.acquire(1)
+                    of_v.acquire(1)
+                    of_scale.acquire(1)
+                    of_p.release(1)
+                    of_v.release(1)
+                    of_scale.release(1)
 
             for _ in range_(sys.maxsize):
                 idx_buffer[0] = 0
                 idx_buffer[1] = q_block_bias
 
-                for _ in range_(loop_idx_q):
+                for _ in range_(q_valid):
                     elem_o_out = of_o_out.acquire(1)
                     zero(elem_o_out)
 
@@ -500,10 +580,18 @@ class MHA(Operator):
                         rescale_O(elem_o_out, elt_of_out_scale, B_q, idx_buffer)
                         idx_buffer[0] += 1
 
+                    if bounded:
+                        pass_through(loop_idx_kv_total - loop_idx_kv)
                     idx_buffer[0] = 0
                     idx_buffer[1] += num_pipelines
 
                     of_o_out.release(1)
+
+                if bounded:
+                    for _ in range_(loop_idx_q - q_valid):
+                        of_o_out.acquire(1)  # a padding block of O: left as is
+                        pass_through(loop_idx_kv_total)
+                        of_o_out.release(1)
 
         # One runtime-parameter buffer and one barrier per worker, since each
         # is placed with its core. The preamble writes the four residents into
@@ -538,7 +626,8 @@ class MHA(Operator):
                         mha_rtps_list[0][i],
                         worker_barrier_list[0][i],
                         idx_buffer_qk,
-                    ],
+                    ]
+                    + words,
                     stack_size=0xD00,
                     tile=Tile(col=i, row=2),
                     while_true=False,
@@ -567,7 +656,8 @@ class MHA(Operator):
                         worker_barrier_list[1][i],
                         idx_buffer_softmax,
                         scale_buffer_softmax,
-                    ],
+                    ]
+                    + words,
                     stack_size=0xD00,
                     tile=Tile(col=i, row=3),
                     while_true=False,
@@ -592,7 +682,8 @@ class MHA(Operator):
                         mha_rtps_list[2][i],
                         worker_barrier_list[2][i],
                         idx_buffer_pv,
-                    ],
+                    ]
+                    + words,
                     stack_size=0xD00,
                     tile=Tile(col=i, row=4),
                     while_true=False,
@@ -618,8 +709,9 @@ class MHA(Operator):
         flat_rtps = [b for stage in mha_rtps_list for b in stage]
         self.q_blocks_per_pipeline.bind(flat_rtps, 0)
         self.kv_blocks.bind(flat_rtps, 1)
-        self.s_q.bind(flat_rtps, 2)
-        self.s_kv.bind(flat_rtps, 3)
+        if not bounded:  # else the cores read the lengths per call
+            self.s_q.bind(flat_rtps, 2)
+            self.s_kv.bind(flat_rtps, 3)
 
         return matmul_workers + softmax_workers + matmul_pv_workers
 

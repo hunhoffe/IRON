@@ -12,6 +12,7 @@ from aie.iron.dataflow.objectfifo import StreamDims
 from ml_dtypes import bfloat16
 
 from iron.common import (
+    Extent,
     In,
     Incompatible,
     Operator,
@@ -84,12 +85,26 @@ class GEMM(Operator):
         tile=(c_l2,),
         per=(num_aie_columns,),
     )
+    # M, or fewer rows per call (``A[:n]`` in a graph). The DMAs stream
+    # every row either way, since A's pattern uses all four descriptor
+    # dimensions; the cores compute the tiles the bound covers and pass the
+    # rest through, so the work follows the call and the traffic does not.
+    valid = Extent(M)
     # Reduction steps per output tile, and output tiles per core.
     k_div_k = Value(np.int32, derive=lambda op: op.K // op.tile_k)
     n_tiles = Value(
         np.int32,
         derive=lambda op: (op.M // op.mem_tile_m_c) * (op.N // op.mem_tile_n),
     )
+    # The tiles the bound covers: whole row blocks of it, every column tile.
+    n_tiles_valid = Value(
+        np.int32,
+        derive=lambda op: -(-op.valid // op.mem_tile_m_c) * (op.N // op.mem_tile_n),
+        optional=True,  # nothing reads it unbounded
+    )
+
+    def extent_unit(self, buffer: str) -> int:
+        return 0  # nothing is shortened: the cores bound their compute
 
     # -- derived geometry ---------------------------------------------------
 
@@ -380,6 +395,11 @@ class GEMM(Operator):
             for j in range(n_aie_rows):
                 C_l1l2_fifos[j][col] = c_tmp_fifos[j]
 
+        # Under a bound on M each core computes the tiles the bound covers
+        # and passes the rest through: the DMAs still move every row.
+        bounded = "valid" in self.bound_extents and target.image == "elf"
+        n_valid_param = self.n_tiles_valid.param if bounded else None
+
         # Tasks for each worker to perform
         def core_fn(
             in_a,
@@ -391,31 +411,46 @@ class GEMM(Operator):
             my_rtp,
             barrier,
             elem_out_internal,
+            n_valid=None,
         ):
             barrier.wait_for_value(1)
             rtp_K_div_k = my_rtp[0]
             rtp_n_tiles_per_core = my_rtp[1]
+
+            def tile(compute: bool):
+                nonlocal elem_out_internal
+                if not use_larger_internal_buffer:
+                    elem_out_internal = out_c.acquire(1)
+                if compute:
+                    zero(elem_out_internal)
+                for _ in range_(rtp_K_div_k):
+                    elem_in_a = in_a.acquire(1)
+                    elem_in_b = in_b.acquire(1)
+                    if compute:
+                        matmul(elem_in_a, elem_in_b, elem_out_internal)
+                    in_a.release(1)
+                    in_b.release(1)
+                if use_larger_internal_buffer:
+                    elem_out_transfer = out_c.acquire(1)
+                    if compute:
+                        convert_copy(elem_out_internal, elem_out_transfer, m * n)
+                    out_c.release(1)
+                else:
+                    out_c.release(1)
+
+            if bounded:
+                assert n_valid is not None
+                n_compute = n_valid.read()
+                for _ in range_(n_compute):
+                    tile(compute=True)
+                for _ in range_(rtp_n_tiles_per_core - n_compute):
+                    tile(compute=False)  # a padding tile: passed through
+                return
             loop = range(1)  # Workaround for issue #1547
             if rtp_n_tiles_per_core > 1:
                 loop = range_(rtp_n_tiles_per_core)
             for _ in loop:
-                if not use_larger_internal_buffer:
-                    elem_out_internal = out_c.acquire(1)
-                zero(elem_out_internal)
-
-                for _ in range_(rtp_K_div_k):
-                    elem_in_a = in_a.acquire(1)
-                    elem_in_b = in_b.acquire(1)
-                    matmul(elem_in_a, elem_in_b, elem_out_internal)
-                    in_a.release(1)
-                    in_b.release(1)
-
-                if use_larger_internal_buffer:
-                    elem_out_transfer = out_c.acquire(1)
-                    convert_copy(elem_out_internal, elem_out_transfer, m * n)
-                    out_c.release(1)
-                else:
-                    out_c.release(1)
+                tile(compute=True)
 
         # Set up compute tiles
         workers = []
@@ -439,7 +474,8 @@ class GEMM(Operator):
                             rtps[row][col],
                             workerBarriers[row][col],
                             acc_buffer,
-                        ],
+                        ]
+                        + ([n_valid_param] if bounded else []),
                         stack_size=0xD00,
                     )
                 )

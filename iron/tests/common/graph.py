@@ -675,3 +675,42 @@ def test_a_bound_reaches_a_copy_and_a_repeat_through_their_views(npu2):
     assert out.shape == (2 * G, L, D) and out.bounds == {1: (t.values[1], 1)}
     rep = rep.resolved(aie_utils.get_current_device())
     assert rep.derived_at("valid_seq_x", valid_seq=12) == 12  # the stack axis itself
+
+
+def test_gemm_and_mha_bound_their_compute_not_their_traffic(npu2):
+    """A bound reaches GEMM through A's rows and MHA through Q's padded
+    length (a select shape): each derives the counts its cores compute per
+    call, makes no word of tiles per lane, and keeps every descriptor.
+    """
+    from iron.operators.gemm.op import GEMM
+    from iron.operators.mha.op import MHA
+
+    @iron.graph
+    def g(x, w, *, n: Scratchpad[np.int32]):
+        h = GEMM(x[:n], w, b_col_maj=True)  # (512, 64) x (256, 64)^T
+        return MHA(
+            h.reshape(512, 4, 64),
+            h.reshape(512, 4, 64),
+            h.reshape(512, 4, 64),
+            heads_interleaved=True,
+            num_pipelines=2,
+        )
+
+    t = g.trace(x=(512, 64), w=(256, 64))
+    gemm, mha = t.operators
+    assert gemm.bound_extents == {"valid": "n"} and mha.bound_extents == {"valid": "n"}
+    gemm, mha = (op.resolved(aie_utils.get_current_device()) for op in (gemm, mha))
+    assert [v.name for v in gemm.values] == ["valid", "n_tiles_valid"]
+    assert gemm.derived_at("n_tiles_valid", valid=100) == 1 * (256 // gemm.mem_tile_n)
+    assert [v.name for v in mha.values] == [
+        "valid",
+        "s_q",
+        "s_kv",
+        "q_blocks_valid",
+        "kv_blocks_valid",
+    ]
+    assert mha.derived_at("s_q", valid=100) == 100
+    assert mha.derived_at("q_blocks_valid", valid=100) == 1  # 128 padded / (64 x 2)
+    assert mha.derived_at("kv_blocks_valid", valid=100) == 2  # ceil(100 / 64)
+    (out,) = t.outputs
+    assert out.bounds == {0: (t.values[0], 1)}  # O is bounded like Q

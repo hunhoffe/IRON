@@ -15,7 +15,6 @@ from ml_dtypes import bfloat16
 
 from ..declare import Operator
 from ..declare.bound import BoundValue
-from ..declare.field import DimRef, _Optional, _Select
 from ..declare.infer import infer, infer_kwargs
 from ..declare.member import Extent, _Value
 from ..declare.member import _Buffer as _Buffer_
@@ -69,38 +68,6 @@ class Binding:
     def symbol(self) -> str:
         """The device symbol the host writes this value through."""
         return device_symbol(self.op, self.member)
-
-
-def _dim_names(buffer, rank: int) -> list[str | None]:
-    """The field sizing each axis of an operand of ``buffer`` at ``rank``."""
-    dims: list = []
-    for d in buffer.member.dims:
-        if isinstance(d, _Select):
-            dims.extend([None] * len(d.when_true))
-        else:
-            dims.append(d)
-    if len(dims) == rank + 1:  # an optional() dimension omitted at this rank
-        dims = [d for d in dims if not isinstance(d, _Optional)]
-    names = []
-    for d in dims:
-        if isinstance(d, _Optional):
-            d = d.ref
-        names.append(d.name if isinstance(d, DimRef) else None)
-    return names
-
-
-def _extent_for(cls, buffer, rank: int, axis: int):
-    """The Extent of ``cls`` whose field sizes ``axis`` of the operand, or None."""
-    names = _dim_names(buffer, rank)
-    name = names[axis] if axis < len(names) else None
-    return next(
-        (
-            m
-            for m in cls._members
-            if isinstance(m, Extent) and name is not None and m.field.name == name
-        ),
-        None,
-    )
 
 
 def _unbounded(h: Handle) -> Handle:
@@ -334,14 +301,12 @@ class Tracer:
     def _output_bounds(self, op, buffer, rank: int) -> dict:
         """An output sized by a bounded extent's field is bounded the same way."""
         bounds = {}
-        names = _dim_names(buffer, rank)
         for binding in self.bindings:
             if binding.op is not op or not isinstance(binding.member.member, Extent):
                 continue
-            field = binding.member.member.field.name
-            for axis, name in enumerate(names):
-                if name == field:
-                    bounds[axis] = (binding.value, binding.scale)
+            axis = buffer.extent_axis(binding.member.member)
+            if axis is not None:
+                bounds[axis] = (binding.value, binding.scale)
         return bounds
 
     def _bind(self, op, name, value, scale: int = 1) -> None:
@@ -398,7 +363,14 @@ class Tracer:
                     f"operand {h!r} is {bfp.dtype_name(h.dtype)}"
                 )
             for axis, (value, scale) in h.bounds.items():
-                extent = _extent_for(type(op), b, len(h.shape), axis)
+                extent = next(
+                    (
+                        m
+                        for m in type(op)._members
+                        if isinstance(m, Extent) and b.extent_axis(m) == axis
+                    ),
+                    None,
+                )
                 if extent is None:
                     raise TypeError(
                         f"{type(op).__name__}.{b.name} cannot be bounded per call on "
