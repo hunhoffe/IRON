@@ -7,27 +7,23 @@ import numpy as np
 
 from aie.utils.verify import Tolerance
 
-from iron.common import ChanneledUnaryOperator, ChanneledUnaryOverlay, auto
+from iron.common import UnaryElementwise, auto
 from iron.common.testing import Testing, channeled_unary_cases
 
 
-class SiLUOverlay(ChanneledUnaryOverlay):
-    """The array for SiLU: the shared elementwise design over its kernel."""
-
-    # One channel per column: the LUT-based kernel is sized for it.
-    num_channels: int = auto(1, repr=False, init=False)
-
-    def kernel(self, target):
-        return activation.silu_sized(self.line_size)
-
-
-class SiLU(ChanneledUnaryOperator[SiLUOverlay]):
+class SiLU(UnaryElementwise):
     """AIE-accelerated SiLU activation function"""
 
     test = Testing(
         channeled_unary_cases([1024, 2048, 4096, 8192], 4096, channels=None),
         tolerance=Tolerance.relative(0.04, 1e-6),
     )
+
+    # One channel per column: the LUT-based kernel is sized for it.
+    num_channels: int = auto(1, repr=False, init=False)
+
+    def kernel(self, target):
+        return activation.silu_sized(self.line_size)
 
     def reference(self, x):
         """CPU reference: ``x * sigmoid(x)``."""

@@ -9,29 +9,25 @@ import numpy as np
 
 from aie.utils.verify import Tolerance
 
-from iron.common import ChanneledUnaryOperator, ChanneledUnaryOverlay
+from iron.common import UnaryElementwise
 from iron.common.testing import Testing, channeled_unary_cases
 
-
-class SigmoidOverlay(ChanneledUnaryOverlay):
-    """The array for Sigmoid: the shared elementwise design over its kernel."""
-
-    # The shortest line mlir-aie's LUT activations take.
-    default_tile: ClassVar[int] = 1024
-
-    def kernel(self, target):
-        return activation.sigmoid(self.line_size)
+# The shortest line mlir-aie's LUT activations take.
+_LUT_LINE = 1024
 
 
-class Sigmoid(ChanneledUnaryOperator[SigmoidOverlay]):
+class Sigmoid(UnaryElementwise):
     """AIE-accelerated Sigmoid activation function"""
 
     test = Testing(
-        channeled_unary_cases(
-            [1024, 2048, 4096, 8192], 4096, tile_floor=SigmoidOverlay.default_tile
-        ),
+        channeled_unary_cases([1024, 2048, 4096, 8192], 4096, tile_floor=_LUT_LINE),
         tolerance=Tolerance.relative(0.04, 1e-6),
     )
+
+    default_tile: ClassVar[int] = _LUT_LINE
+
+    def kernel(self, target):
+        return activation.sigmoid(self.line_size)
 
     def reference(self, x):
         """CPU reference: ``1 / (1 + exp(-x))``."""

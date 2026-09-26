@@ -284,7 +284,22 @@ today**.
 
 ## Progress
 
-- (this commit) Step 7, rung 0: the mechanics of the one-class operator,
+- (this commit) Step 7, rung 1: the elementwise family is one class per
+  operator. `iron/common/elementwise.py` is `Elementwise` (the array over
+  lines, its `count` a derived `Value`) with `UnaryElementwise` and
+  `BinaryElementwise` declaring the operand shapes as their own streams;
+  the twelve elementwise operators (axpy, dequant, elementwise_add/mul,
+  gelu, layer_norm, leaky_relu, relu, rms_norm and its weighted form,
+  sigmoid, silu, tanh) and the inline-kernel hello world are each one
+  subclass naming a kernel (12 files, −133 lines net). What a kernel call
+  bakes (axpy's scalar, leaky_relu's alpha, rms_norm's epsilon, dequant's
+  group size) is `param(..., array=True)`; the view `array()` runs on
+  binds the operator's methods and properties too, so a `kernel()` that
+  reads an extent is caught, and `super()` works inside it. `auto()`
+  fields are annotated with their resolved type. Both suites identical to
+  baseline; the C11 gate passes for the merged ReLU, ElementwiseAdd and
+  RMSNorm.
+- `404c939` Step 7, rung 0: the mechanics of the one-class operator,
   with every shipped operator still two-class and both suites identical to
   baseline. `Operator` carries the array surface (`resolve`, `array`,
   `build_array`, `streams`, `residents`, `tolerance`, `array_key`), and on

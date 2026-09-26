@@ -10,20 +10,11 @@ import numpy as np
 
 from aie.utils.verify import Tolerance
 
-from iron.common import ChanneledUnaryOperator, ChanneledUnaryOverlay
+from iron.common import UnaryElementwise
 from iron.common.testing import Testing, channeled_unary_cases
 
 
-class LayerNormOverlay(ChanneledUnaryOverlay):
-    """The array for LayerNorm: the shared elementwise design over its kernel."""
-
-    tile_cap: ClassVar[int] = 8192
-
-    def kernel(self, target):
-        return norm.layer_norm(self.line_size)
-
-
-class LayerNorm(ChanneledUnaryOperator[LayerNormOverlay]):
+class LayerNorm(UnaryElementwise):
     """AIE-accelerated Layer Normalization operator"""
 
     test = Testing(
@@ -34,11 +25,16 @@ class LayerNorm(ChanneledUnaryOperator[LayerNormOverlay]):
     # Hardware trace buffer size; 0 disables tracing.
     trace_size: int = field(default=0, repr=False, kw_only=True)
 
+    tile_cap: ClassVar[int] = 8192
+
+    def kernel(self, target):
+        return norm.layer_norm(self.line_size)
+
     def reference(self, x):
         """CPU reference: each ``tile_size`` row normalised on its own, no affine."""
-        cols = self.ov.tile_size
+        cols = self.tile_size
         if cols is None:
-            raise ValueError("LayerNorm.reference needs tile_size (tune the overlay)")
+            raise ValueError("LayerNorm.reference needs tile_size (resolve first)")
         rows = x.reshape(-1, cols).astype(np.float32)
         mean = rows.mean(axis=-1, keepdims=True)
         # The biased variance, which is what torch normalises by.

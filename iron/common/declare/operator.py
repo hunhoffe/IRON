@@ -13,6 +13,8 @@ extents, and the instance's buffer attributes answer in elements.
 from __future__ import annotations
 
 import dataclasses
+import inspect
+from types import FunctionType
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -85,7 +87,9 @@ class _ArrayView:
 
     Reading a field no tile names and that does not declare ``array=True``
     raises, so an array cannot come to depend on an extent by accident
-    (one array serves every extent).
+    (one array serves every extent). The operator's methods and properties
+    run on the view too, so a ``kernel()`` reading an extent is caught as
+    well.
     """
 
     __slots__ = ("_op",)
@@ -93,9 +97,14 @@ class _ArrayView:
     def __init__(self, op: "Operator") -> None:
         object.__setattr__(self, "_op", op)
 
+    @property
+    def __class__(self):  # type: ignore[override]
+        # super() and isinstance() inside a hook see the operator's class.
+        return type(object.__getattribute__(self, "_op"))
+
     def __getattr__(self, name: str):
         op = object.__getattribute__(self, "_op")
-        fields = op._param_fields + op._auto_fields
+        fields = {f.name for f in dataclasses.fields(op)} - {"ov"}
         if name in fields and name not in op._array_fields:
             raise TypeError(
                 f"{type(op).__name__}.array() reads {name}, which no tile names: "
@@ -103,13 +112,21 @@ class _ArrayView:
                 f"if the array does read it, or move the dependence into the "
                 f"sequence or a Value"
             )
+        attr = inspect.getattr_static(type(op), name, None)
+        if isinstance(attr, FunctionType):
+            return attr.__get__(self, type(op))
+        if isinstance(attr, property) and attr.fget is not None:
+            return attr.fget(self)
         return getattr(op, name)
 
     def __setattr__(self, name: str, value) -> None:
         setattr(object.__getattribute__(self, "_op"), name, value)
 
 
-@dataclass_transform(field_specifiers=(param,))  # auto unlisted: see Overlay
+# Keyword-only to a checker, as every declared field is passed by keyword
+# (a required field after one with a default is keyword-only at runtime too,
+# see field._specifier); auto unlisted: see Overlay.
+@dataclass_transform(kw_only_default=True, field_specifiers=(param,))
 @dataclasses.dataclass(eq=False, repr=True)
 class Operator(Generic[OV], metaclass=_OperatorMeta):
     """An operator. Subclass it.
@@ -703,4 +720,6 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
             for f in dataclasses.fields(self)
             if f.repr and f.name != "ov"
         )
+        if self.merged:
+            return f"{type(self).__name__}({own})"
         return f"{type(self).__name__}({self.ov!r}, {own})"

@@ -8,16 +8,8 @@ from typing import ClassVar
 
 from aie.utils.verify import Tolerance
 
-from iron.common import ChanneledUnaryOverlay
-from iron.common.declare import (
-    Incompatible,
-    In,
-    Operator,
-    Out,
-    StreamIn,
-    param,
-    auto,
-)
+from iron.common import Elementwise
+from iron.common.declare import In, Out, auto, param
 import aie.utils as aie_utils
 from aie.iron.kernels import eltwise, norm
 
@@ -65,21 +57,51 @@ def _cases(weighted):
     return cases
 
 
-class RMSNormOverlay(ChanneledUnaryOverlay):
-    """The array for row-wise RMS normalization: the shared elementwise design.
+class RMSNorm(Elementwise):
+    """AIE-accelerated RMS Normalization layer (unweighted).
 
-    ``tile_size`` is the row length and is shape-bearing (the host buffers are
-    ``rows x tile_size``), so it is a dimension here rather than the tunable
-    the template declares.
+    ``rows`` rows of ``tile_size`` elements; :class:`WeightedRMSNorm` is the
+    form with a learned weight row, which a graph call with a weight picks.
+    ``tile_size`` is the row length and is shape-bearing (the host buffers
+    are ``rows x tile_size``), so it is a dimension here rather than the
+    knob the template declares.
     """
 
+    test = Testing(_cases(weighted=False), tolerance=Tolerance.relative(0.04, 1e-6))
+
+    rows: int = param()
     tile_size: int = param()
     # One core by default: a core normalizes whole rows, and how many rows
     # there are is the extent. Call sites with many rows spread them.
     num_aie_columns: int = auto(1)
-    epsilon: float = 1e-5  # RMSNorm eps; Llama 1e-5 (default), Gemma 1e-6
+    # RMSNorm eps; Llama 1e-5 (default), Gemma 1e-6
+    epsilon: float = param(default=1e-5, array=True)
 
     tile_cap: ClassVar[int] = 8192
+
+    x = In(
+        rows,
+        tile_size,
+        tile=(Elementwise.line_size,),
+        per=(num_aie_columns, Elementwise.num_channels),
+    )
+    y = Out(
+        rows,
+        tile_size,
+        tile=(Elementwise.line_size,),
+        per=(num_aie_columns, Elementwise.num_channels),
+    )
+
+    @classmethod
+    def resolve_class(cls, n_operands, kwargs):
+        # RMSNorm(x, w) in a graph: a bare weight tensor selects the weighted form.
+        if cls is RMSNorm and n_operands == 2:
+            return WeightedRMSNorm
+        return cls
+
+    @property
+    def weighted(self) -> bool:
+        return False
 
     def kernel(self, target):
         return norm.rms_norm_eps(self.line_size)
@@ -87,20 +109,45 @@ class RMSNormOverlay(ChanneledUnaryOverlay):
     def kernel_call(self, kernel, elem_in, elem_out) -> None:
         kernel(elem_in, elem_out, self.line_size, self.epsilon)
 
+    def reference(self, x, w=None):
+        """CPU reference: row-wise RMS normalization, optionally weighted."""
+        return reference(x, w=w, weighted=self.weighted, eps=self.epsilon)
 
-class WeightedRMSNormOverlay(RMSNormOverlay):
-    """RMS normalization followed by an elementwise multiply with a weight row.
+
+class WeightedRMSNorm(RMSNorm):
+    """AIE-accelerated RMS Normalization layer with a learned weight row.
 
     Two cores per (column, channel), pipelined: one normalizes, the next
     multiplies by the weight. The weight fifo is one per channel, shared by
     every column in that channel, and each receives the whole weight row.
     """
 
-    # The weight row is one tile, shared by every column of a channel; the
-    # shim budget accounts for a replicate= stream once per channel.
-    w = StreamIn(
-        RMSNormOverlay.line_size, per=RMSNormOverlay.num_channels, replicate=True
+    test = Testing(_cases(weighted=True), tolerance=Tolerance.relative(0.04, 1e-6))
+
+    x = In(
+        RMSNorm.rows,
+        RMSNorm.tile_size,
+        tile=(RMSNorm.line_size,),
+        per=(RMSNorm.num_aie_columns, RMSNorm.num_channels),
     )
+    # The weight row is one line, shared by every column of a channel; the
+    # shim budget counts a replicate= stream once per channel.
+    w = In(
+        RMSNorm.tile_size,
+        tile=(RMSNorm.line_size,),
+        per=(RMSNorm.num_channels,),
+        replicate=True,
+    )
+    y = Out(
+        RMSNorm.rows,
+        RMSNorm.tile_size,
+        tile=(RMSNorm.line_size,),
+        per=(RMSNorm.num_aie_columns, RMSNorm.num_channels),
+    )
+
+    @property
+    def weighted(self) -> bool:
+        return True
 
     def array(self, target) -> list:
         from aie.iron import ObjectFifo, Worker
@@ -191,84 +238,12 @@ class WeightedRMSNormOverlay(RMSNormOverlay):
                     )
                 )
         for k in range(n_cores):
-            self.x[k].bind(of_ins[k].prod())
-            self.y[k].bind(of_outs[k].cons())
+            self.x.lane(k).bind(of_ins[k].prod())
+            self.y.lane(k).bind(of_outs[k].cons())
         for j in range(chans):
-            self.w[j].bind(of_ws[j].prod())
+            self.w.lane(j).bind(of_ws[j].prod())
         self.count.bind(counts)
         return workers
-
-
-class RMSNorm(Operator[RMSNormOverlay]):
-    """AIE-accelerated RMS Normalization layer (unweighted).
-
-    ``rows`` rows of ``tile_size`` elements; :class:`WeightedRMSNorm` is the
-    form with a learned weight row, which a graph call with a weight picks.
-    """
-
-    test = Testing(_cases(weighted=False), tolerance=Tolerance.relative(0.04, 1e-6))
-
-    rows: int = param()
-
-    x = In(rows, RMSNormOverlay.tile_size, to=RMSNormOverlay.x)
-    y = Out(rows, RMSNormOverlay.tile_size, from_=RMSNormOverlay.y)
-
-    @classmethod
-    def resolve_class(cls, n_operands, kwargs):
-        # RMSNorm(x, w) in a graph: a bare weight tensor selects the weighted form.
-        if cls is RMSNorm and n_operands == 2:
-            return WeightedRMSNorm
-        return cls
-
-    @property
-    def size(self) -> int:
-        return self.rows * self.ov.tile_size
-
-    @property
-    def weighted(self) -> bool:
-        return False
-
-    @property
-    def epsilon(self) -> float:
-        return self.ov.epsilon
-
-    def compatible(self) -> None:
-        ov = self.ov
-        unit = ov.num_aie_columns * ov.num_channels * ov.tile_size
-        if self.size % unit:
-            raise Incompatible(
-                f"size ({self.size}) must be a multiple of "
-                f"num_aie_columns * num_channels * tile_size ({unit})"
-            )
-
-    def resident_values(self) -> dict[str, int]:
-        ov = self.ov
-        return {
-            "count": self.size // (ov.num_aie_columns * ov.num_channels) // ov.line_size
-        }
-
-    def reference(self, x, w=None):
-        """CPU reference: row-wise RMS normalization, optionally weighted."""
-        return reference(x, w=w, weighted=self.weighted, eps=self.epsilon)
-
-
-class WeightedRMSNorm(RMSNorm, Operator[WeightedRMSNormOverlay]):
-    """AIE-accelerated RMS Normalization layer with a learned weight row."""
-
-    test = Testing(_cases(weighted=True), tolerance=Tolerance.relative(0.04, 1e-6))
-
-    x = In(RMSNorm.rows, RMSNormOverlay.tile_size, to=RMSNormOverlay.x)
-    w = In(RMSNormOverlay.tile_size, to=WeightedRMSNormOverlay.w)
-    y = Out(RMSNorm.rows, RMSNormOverlay.tile_size, from_=RMSNormOverlay.y)
-
-    @property
-    def weighted(self) -> bool:
-        return True
-
-    @property
-    def weight_length(self) -> int:
-        """Length of the weight vector, which here is one tile."""
-        return self.ov.tile_size
 
 
 # --------------------------------------------------------------------------

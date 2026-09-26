@@ -3,21 +3,17 @@
 
 from aie.iron.kernels import eltwise
 
-from iron.common import BinaryElementwiseOperator, BinaryElementwiseOverlay
+from iron.common import BinaryElementwise
 from iron.common.testing import Testing, binary_elementwise_cases
 
 
-class ElementwiseAddOverlay(BinaryElementwiseOverlay):
-    """The array for ElementwiseAdd: the shared elementwise design over its kernel."""
-
-    def kernel(self, target):
-        return eltwise.add_sized(self.line_size)
-
-
-class ElementwiseAdd(BinaryElementwiseOperator[ElementwiseAddOverlay]):
+class ElementwiseAdd(BinaryElementwise):
     """AIE-accelerated element-wise addition"""
 
     test = Testing(binary_elementwise_cases([1024, 2048, 4096, 8192]))
+
+    def kernel(self, target):
+        return eltwise.add_sized(self.line_size)
 
     def reference(self, a, b):
         return a + b

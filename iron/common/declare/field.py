@@ -68,10 +68,13 @@ def auto(
 ) -> Any:
     """Declare a knob the library resolves for the device when the caller
     does not: a compile-time value that starts at ``default`` (``None``:
-    tuning must fill it) and that :meth:`Overlay.resolve` may replace.
+    :meth:`~iron.common.declare.Operator.resolve` must fill it) and that
+    ``resolve`` may replace. Annotate it with the resolved type: the field
+    is ``None`` only until resolution, and every hook after it sees the
+    value.
 
     An ``auto()`` never appears in a host shape (inference would cycle
-    through tuning); a stream tile may name one. ``choices`` and ``legal``
+    through resolution); a stream tile may name one. ``choices`` and ``legal``
     describe the knob for a tuner and are recorded, not yet read.
     ``init=False`` fixes a subclass's value of an inherited knob (a kernel
     that only works with one channel per column).

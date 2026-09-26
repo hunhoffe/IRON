@@ -332,8 +332,8 @@ Data movement pattern: L3 → Shim DMA → L2 → L1 (tile local) → Compute
    written in the operator's own file (the hello-world in
    `iron/tests/toolchain/inline_kernel.py`: a `vadd` in C++ text, the
    argument types the streams' tiles). An overlay running one kernel
-   reports its contract from `tolerance(target)` (`ElementwiseOverlay` does
-   this from `kernel(target)`). If a new C++ compute kernel is needed, add it
+   reports its contract from `tolerance(target)` (`Elementwise` does this
+   from `kernel(target)`). If a new C++ compute kernel is needed, add it
    to the
    [mlir-aie kernel library](https://github.com/Xilinx/mlir-aie/tree/main/aie_kernels)
    with a factory in `aie.iron.kernels`; IRON hosts no kernels

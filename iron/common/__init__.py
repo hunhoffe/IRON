@@ -31,27 +31,16 @@ from .declare import (
     select,
 )
 from .design import DesignGenerator
-from .elementwise import (
-    BinaryElementwiseOperator,
-    BinaryElementwiseOverlay,
-    ChanneledUnaryOperator,
-    ChanneledUnaryOverlay,
-    ElementwiseOperator,
-    ElementwiseOverlay,
-)
+from .elementwise import BinaryElementwise, Elementwise, UnaryElementwise
 
 __all__ = [
     "Artifacts",
-    "BinaryElementwiseOperator",
-    "BinaryElementwiseOverlay",
-    "ChanneledUnaryOperator",
-    "ChanneledUnaryOverlay",
+    "BinaryElementwise",
     "DeclarationError",
     "Design",
     "DesignGenerator",
     "DispatchTime",
-    "ElementwiseOperator",
-    "ElementwiseOverlay",
+    "Elementwise",
     "In",
     "InOut",
     "Incompatible",
@@ -60,6 +49,7 @@ __all__ = [
     "Overlay",
     "Resident",
     "Scratchpad",
+    "UnaryElementwise",
     "Value",
     "Shim",
     "Step",

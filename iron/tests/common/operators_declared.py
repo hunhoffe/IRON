@@ -25,9 +25,8 @@ def test_exported_operator_is_declared(name):
         assert callable(cls) and not isinstance(cls, type)
         return
     assert isinstance(cls, type) and issubclass(cls, Operator), name
-    assert cls._overlay_class is not None and issubclass(
-        cls._overlay_class, Overlay
-    ), name
+    # One class, or an operator on an overlay of its own: either way an array.
+    assert cls._overlay_class is None or issubclass(cls._overlay_class, Overlay), name
     assert [b.name for b in cls._members if hasattr(b, "direction")], name
 
 

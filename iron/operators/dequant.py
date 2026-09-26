@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import dataclasses
-from dataclasses import field
 from typing import ClassVar
 
 from aie.iron.kernels import datamovement
@@ -10,55 +9,9 @@ from aie.iron.kernels.datamovement import expand_ref
 import numpy as np
 from ml_dtypes import bfloat16
 
-from iron.common import ChanneledUnaryOverlay
-from iron.common.declare import (
-    Incompatible,
-    In,
-    Operator,
-    Out,
-    StreamIn,
-    param,
-    auto,
-)
+from iron.common import UnaryElementwise
+from iron.common.declare import In, auto, param
 from iron.common.testing import Case, Testing, device_columns
-
-
-class DequantOverlay(ChanneledUnaryOverlay):
-    """The array for int4 -> bf16 dequantization: the shared elementwise design.
-
-    A core takes ``line_size`` values as ``in_tile`` packed bytes (two 4-bit
-    values per byte plus a bf16 scale and zero point per ``group_size``) and
-    produces ``line_size`` bf16 values, so its two streams carry different
-    tile types.
-    """
-
-    group_size: int = field(default=32, repr=False)
-    # The packed size of one tile; filled by tuning beside ``line_size``.
-    in_tile: int | None = auto(repr=False)
-
-    default_tile: ClassVar[int] = 4096
-    tile_cap: ClassVar[int] = 16384
-
-    x = StreamIn(
-        in_tile,
-        dtype=np.uint8,
-        per=(
-            ChanneledUnaryOverlay.num_aie_columns,
-            ChanneledUnaryOverlay.num_channels,
-        ),
-    )
-
-    def resolve(self, dev) -> "DequantOverlay":
-        tuned = super().resolve(dev)
-        packed = (tuned.line_size // 2) + (tuned.line_size // self.group_size) * 2
-        return dataclasses.replace(tuned, in_tile=packed)
-
-    def kernel(self, target):
-        return datamovement.expand(self.tile_size, self.group_size)
-
-    def kernel_call(self, kernel, elem_in, elem_out) -> None:
-        # The tile size is a compile flag, not an argument.
-        kernel(elem_in, elem_out)
 
 
 def _cases():
@@ -89,61 +42,62 @@ def _packed(op):
     value inside int4's [0, 15]; the input is their packed form."""
     rng = np.random.default_rng(42)
     values = (rng.random(op.size) * 3.75).astype(bfloat16)
-    scales = (
-        1 / 3.75 + (1 - 1 / 3.75) * rng.random(op.size // op.ov.group_size)
-    ).astype(bfloat16)
+    scales = (1 / 3.75 + (1 - 1 / 3.75) * rng.random(op.size // op.group_size)).astype(
+        bfloat16
+    )
     return dict(x=op.pack(values, scales))
 
 
-class Dequant(Operator[DequantOverlay]):
-    """AIE-accelerated dequantization operator"""
+class Dequant(UnaryElementwise):
+    """AIE-accelerated int4 -> bf16 dequantization: the elementwise design
+    over a packed input.
+
+    A core takes ``line_size`` values as ``in_tile`` packed bytes (two 4-bit
+    values per byte plus a bf16 scale and zero point per ``group_size``) and
+    produces ``line_size`` bf16 values, so its two streams carry different
+    tiles.
+    """
 
     test = Testing(_cases, draw=_packed)
 
-    size: int = param()
+    group_size: int = param(default=32, repr=False, array=True)
     # The packed input's length: two 4-bit values per byte plus a bf16 scale
     # and zero point per group. Derived from size unless given.
     packed: int | None = param(default=None, repr=False)
+    # The packed size of one line; filled by resolve beside ``line_size``.
+    in_tile: int = auto(repr=False)
 
-    x = In(packed, dtype=np.uint8, to=DequantOverlay.x)
-    y = Out(size, from_=DequantOverlay.y)
+    default_tile: ClassVar[int] = 4096
+    tile_cap: ClassVar[int] = 16384
+
+    x = In(
+        packed,
+        dtype=np.uint8,
+        tile=(in_tile,),
+        per=(UnaryElementwise.num_aie_columns, UnaryElementwise.num_channels),
+    )
 
     def validate(self) -> None:
-        expected = (self.size // 2) + (self.size // self.ov.group_size) * 2
+        expected = (self.size // 2) + (self.size // self.group_size) * 2
         if self.packed is None:
             self.packed = expected
         elif self.packed != expected:
             raise ValueError(
                 f"packed={self.packed} does not match size={self.size} with "
-                f"group_size={self.ov.group_size} (expected {expected})"
+                f"group_size={self.group_size} (expected {expected})"
             )
 
-    @property
-    def input_size(self) -> int:
-        return self.packed
+    def resolve(self, dev):
+        op = super().resolve(dev)
+        packed = (op.line_size // 2) + (op.line_size // self.group_size) * 2
+        return dataclasses.replace(op, in_tile=packed)
 
-    @property
-    def output_size(self) -> int:
-        return self.size
+    def kernel(self, target):
+        return datamovement.expand(self.line_size, self.group_size)
 
-    def compatible(self) -> None:
-        ov = self.ov
-        total_cores = ov.num_aie_columns * ov.num_channels
-        if self.size % total_cores:
-            raise Incompatible(
-                f"size ({self.size}) must be divisible by total cores ({total_cores})"
-            )
-        if (self.size // total_cores) % ov.line_size:
-            raise Incompatible(
-                f"size ({self.size}) leaves each core {self.size // total_cores} "
-                f"elements, not a multiple of the {ov.line_size}-element tile"
-            )
-
-    def resident_values(self) -> dict[str, int]:
-        ov = self.ov
-        return {
-            "count": self.size // (ov.num_aie_columns * ov.num_channels) // ov.line_size
-        }
+    def kernel_call(self, kernel, elem_in, elem_out) -> None:
+        # The line length is a compile flag, not an argument.
+        kernel(elem_in, elem_out)
 
     def pack(self, values, scales):
         """Quantize ``values`` (bf16, ``size``) by ``scales`` (bf16, one per
@@ -151,9 +105,9 @@ class Dequant(Operator[DequantOverlay]):
         the inverse of :meth:`reference`. Values are rounded half to even
         and clipped to the int4 range.
         """
-        tile, group = self.ov.tile_size, self.ov.group_size
+        tile, group = self.tile_size, self.group_size
         if tile is None:
-            raise ValueError("Dequant.pack needs tile_size (tune the overlay)")
+            raise ValueError("Dequant.pack needs tile_size (resolve first)")
         n_tiles, groups = self.size // tile, tile // group
         v = values.reshape(n_tiles, groups, group).astype(np.float32)
         s = scales.reshape(n_tiles, groups, 1).astype(np.float32)
@@ -175,8 +129,8 @@ class Dequant(Operator[DequantOverlay]):
         one little-endian bf16 scale per ``group_size`` values; the zero point
         is 0. Results are exact in f32.
         """
-        tile, group = self.ov.tile_size, self.ov.group_size
+        tile, group = self.tile_size, self.group_size
         if tile is None:
-            raise ValueError("Dequant.reference needs tile_size (tune the overlay)")
+            raise ValueError("Dequant.reference needs tile_size (resolve first)")
         tiles = x.reshape(self.size // tile, -1)
         return expand_ref(tiles, tile_size=tile, group_size=group).reshape(self.size)

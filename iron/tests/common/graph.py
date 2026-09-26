@@ -105,10 +105,10 @@ def test_overlays_are_shared_by_design_key_and_extents_are_not():
     assert gate.ov is up.ov and gate is not up  # one array, two operators
     assert down.ov is not gate.ov  # a different K is a different array
     assert [type(o).__name__ for o in t.overlays] == [
-        "WeightedRMSNormOverlay",
+        "WeightedRMSNorm",  # a one-class operator is its own array
         "GEMVOverlay",
-        "SiLUOverlay",
-        "ElementwiseMulOverlay",
+        "SiLU",
+        "ElementwiseMul",
         "CopyOverlay",
         "GEMVOverlay",
     ]

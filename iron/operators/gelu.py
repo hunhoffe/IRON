@@ -9,26 +9,22 @@ import numpy as np
 
 from aie.utils.verify import Tolerance
 
-from iron.common import ChanneledUnaryOperator, ChanneledUnaryOverlay
+from iron.common import UnaryElementwise
 from iron.common.testing import Testing, channeled_unary_cases
 
 
-class GELUOverlay(ChanneledUnaryOverlay):
-    """The array for GELU: the shared elementwise design over its kernel."""
-
-    tile_cap: ClassVar[int] = 8192
-
-    def kernel(self, target):
-        return activation.gelu_sized(self.line_size)
-
-
-class GELU(ChanneledUnaryOperator[GELUOverlay]):
+class GELU(UnaryElementwise):
     """AIE-accelerated GELU activation function"""
 
     test = Testing(
         channeled_unary_cases([1024, 2048, 4096, 8192], 8192),
         tolerance=Tolerance.relative(0.04, 1e-6),
     )
+
+    tile_cap: ClassVar[int] = 8192
+
+    def kernel(self, target):
+        return activation.gelu_sized(self.line_size)
 
     def reference(self, x):
         """CPU reference: the tanh approximation the kernel computes."""

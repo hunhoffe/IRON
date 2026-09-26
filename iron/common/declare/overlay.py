@@ -94,7 +94,7 @@ def get_shim_dma_limit(dev) -> int:
 # always has a default, but pyright reads a specifier's default only from a
 # ``default=`` keyword, and ``auto(2)`` gives it positionally; unlisted, an
 # ``auto()`` field is one with a default of type Any, which is what it is.
-@dataclass_transform(field_specifiers=(param,))
+@dataclass_transform(kw_only_default=True, field_specifiers=(param,))
 @dataclasses.dataclass(eq=False)
 class Overlay:
     """What configures the array. Subclass it.

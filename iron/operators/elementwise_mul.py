@@ -3,21 +3,17 @@
 
 from aie.iron.kernels import eltwise
 
-from iron.common import BinaryElementwiseOperator, BinaryElementwiseOverlay
+from iron.common import BinaryElementwise
 from iron.common.testing import Testing, binary_elementwise_cases
 
 
-class ElementwiseMulOverlay(BinaryElementwiseOverlay):
-    """The array for ElementwiseMul: the shared elementwise design over its kernel."""
-
-    def kernel(self, target):
-        return eltwise.mul_sized(self.line_size)
-
-
-class ElementwiseMul(BinaryElementwiseOperator[ElementwiseMulOverlay]):
+class ElementwiseMul(BinaryElementwise):
     """AIE-accelerated element-wise multiplication"""
 
     test = Testing(binary_elementwise_cases([1024, 2048, 4096, 8192], 4096))
+
+    def kernel(self, target):
+        return eltwise.mul_sized(self.line_size)
 
     def reference(self, a, b):
         return a * b

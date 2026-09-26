@@ -11,7 +11,7 @@ any other, the kernel compiled from the text.
 
 import numpy as np
 
-from iron.common import BinaryElementwiseOperator, BinaryElementwiseOverlay
+from iron.common import BinaryElementwise
 from iron.tests.toolchain.lowering import lower
 from iron.tests.toolchain.tools import requires
 
@@ -27,14 +27,12 @@ extern "C" void vadd(bfloat16 *a, bfloat16 *b, bfloat16 *y, int n) {
 """
 
 
-class VectorAddOverlay(BinaryElementwiseOverlay):
+class VectorAdd(BinaryElementwise):
+    """y = a + b."""
+
     def kernel(self, target):
         tiles = [self.a.tile, self.b.tile, self.y.tile, np.int32]
         return target.kernel("vadd", tiles, source_text=VADD)
-
-
-class VectorAdd(BinaryElementwiseOperator[VectorAddOverlay]):
-    """y = a + b."""
 
     def reference(self, a, b):
         return a + b

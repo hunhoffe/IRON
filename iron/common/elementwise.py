@@ -1,49 +1,50 @@
 # SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""The shared elementwise template: N flat buffers in, one of the same size out.
+"""The shared elementwise design: N flat buffers in, one of the same size out.
 
-One overlay builds the array for every elementwise kernel IRON ships. It
-places one core per (column, channel), each streaming fixed-size lines in
-and out; the operator declares a flat buffer per stream, and its runtime
+One array serves every elementwise kernel IRON ships. It places one core per
+(column, channel), each streaming fixed-size lines in and out; an operator
+declares a flat buffer per stream, the line as its tile, and its runtime
 sequence is derived -- the buffer is split evenly across the cores' fifos
 and drained back the same way.
 
-``ChanneledUnaryOverlay`` and ``BinaryElementwiseOverlay`` are the two stream
-shapes, and nothing more: the design reads the streams it was declared with,
-so a subclass with a third input needs no new code here.
+:class:`UnaryElementwise` and :class:`BinaryElementwise` are the two operand
+shapes, and nothing more: the array reads the operands it was declared
+with, so an operator with a third input needs no new code here.
 
-The core's trip count is a :class:`~iron.common.declare.Resident` the
-sequence writes before the first transfer, so the array does not depend on
-the extent and one overlay serves every size (OPERATOR_MODEL_PLAN.md §3).
-This is where the template parts company with upstream's
+The core's trip count is a :class:`~iron.common.declare.Value` the sequence
+writes before the first transfer, so the array does not depend on the
+extent and one array serves every size (OPERATOR_MODEL_PLAN.md §3). This is
+where the template parts company with upstream's
 :func:`aie.iron.algorithms.transform_parallel`, which is otherwise the same
 design: that one takes the tensor at build time and folds the trip count
 into the core program, and owns the runtime sequence so it can issue the
-taps. An overlay here returns workers and leaves the sequence to the
+taps. An array here returns workers and leaves the sequence to the
 library, which is what lets several operators fuse into one image.
 
-A concrete operator is two small subclasses, one per layer, and names the
-kernel each core calls::
+A concrete operator is one small subclass, naming the kernel each core
+calls::
 
-    class ReLUOverlay(ChanneledUnaryOverlay):
+    class ReLU(UnaryElementwise):
         def kernel(self, target):
-            return kernels.relu_sized(self.line_size)
+            return eltwise.relu_sized(self.line_size)
 
-    class ReLU(ChanneledUnaryOperator[ReLUOverlay]):
-        def reference(self, x): ...
+        def reference(self, x):
+            return np.maximum(x, 0)
 
 :mod:`aie.iron.kernels` is where a kernel comes from: its factories return
 the ``ExternalFunction`` for a symbol, its source and its argument types,
-and handle aie2's LUT tables. An overlay whose kernel takes more than the
+and handle aie2's LUT tables. An operator whose kernel takes more than the
 line length (leaky_relu's alpha) or takes its arguments in another order
-(axpy's scalar) overrides :meth:`ElementwiseOverlay.kernel_call`.
+(axpy's scalar) overrides :meth:`Elementwise.kernel_call`; what it reads
+there is declared ``param(..., array=True)``, since the array bakes it.
 """
 
 from __future__ import annotations
 
 import dataclasses
-from typing import TYPE_CHECKING, ClassVar, TypeVar
+from typing import TYPE_CHECKING, ClassVar, Self
 
 import numpy as np
 from aie.iron import ObjectFifo, Worker
@@ -51,20 +52,7 @@ from aie.iron.controlflow import range_
 from aie.iron.kernel import ExternalFunction
 from aie.utils.verify import Tolerance
 
-from .declare import (
-    In,
-    Incompatible,
-    Operator,
-    Out,
-    Overlay,
-    Resident,
-    StreamIn,
-    StreamOut,
-    Unresolvable,
-    auto,
-    param,
-)
-from .declare.member import _Stream
+from .declare import In, Incompatible, Operator, Out, Unresolvable, Value, auto, param
 from .tiling import bank_elements
 
 if TYPE_CHECKING:
@@ -78,32 +66,31 @@ DEFAULT_TILE = 256
 _I32 = np.ndarray[(1,), np.dtype[np.int32]]  # type: ignore[misc]
 
 
-class ElementwiseOverlay(Overlay):
+class Elementwise(Operator):
     """The array for an elementwise kernel over lines of ``line_size`` elements.
 
-    Subclasses declare the streams (see the two below) and implement
-    :meth:`kernel`. ``tile_cap`` is the largest line this kernel holds; a
-    line spanning more than one local-memory bank drops the fifo depth to
-    one.
+    Subclasses declare the operands with the line as their tile, one lane
+    per (column, channel) (see the two below), and implement :meth:`kernel`.
+    ``tile_cap`` is the largest line the kernel holds; a line spanning more
+    than one local-memory bank drops the fifo depth to one.
     """
 
     # None: every column the device's shim budget allows, one channel each,
-    # DEFAULT_TILE lines.
-    num_aie_columns: int | None = auto()
+    # default_tile lines.
+    num_aie_columns: int = auto()
     num_channels: int = auto(1)
-    tile_size: int | None = auto()
-    # min(tile_size, tile_cap); filled by tuning, never set by a caller.
-    line_size: int | None = auto(repr=False)
+    tile_size: int = auto()
+    # min(tile_size, tile_cap); filled by resolve, never set by a caller.
+    line_size: int = auto(repr=False)
 
-    count = Resident(np.int32)  # lines each core processes; written per sequence
+    # The lines each core processes: written once per build, before the
+    # first transfer, so the array does not depend on the extent.
+    count = Value(np.int32, derive=lambda op: op.lines // op.cores)
 
-    # The line a core streams when nothing else is asked for, and the
-    # largest it will hold: a line spanning more than one local-memory bank
-    # drops the fifo depth to one.
     default_tile: ClassVar[int] = DEFAULT_TILE
     tile_cap: ClassVar[int] = 4096
 
-    def resolve(self, dev) -> "ElementwiseOverlay":
+    def resolve(self, dev) -> Self:
         tile_size = self.default_tile if self.tile_size is None else self.tile_size
         cols = self.num_aie_columns
         if dev is not None:
@@ -119,10 +106,25 @@ class ElementwiseOverlay(Overlay):
             line_size=min(tile_size, self.tile_cap),
         )
 
+    def compatible(self) -> None:
+        (out,) = self.outputs
+        share = self.cores * self.line_size
+        if out.elements % share:
+            raise Incompatible(
+                f"{out.name} ({out.elements} elements) must be a multiple of "
+                f"num_aie_columns * num_channels * line_size ({share}): every "
+                f"core streams whole {self.line_size}-element lines"
+            )
+
     @property
     def cores(self) -> int:
-        assert self.num_aie_columns is not None, "cores of a tuned overlay"
         return self.num_aie_columns * self.num_channels
+
+    @property
+    def lines(self) -> int:
+        """How many lines the operands hold; each core streams an equal share."""
+        (out,) = self.outputs
+        return out.elements // self.line_size
 
     # -- the kernel --------------------------------------------------------
 
@@ -150,9 +152,9 @@ class ElementwiseOverlay(Overlay):
     # -- the array ----------------------------------------------------------
 
     def array(self, target) -> list:
-        streams = [m for m in self._members if isinstance(m, _Stream)]
-        ins = [getattr(self, m.name) for m in streams if m.direction == "in"]
-        outs = [getattr(self, m.name) for m in streams if m.direction == "out"]
+        streams = list(self.streams.values())
+        ins = [s for s in streams if s.direction == "in"]
+        outs = [s for s in streams if s.direction == "out"]
         n_in = len(ins)
         cores = self.cores
         kernel = self.kernel(target)
@@ -206,85 +208,48 @@ class ElementwiseOverlay(Overlay):
         return workers
 
 
-EO = TypeVar("EO", bound=ElementwiseOverlay)
+# --------------------------------------------------------------------------
+# The two operand shapes
+# --------------------------------------------------------------------------
 
 
-class ElementwiseOperator(Operator[EO]):
-    """What every elementwise operator's buffers have in common."""
+class UnaryElementwise(Elementwise):
+    """A flat buffer in, a flat buffer of the same size out."""
 
     size: int = param()
 
-    def compatible(self) -> None:
-        ov = self.ov
-        assert ov.num_aie_columns is not None and ov.tile_size is not None
-        assert ov.line_size is not None, "compatible() sees a tuned overlay"
-        unit = ov.num_aie_columns * ov.tile_size
-        if self.size % unit:
-            raise Incompatible(
-                f"size ({self.size}) must be a multiple of "
-                f"num_aie_columns * tile_size ({unit})"
-            )
-        per_core = self.size // ov.cores
-        if per_core % ov.line_size:
-            raise Incompatible(
-                f"size ({self.size}) leaves each of the {ov.cores} cores "
-                f"{per_core} elements, not a multiple of the "
-                f"{ov.line_size}-element line"
-            )
-
-    def resident_values(self) -> dict[str, int]:
-        ov = self.ov
-        assert ov.line_size is not None, "residents() sees a tuned overlay"
-        return {"count": self.size // ov.cores // ov.line_size}
-
-
-# --------------------------------------------------------------------------
-# The two stream shapes
-# --------------------------------------------------------------------------
-
-
-class ChanneledUnaryOverlay(ElementwiseOverlay):
-    """One line in, one line out, per (column, channel)."""
-
-    x = StreamIn(
-        ElementwiseOverlay.line_size,
-        per=(ElementwiseOverlay.num_aie_columns, ElementwiseOverlay.num_channels),
+    x = In(
+        size,
+        tile=(Elementwise.line_size,),
+        per=(Elementwise.num_aie_columns, Elementwise.num_channels),
     )
-    y = StreamOut(
-        ElementwiseOverlay.line_size,
-        per=(ElementwiseOverlay.num_aie_columns, ElementwiseOverlay.num_channels),
+    y = Out(
+        size,
+        tile=(Elementwise.line_size,),
+        per=(Elementwise.num_aie_columns, Elementwise.num_channels),
     )
 
 
-class ChanneledUnaryOperator(ElementwiseOperator[EO]):
-    """A flat buffer in, a flat buffer of the same size out."""
-
-    x = In(ElementwiseOperator.size, to=ChanneledUnaryOverlay.x)
-    y = Out(ElementwiseOperator.size, from_=ChanneledUnaryOverlay.y)
-
-
-class BinaryElementwiseOverlay(ElementwiseOverlay):
-    """Two lines in, one line out. Each core's two input channels halve the
-    columns the shim budget allows, so ``num_channels`` stays at one.
+class BinaryElementwise(Elementwise):
+    """Two flat buffers in, one of the same size out. Each core's two input
+    channels halve the columns the shim budget allows, so ``num_channels``
+    stays at one.
     """
 
-    a = StreamIn(
-        ElementwiseOverlay.line_size,
-        per=(ElementwiseOverlay.num_aie_columns, ElementwiseOverlay.num_channels),
-    )
-    b = StreamIn(
-        ElementwiseOverlay.line_size,
-        per=(ElementwiseOverlay.num_aie_columns, ElementwiseOverlay.num_channels),
-    )
-    y = StreamOut(
-        ElementwiseOverlay.line_size,
-        per=(ElementwiseOverlay.num_aie_columns, ElementwiseOverlay.num_channels),
-    )
+    size: int = param()
 
-
-class BinaryElementwiseOperator(ElementwiseOperator[EO]):
-    """Two flat buffers in, one of the same size out."""
-
-    a = In(ElementwiseOperator.size, to=BinaryElementwiseOverlay.a)
-    b = In(ElementwiseOperator.size, to=BinaryElementwiseOverlay.b)
-    y = Out(ElementwiseOperator.size, from_=BinaryElementwiseOverlay.y)
+    a = In(
+        size,
+        tile=(Elementwise.line_size,),
+        per=(Elementwise.num_aie_columns, Elementwise.num_channels),
+    )
+    b = In(
+        size,
+        tile=(Elementwise.line_size,),
+        per=(Elementwise.num_aie_columns, Elementwise.num_channels),
+    )
+    y = Out(
+        size,
+        tile=(Elementwise.line_size,),
+        per=(Elementwise.num_aie_columns, Elementwise.num_channels),
+    )

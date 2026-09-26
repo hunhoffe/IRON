@@ -5,21 +5,8 @@ from aie.iron.kernels import datamovement
 
 import numpy as np
 
-from iron.common import BinaryElementwiseOperator, BinaryElementwiseOverlay
+from iron.common import BinaryElementwise, param
 from iron.common.testing import Case, Testing, device_columns
-
-
-class AXPYOverlay(BinaryElementwiseOverlay):
-    """The array for aX + Y: the elementwise design with the scalar as a kernel argument."""
-
-    scalar_factor: float = 3.0
-
-    def kernel(self, target):
-        return datamovement.axpy(self.line_size)
-
-    def kernel_call(self, kernel, elem_a, elem_b, elem_out) -> None:
-        # saxpy takes the scalar between its inputs and its output.
-        kernel(elem_a, elem_b, self.scalar_factor, elem_out, self.line_size)
 
 
 def _cases():
@@ -46,13 +33,24 @@ def _cases():
     return out
 
 
-class AXPY(BinaryElementwiseOperator[AXPYOverlay]):
-    """AIE-accelerated aX + Y operator"""
+class AXPY(BinaryElementwise):
+    """AIE-accelerated aX + Y operator: the elementwise design with the
+    scalar as a kernel argument.
+    """
 
     test = Testing(_cases)
+
+    scalar_factor: float = param(default=3.0, array=True)
+
+    def kernel(self, target):
+        return datamovement.axpy(self.line_size)
+
+    def kernel_call(self, kernel, elem_a, elem_b, elem_out) -> None:
+        # saxpy takes the scalar between its inputs and its output.
+        kernel(elem_a, elem_b, self.scalar_factor, elem_out, self.line_size)
 
     def reference(self, a, b):
         """CPU reference: ``scalar_factor * a + b`` in fp32, rounded once, as
         the kernel computes it; the scalar is bf16 on the device."""
-        scalar = np.float32(np.asarray(self.ov.scalar_factor, dtype=a.dtype))
+        scalar = np.float32(np.asarray(self.scalar_factor, dtype=a.dtype))
         return (scalar * a.astype(np.float32) + b.astype(np.float32)).astype(a.dtype)
