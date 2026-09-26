@@ -290,7 +290,7 @@ today**.
 
 ## Progress
 
-- (this commit) Audit, batch D, first half: structure. A `param()` may
+- `04c3b6a` Audit, batch D, first half: structure. A `param()` may
   have a callable default, computed from the operator when neither the
   caller nor an operand's shape gives it (`out_rows = rows * repeat`), and
   `check_derived(name)` is the one-line check that a value given as well
