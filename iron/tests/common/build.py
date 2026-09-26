@@ -522,18 +522,18 @@ def test_mem_copy_sequence_pads_a_remainder_to_a_full_line(monkeypatch):
 
     log, filled, drained = run(1024)
     assert (filled, drained) == (1024, 1024)
-    assert log[0] == ("fill", "s0", 0, (1, 1, 1, 256), False)
-    assert log[-1] == ("drain", "d3", 768, (1, 1, 1, 256), True)
+    assert log[0] == ("fill", "x0", 0, (1, 1, 1, 256), False)
+    assert log[-1] == ("drain", "y3", 768, (1, 1, 1, 256), True)
     # 1000: one whole partition, then a 232-element tail re-reading 8 from
     # the copied prefix so the last core still consumes a full line.
     log, filled, drained = run(1000)
     assert (filled, drained) == (1024, 1024)
-    assert log[-1] == ("drain", "d3", 768, (1, 1, 1, 232), True)
+    assert log[-1] == ("drain", "y3", 768, (1, 1, 1, 232), True)
     # 100: no whole partition, three idle cores, a 156-element pad.
     log, filled, drained = run(100)
     assert (filled, drained) == (256, 256)
-    assert {name for _, name, *_ in log} == {"s3", "d3"}
-    assert log[0] == ("fill", "s3", 0, (32, 1, 1, 4), True)
+    assert {name for _, name, *_ in log} == {"x3", "y3"}
+    assert log[0] == ("fill", "x3", 0, (32, 1, 1, 4), True)
 
 
 # --------------------------------------------------------------------------

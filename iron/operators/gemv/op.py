@@ -3,7 +3,6 @@
 
 import dataclasses
 import math
-from dataclasses import field
 from typing import ClassVar
 
 import numpy as np
@@ -16,9 +15,7 @@ from iron.common.declare import (
     In,
     Operator,
     Out,
-    Overlay,
-    StreamIn,
-    StreamOut,
+    Value,
     param,
     optional,
     auto,
@@ -26,40 +23,64 @@ from iron.common.declare import (
 from iron.common.tiling import Access
 from iron.common.tiling import DMA_BD_MAX_WRAP
 
-# --------------------------------------------------------------------------
-# The overlay: what configures the array.
-# --------------------------------------------------------------------------
+_I32 = np.ndarray[(1,), np.dtype[np.int32]]  # type: ignore[misc]
 
 
-class GEMVOverlay(Overlay):
-    """The array configuration for ``C = A @ B``: row-blocks of A per column.
+class GEMV(Operator):
+    """AIE-accelerated General Matrix-Vector/Vector-Matrix Multiplication layer.
 
-    Calls into the mv.cc kernel, which computes ``tile_size_input`` output rows
-    per call. ``K`` is baked into the kernel (``-DDIM_K``), so it is overlay-tier;
-    the number of rows ``M`` is not, and lives on :class:`GEMV`.
+    ``C = A @ B`` as row-blocks of A per column, each column's core calling
+    the mv.cc kernel over ``tile_size_input`` rows at a time. ``K`` is
+    compiled into the kernel (``-DDIM_K``) and the tiles name it, so it is
+    array-tier; the number of rows ``M`` is not, and reaches the core as
+    the ``tiles`` value.
 
     - num_aie_columns: columns to split the rows of A across
     - tile_size_input: rows of A stored on each core per acquire (chunk size of A)
     - tile_size_output: rows of C stored on each core per acquire (chunk size of C)
     """
 
+    M: int = param()
     K: int = param()
-    # None: every column the device's shim budget allows.
-    num_aie_columns: int | None = auto()
+    num_batches: int = param(default=1)
+    # None: every column the device's shim budget allows that leaves each
+    # column a whole number of tiles of M.
+    num_aie_columns: int = auto()
     tile_size_input: int = auto(2)
-    tile_size_output: int | None = auto()
+    tile_size_output: int = auto()  # None: tile_size_input
     # None picks the widest legal size for K (see validate).
-    kernel_vector_size: int | None = auto(repr=False)
+    kernel_vector_size: int = auto(repr=False, array=True)
     # Optional fused activation applied to each output tile in the producing core.
     # "none" (default) leaves the output unchanged; "gelu" applies GELU(tanh approx).
     # repr=False keeps operator/artifact names stable for the default path.
-    epilogue: str = field(default="none", repr=False)
+    epilogue: str = param(default="none", repr=False, array=True)
 
-    # One fifo per column for each of A, B and C. B is the whole vector, sent
-    # to every column's own fifo; the sequence fills each one (see GEMV.design).
-    a = StreamIn(tile_size_input, K, per=num_aie_columns, depth=2)
-    b = StreamIn(K, per=num_aie_columns, depth=1)
-    c = StreamOut(tile_size_output, per=num_aie_columns, depth=2)
+    # A single batch carries no batch dimension at all, rather than one of
+    # extent 1, so the unbatched shapes stay exactly as they were. One fifo
+    # per column for each of A, B and C; B is the whole vector, sent to every
+    # column's own fifo (see sequence).
+    A = In(
+        optional(num_batches),
+        M,
+        K,
+        tile=(tile_size_input, K),
+        per=(num_aie_columns,),
+        depth=2,
+    )
+    B = In(optional(num_batches), K, tile=(K,), per=(num_aie_columns,), depth=1)
+    C = Out(
+        optional(num_batches),
+        M,
+        tile=(tile_size_output,),
+        per=(num_aie_columns,),
+        depth=2,
+    )
+    # Output tiles each column produces per batch: the core's trip count,
+    # written once per build, so the array does not depend on M.
+    tiles = Value(
+        np.int32,
+        derive=lambda op: op.M // (op.num_aie_columns * op.tile_size_output),
+    )
 
     # Vector widths mv.cc's matvec_vectorized is instantiated at, widest first.
     # Each is a legal aie::vector<bfloat16, r> width; anything narrower than 16
@@ -124,17 +145,23 @@ class GEMVOverlay(Overlay):
             )
         return self.kernel_vector_size
 
-    def resolve(self, dev) -> "GEMVOverlay":
+    def resolve(self, dev):
+        """Columns default to the most the device's shim budget allows that
+        leave each column a whole number of tiles of M; the rest follows
+        from K and from each other, not from the device."""
         cols = self.num_aie_columns
         if cols is None:
             if dev is None:
                 raise Unresolvable(
                     "num_aie_columns defaults from the device; none given"
                 )
-            cols = self.shim_columns(dev)
+            tile = self.tile_size_output or self.tile_size_input
+            unit = tile * self.tile_size_input // math.gcd(tile, self.tile_size_input)
+            budget = self.shim_columns(dev)
+            fits = [c for c in range(1, budget + 1) if self.M % (c * unit) == 0]
+            cols = max(fits, default=1)
         elif dev is not None:
             self.check_shim_columns(dev, cols)
-        # The rest follows from K and from each other, not from the device.
         return dataclasses.replace(
             self,
             num_aie_columns=cols,
@@ -142,20 +169,43 @@ class GEMVOverlay(Overlay):
             kernel_vector_size=self._legal_kernel_vector_size(),
         )
 
+    def compatible(self):
+        cols = self.num_aie_columns
+        rows = self.M // cols
+        if self.M % cols:
+            raise Incompatible(f"M={self.M} does not divide across {cols} columns")
+        # We first acquire output rows from the C FIFO, then fill those rows
+        # from the A input, so both tiles must divide each column's share.
+        for name, tile in (
+            ("tile_size_output", self.tile_size_output),
+            ("tile_size_input", self.tile_size_input),
+        ):
+            if tile > rows:
+                raise Incompatible(f"{name}={tile} exceeds M/num_aie_columns={rows}")
+            if rows % tile:
+                raise Incompatible(
+                    f"{name}={tile} does not evenly divide M/num_aie_columns={rows}"
+                )
+
+    @property
+    def name(self) -> str:
+        # epilogue is repr=False so the default path keeps a stable name, but the
+        # fused variant must not share an artifact name with the plain GEMV of the
+        # same shape: both would emit the same .mlir/.xclbin, and in a shared build
+        # dir a cached unfused build can then satisfy the fused op.
+        base = super().name
+        if self.epilogue == "none":
+            return base
+        return f"{base}_epi{self.epilogue}"
+
     def array(self, target):
         from aie.dialects.aie import T
         import aie.dialects.index as index
-        from aie.helpers.dialects.scf import _for as range_
         from aie.iron import ObjectFifo, Worker
+        from aie.iron.controlflow import range_
 
-        K = self.K
-        num_aie_columns = self.num_aie_columns
-        tile_size_input = self.tile_size_input
-        tile_size_output = self.tile_size_output
-        vectorized = True
-        L1_A_ty = self.a.tile
-        L1_B_ty = self.b.tile
-        L1_C_ty = self.c.tile
+        K, cols = self.K, self.num_aie_columns
+        tile_size_input, tile_size_output = self.tile_size_input, self.tile_size_output
 
         # The kernels are declared and built by one object each. Constructing
         # them here rather than at import is required, not stylistic: an
@@ -167,7 +217,7 @@ class GEMVOverlay(Overlay):
             K,
             bfloat16,
             bfloat16,
-            vectorized=vectorized,
+            vectorized=True,
             vec_size=self.kernel_vector_size,
             output_rows=tile_size_output,
         )
@@ -188,138 +238,72 @@ class GEMVOverlay(Overlay):
             # carries its own link_with and aie-assign-core-link-files
             # aggregates them onto the core.
             gelu_kernel = activation.gelu().object_file.bind(
-                "gelu_tile_bf16", [np.int32, L1_C_ty]
+                "gelu_tile_bf16", [np.int32, self.C.tile]
             )
 
-        A_L3L1_fifos = [
-            ObjectFifo(L1_A_ty, name=f"A_L3L1_{i}", depth=self.a.depth)
-            for i in range(num_aie_columns)
+        A_fifos = [
+            ObjectFifo(self.A.tile, name=f"A_L3L1_{i}", depth=self.A.depth)
+            for i in range(cols)
         ]
-        B_L3L1_fifos = [
-            ObjectFifo(L1_B_ty, name=f"B_L3L1_{i}", depth=self.b.depth)
-            for i in range(num_aie_columns)
+        B_fifos = [
+            ObjectFifo(self.B.tile, name=f"B_L3L1_{i}", depth=self.B.depth)
+            for i in range(cols)
         ]
-        C_L1L3_fifos = [
-            ObjectFifo(L1_C_ty, name=f"C_L1L3_{i}", depth=self.c.depth)
-            for i in range(num_aie_columns)
+        C_fifos = [
+            ObjectFifo(self.C.tile, name=f"C_L1L3_{i}", depth=self.C.depth)
+            for i in range(cols)
         ]
+        tiles = [target.rtp(_I32, name=f"tiles_{i}") for i in range(cols)]
+        barriers = [target.barrier() for _ in range(cols)]
 
-        def core_body(A_L3L1_fifo, B_L3L1_fifo, C_L1L3_fifo, matvec, gelu_kernel=None):
-            one_idx = index.constant(1)
+        def core_body(A_fifo, B_fifo, C_fifo, matvec, tiles, barrier, gelu_kernel=None):
+            barrier.wait_for_value(1)
+            n = tiles[0]
             for _ in range_(0xFFFFFFFF):  # batch dim handled as part of this loop
-                b = B_L3L1_fifo.acquire(1)
-                # The kernel function computes m output rows; each core is
-                # responsible for (M/num_aie_columns) output rows, so we call the
-                # kernel (M/num_aie_columns)/m times.
-                for i_idx in range_(self._rows_per_column // tile_size_output):
-                    c = C_L1L3_fifo.acquire(1)
-                    i_i32 = index.casts(T.i32(), i_idx)
+                b = B_fifo.acquire(1)
+                # Each column produces tiles output tiles of tile_size_output
+                # rows per batch, tile_size_input rows per kernel call.
+                for _ in range_(n):
+                    c = C_fifo.acquire(1)
                     for j_idx in range_(tile_size_output // tile_size_input):
                         j_i32 = index.casts(T.i32(), j_idx)
                         output_row_offset = j_i32 * tile_size_input
-                        a = A_L3L1_fifo.acquire(1)
+                        a = A_fifo.acquire(1)
                         matvec(tile_size_input, output_row_offset, a, b, c)
-                        A_L3L1_fifo.release(1)
+                        A_fifo.release(1)
                     if gelu_kernel is not None:
                         gelu_kernel(tile_size_output, c)
-                    C_L1L3_fifo.release(1)
-                B_L3L1_fifo.release(1)
+                    C_fifo.release(1)
+                B_fifo.release(1)
 
         workers = [
             Worker(
                 core_body,
                 [
-                    A_L3L1_fifos[i].cons(),
-                    B_L3L1_fifos[i].cons(),
-                    C_L1L3_fifos[i].prod(),
+                    A_fifos[i].cons(),
+                    B_fifos[i].cons(),
+                    C_fifos[i].prod(),
                     matvec,
+                    tiles[i],
+                    barriers[i],
                 ]
                 + ([gelu_kernel] if self.epilogue == "gelu" else []),
             )
-            for i in range(num_aie_columns)
+            for i in range(cols)
         ]
-        for i in range(num_aie_columns):
-            self.a[i].bind(A_L3L1_fifos[i].prod())
-            self.b[i].bind(B_L3L1_fifos[i].prod())
-            self.c[i].bind(C_L1L3_fifos[i].cons())
+        for i in range(cols):
+            self.A.lane(i).bind(A_fifos[i].prod())
+            self.B.lane(i).bind(B_fifos[i].prod())
+            self.C.lane(i).bind(C_fifos[i].cons())
+        self.tiles.bind(tiles)
         return workers
-
-    # The core's inner trip count still depends on the extent M, through
-    # _rows_per_column, which GEMV.design sets before the overlay's design runs.
-    # That makes this overlay extent-dependent, against the reuse discipline
-    # in OPERATOR_MODEL_PLAN.md §3; it is kept so the object stays
-    # byte-identical to today's, and moves to a Resident in step 2.
-    _rows_per_column: int = field(default=0, init=False, repr=False, compare=False)
-
-
-# --------------------------------------------------------------------------
-# The operator: the host ABI, declared against the overlay.
-# --------------------------------------------------------------------------
-
-
-class GEMV(Operator[GEMVOverlay]):
-    """AIE-accelerated General Matrix-Vector/Vector-Matrix Multiplication layer"""
-
-    M: int = param()
-    num_batches: int = param(default=1)
-
-    # A single batch carries no batch dimension at all, rather than one of
-    # extent 1, so the unbatched shapes stay exactly as they were.
-    A = In(optional(num_batches), M, GEMVOverlay.K, to=GEMVOverlay.a)  # matrix
-    B = In(optional(num_batches), GEMVOverlay.K, to=GEMVOverlay.b)  # vector
-    C = Out(optional(num_batches), M, from_=GEMVOverlay.c)  # output
-
-    def resolve(self, dev):
-        """Columns default to the most the device's shim budget allows that
-        leave each column a whole number of tiles of M."""
-        ov = self.ov
-        if ov.num_aie_columns is None and dev is not None:
-            tile = ov.tile_size_output or ov.tile_size_input
-            unit = tile * ov.tile_size_input // math.gcd(tile, ov.tile_size_input)
-            budget = ov.shim_columns(dev)
-            fits = [c for c in range(1, budget + 1) if self.M % (c * unit) == 0]
-            ov = dataclasses.replace(ov, num_aie_columns=max(fits, default=1))
-        return dataclasses.replace(self, ov=ov.resolved(dev).copy())
-
-    def compatible(self):
-        ov = self.ov
-        rows = self.M // ov.num_aie_columns
-        if self.M % ov.num_aie_columns:
-            raise Incompatible(
-                f"M={self.M} does not divide across {ov.num_aie_columns} columns"
-            )
-        # We first acquire output rows from the C FIFO, then fill those rows
-        # from the A input, so both tiles must divide each column's share.
-        for name, tile in (
-            ("tile_size_output", ov.tile_size_output),
-            ("tile_size_input", ov.tile_size_input),
-        ):
-            if tile > rows:
-                raise Incompatible(f"{name}={tile} exceeds M/num_aie_columns={rows}")
-            if rows % tile:
-                raise Incompatible(
-                    f"{name}={tile} does not evenly divide M/num_aie_columns={rows}"
-                )
-        ov._rows_per_column = rows
-
-    @property
-    def name(self) -> str:
-        # epilogue is repr=False so the default path keeps a stable name, but the
-        # fused variant must not share an artifact name with the plain GEMV of the
-        # same shape: both would emit the same .mlir/.xclbin, and in a shared build
-        # dir a cached unfused build can then satisfy the fused op.
-        base = super().name
-        if self.ov.epilogue == "none":
-            return base
-        return f"{base}_epi{self.ov.epilogue}"
 
     def sequence(self, rt):
         """The runtime sequence, kept as it was: B once per column in an outer
         group, then A/C per batch, coalesced into one iterated descriptor per
         column when the shim can hold it.
         """
-        ov = self.ov
-        M, K, nb, cols = self.M, ov.K, self.num_batches, ov.num_aie_columns
+        M, K, nb, cols = self.M, self.K, self.num_batches, self.num_aie_columns
         A_elems, B_elems, C_elems = self.A.elements, self.B.elements, self.C.elements
 
         # Distribution pattern for the input matrix A: each AIE core gets a
@@ -397,11 +381,8 @@ class GEMV(Operator[GEMVOverlay]):
             # Dropping the per-batch drain wait lets the single iterated fill BD
             # run ahead of the core. ObjectFifo lock backpressure keeps that
             # safe: a producer that gets ahead blocks on the buffer lock (worst
-            # case a stall, never a corrupting overrun). depth>=2 only buys
-            # overlap of fill with compute, so it is a performance guard here.
-            assert (
-                ov.a.depth >= 2 and ov.c.depth >= 2
-            ), "coalesced GEMV wants A/C ObjectFifo depth>=2 for fill/compute overlap"
+            # case a stall, never a corrupting overrun). A and C are declared
+            # at depth 2, which only buys overlap of fill with compute.
             A_coalesced = [
                 coalesced(A_elems, col * (M // cols) * K, A_split, A_bstride)
                 for col in range(cols)
@@ -414,7 +395,7 @@ class GEMV(Operator[GEMVOverlay]):
         with rt.group() as tg_b:
             for col in range(cols):
                 # Simple linear transfer of B, includes all batches in sequence
-                rt.fill(ov.b[col], (self.B, B_tap), group=tg_b)
+                rt.fill(self.B.lane(col), B_tap, group=tg_b)
             # Coalesced: one iterated BD per column covers all batches (one
             # drain wait per column). Fallback (incl. num_batches==1): the
             # per-batch unroll, one wait per batch. Only the tap and the wait
@@ -424,10 +405,10 @@ class GEMV(Operator[GEMVOverlay]):
                 with rt.group() as tg_ac:
                     for col in range(cols):
                         a_tap = A_coalesced[col] if coalesce else A_taps[col][w]
-                        rt.fill(ov.a[col], (self.A, a_tap), group=tg_ac)
+                        rt.fill(self.A.lane(col), a_tap, group=tg_ac)
                     for col in range(cols):
                         c_tap = C_coalesced[col] if coalesce else C_taps[col][w]
-                        rt.drain(ov.c[col], (self.C, c_tap), group=tg_ac, wait=True)
+                        rt.drain(self.C.lane(col), c_tap, group=tg_ac, wait=True)
 
     def reference(self, A, B):
         """CPU reference: (optionally batched) matrix-vector product."""

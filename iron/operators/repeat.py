@@ -9,53 +9,21 @@ from ml_dtypes import bfloat16
 
 from aie.utils.verify import Tolerance
 
-from iron.common.declare import (
-    In,
-    Operator,
-    Out,
-    Overlay,
-    StreamIn,
-    StreamOut,
-    param,
-    auto,
-)
+from iron.common.declare import In, Operator, Out, param, auto
 from iron.common.tiling import Access, granule_elements
 from iron.common.testing import Case, Testing
 from iron.common.tiling import DMA_BD_MAX_WRAP
 
 
-class RepeatOverlay(Overlay):
-    """A memtile pass-through of ``transfer_size`` elements; no cores.
+class Repeat(Operator):
+    """AIE-accelerated repeat-interleave operator: a memtile pass-through of
+    ``transfer_size`` elements, no cores.
 
     The repeat is entirely in the runtime sequence's descriptors: the input
-    is re-read ``repeat`` times and the output interleaved. ``cols`` sizes
-    the pass-through and is therefore overlay-tier.
+    is re-read ``repeat`` times and the output interleaved.
     """
 
-    cols: int = param()
-    transfer_size: int | None = auto(repr=False)
-    dtype: object = field(default=bfloat16, repr=False)
-
-    s = StreamIn(transfer_size, dtype=dtype)
-    d = StreamOut(transfer_size, dtype=dtype)
-
-    def resolve(self, dev) -> "RepeatOverlay":
-        return dataclasses.replace(self, transfer_size=self.transfer_size or self.cols)
-
-    def array(self, target) -> list:
-        from aie.iron import ObjectFifo
-
-        fifo_in = ObjectFifo(self.s.tile, name="fifo_in", depth=2)
-        fifo_out = fifo_in.cons().forward(name="fifo_out", depth=2)
-        self.s.bind(fifo_in.prod())
-        self.d.bind(fifo_out.cons())
-        return []
-
-
-class Repeat(Operator[RepeatOverlay]):
-    """AIE-accelerated repeat-interleave operator"""
-
-    # rows, cols, repeat, transfer_size. design() splits cols into chunks
+    # rows, cols, repeat, transfer_size. The sequence splits cols into chunks
     # <= 1023 by the smallest divisor that gets under the hardware limit, so
     # cols on either side of 1023 take different paths and both need
     # covering. The llama arm is the shape the only caller dispatches:
@@ -81,18 +49,15 @@ class Repeat(Operator[RepeatOverlay]):
     )
 
     rows: int = param()
+    cols: int = param()
     repeat: int = param()
     # rows * repeat; derived unless given, since a shape may not be an expression.
     out_rows: int | None = param(default=None, repr=False)
+    transfer_size: int = auto(repr=False)  # None: cols
+    dtype: object = field(default=bfloat16, repr=False)
 
-    x = In(rows, RepeatOverlay.cols, dtype=RepeatOverlay.dtype, to=RepeatOverlay.s)
-    y = Out(
-        out_rows, RepeatOverlay.cols, dtype=RepeatOverlay.dtype, from_=RepeatOverlay.d
-    )
-
-    @property
-    def dtype(self):
-        return self.ov.dtype
+    x = In(rows, cols, dtype=dtype, tile=(transfer_size,))
+    y = Out(out_rows, cols, dtype=dtype, tile=(transfer_size,))
 
     def validate(self) -> None:
         expected = self.rows * self.repeat
@@ -104,9 +69,8 @@ class Repeat(Operator[RepeatOverlay]):
             )
         self._cols_split()  # reject an unsplittable cols at construction
 
-    @property
-    def cols(self) -> int:
-        return self.ov.cols
+    def resolve(self, dev):
+        return dataclasses.replace(self, transfer_size=self.transfer_size or self.cols)
 
     def _cols_split(self) -> int:
         """Split cols into cols_split chunks of cols // cols_split.
@@ -117,8 +81,8 @@ class Repeat(Operator[RepeatOverlay]):
         no split of it is ever word-aligned at bf16; that is reported here
         rather than left to the BD verifier.
         """
-        cols = self.ov.cols
-        granule = granule_elements(self.ov.dtype)
+        cols = self.cols
+        granule = granule_elements(self.dtype)
         for divisor in range(1, cols + 1):
             if cols % divisor:
                 continue
@@ -129,15 +93,24 @@ class Repeat(Operator[RepeatOverlay]):
                 and chunk % granule == 0
             ):
                 return divisor
-        elem_bytes = np.dtype(self.ov.dtype).itemsize
+        elem_bytes = np.dtype(self.dtype).itemsize
         raise ValueError(
             f"Cannot split cols={cols} at {elem_bytes} bytes/element: need a divisor d "
             f"with cols//d <= 1023, d <= 1023, and cols//d a multiple of {granule} "
             f"({granule} elements = one 32-bit word). No divisor of {cols} satisfies all three."
         )
 
+    def array(self, target) -> list:
+        from aie.iron import ObjectFifo
+
+        fifo_in = ObjectFifo(self.x.tile, name="fifo_in", depth=2)
+        fifo_out = fifo_in.cons().forward(name="fifo_out", depth=2)
+        self.x.bind(fifo_in.prod())
+        self.y.bind(fifo_out.cons())
+        return []
+
     def sequence(self, rt):
-        rows, cols, repeat = self.rows, self.ov.cols, self.repeat
+        rows, cols, repeat = self.rows, self.cols, self.repeat
         cols_split = self._cols_split()
         chunk = cols // cols_split
         # The chunk length is innermost so the contiguous run is the innermost
@@ -154,8 +127,8 @@ class Repeat(Operator[RepeatOverlay]):
             (cols, cols * repeat, chunk, 1),
         )
         with rt.group() as tg:
-            rt.fill(self.ov.s, (self.x, input_tap), group=tg)
-            rt.drain(self.ov.d, (self.y, output_tap), group=tg, wait=True)
+            rt.fill(self.x, input_tap, group=tg)
+            rt.drain(self.y, output_tap, group=tg, wait=True)
 
     def reference(self, x):
         """CPU reference: repeat-interleave along the leading dimension."""

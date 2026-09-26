@@ -16,49 +16,9 @@ import numpy as np
 from aie.utils.verify import Tolerance
 from ml_dtypes import bfloat16
 
-from iron.common.declare import (
-    In,
-    Incompatible,
-    Operator,
-    Out,
-    Overlay,
-    Scratchpad,
-    StreamIn,
-    StreamOut,
-    auto,
-    param,
-)
+from iron.common.declare import In, Incompatible, Operator, Out, Scratchpad, auto, param
 from iron.common.testing import Case, Testing
 from iron.common.tiling import Walk, legalize
-
-
-class CopyOverlay(Overlay):
-    """A memtile pass-through, one channel per fifo; no cores.
-
-    Each channel's descriptor carries 1/num_aie_channels of the walk, so the
-    fifo object is sized against the per-channel share (``transfer_size``). A
-    descriptor shorter than the object starves the memtile's S2MM: it never
-    completes an object, never releases the lock, and the drain never returns
-    (ERT_CMD_STATE_TIMEOUT). An integer multiple is fine; it cycles the buffer.
-    """
-
-    transfer_size: int | None = auto()  # None: the per-channel share of the walk
-    num_aie_channels: int = auto(1)
-    dtype: object = field(default=bfloat16, repr=False)
-
-    s = StreamIn(transfer_size, dtype=dtype, per=num_aie_channels, depth=1)
-    d = StreamOut(transfer_size, dtype=dtype, per=num_aie_channels, depth=1)
-
-    def array(self, target) -> list:
-        from aie.iron import ObjectFifo
-
-        for c in range(self.num_aie_channels):
-            fifo_in = ObjectFifo(self.s.tile, name=f"fifo_in_{c}", depth=1)
-            fifo_out = fifo_in.cons().forward(name=f"fifo_out_{c}", depth=1)
-            self.s[c].bind(fifo_in.prod())
-            self.d[c].bind(fifo_out.cons())
-        return []
-
 
 # Llama's KV-cache write, shrunk: the cache is (n_kv_groups, seq, head_dim)
 # and one token's keys land in slot t of every group. SEQ is 128 rather than
@@ -94,15 +54,21 @@ def _pad4(sizes, strides):
     return [1] * (4 - len(sizes)) + sizes, [0] * (4 - len(strides)) + strides
 
 
-class Copy(Operator[CopyOverlay]):
+class Copy(Operator):
     """AIE-accelerated copy between two views of two buffers.
 
-    Gathers by ``src`` and scatters by ``dst``, split across the overlay's
-    channels on the highest non-unit axis. In a graph the walks come from
-    the operands: ``Copy(k, keys[i][:, pos])``, ``Copy(x.transpose(1, 0, 2),
-    y[:, :n])``; a per-call index on a view binds ``in_offset`` or
-    ``out_offset``. Standalone, ``src``/``dst`` are given, or default to the
-    whole of each buffer.
+    Gathers by ``src`` and scatters by ``dst``, split across
+    ``num_aie_channels`` memtile pass-throughs (no cores) on the highest
+    non-unit axis. In a graph the walks come from the operands: ``Copy(k,
+    keys[i][:, pos])``, ``Copy(x.transpose(1, 0, 2), y[:, :n])``; a per-call
+    index on a view binds ``in_offset`` or ``out_offset``. Standalone,
+    ``src``/``dst`` are given, or default to the whole of each buffer.
+
+    Each channel's descriptor carries 1/num_aie_channels of the walk, so the
+    fifo object is sized against the per-channel share (``transfer_size``). A
+    descriptor shorter than the object starves the memtile's S2MM: it never
+    completes an object, never releases the lock, and the drain never returns
+    (ERT_CMD_STATE_TIMEOUT). An integer multiple is fine; it cycles the buffer.
     """
 
     # The params that take an operand's view, and the value its per-call
@@ -137,8 +103,24 @@ class Copy(Operator[CopyOverlay]):
     output_buffer_size: int | None = param(default=None, repr=False)
     src: Walk | None = param(default=None)  # None: the whole input
     dst: Walk | None = param(default=None)  # None: the whole output
-    x = In(input_buffer_size, dtype=CopyOverlay.dtype, to=CopyOverlay.s)
-    y = Out(output_buffer_size, dtype=CopyOverlay.dtype, from_=CopyOverlay.d)
+    transfer_size: int = auto()  # None: the per-channel share of the walk
+    num_aie_channels: int = auto(1)
+    dtype: object = field(default=bfloat16, repr=False)
+
+    x = In(
+        input_buffer_size,
+        dtype=dtype,
+        tile=(transfer_size,),
+        per=(num_aie_channels,),
+        depth=1,
+    )
+    y = Out(
+        output_buffer_size,
+        dtype=dtype,
+        tile=(transfer_size,),
+        per=(num_aie_channels,),
+        depth=1,
+    )
     # Per-call addends on the two base addresses, in elements.
     in_offset = Scratchpad(np.int32)
     out_offset = Scratchpad(np.int32)
@@ -159,31 +141,26 @@ class Copy(Operator[CopyOverlay]):
 
     def resolve(self, dev):
         """The transfer size is the per-channel share of the copy unless given."""
-        ov = self.ov
-        if ov.transfer_size is None:
-            ov = dataclasses.replace(
-                ov, transfer_size=self.src.elements // ov.num_aie_channels
-            )
-        return dataclasses.replace(self, ov=ov.resolved(dev).copy())
+        assert self.src is not None  # validate() filled it
+        transfer_size = self.transfer_size or self.src.elements // self.num_aie_channels
+        return dataclasses.replace(self, transfer_size=transfer_size)
 
     def uses_value(self, name: str) -> bool:
         # An offset is patched only when a graph binds a handle to it.
         return name in self.used_values
 
-    @property
-    def transfer_size(self) -> int:
-        return self.ov.transfer_size
+    def array(self, target) -> list:
+        from aie.iron import ObjectFifo
 
-    @property
-    def num_aie_channels(self) -> int:
-        return self.ov.num_aie_channels
-
-    @property
-    def dtype(self):
-        return self.ov.dtype
+        for c in range(self.num_aie_channels):
+            fifo_in = ObjectFifo(self.x.tile, name=f"fifo_in_{c}", depth=1)
+            fifo_out = fifo_in.cons().forward(name=f"fifo_out_{c}", depth=1)
+            self.x.lane(c).bind(fifo_in.prod())
+            self.y.lane(c).bind(fifo_out.cons())
+        return []
 
     def compatible(self) -> None:
-        channels = self.ov.num_aie_channels
+        channels = self.num_aie_channels
         for label, walk in (("src", self.src), ("dst", self.dst)):
             sizes, _ = _pad4(walk.sizes, walk.strides)
             highest = max(i for i, sz in enumerate(sizes) if sz >= 1)
@@ -193,9 +170,9 @@ class Copy(Operator[CopyOverlay]):
                     f"num_aie_channels ({channels})"
                 )
         per_channel = self.src.elements // channels
-        if per_channel % self.ov.transfer_size:
+        if per_channel % self.transfer_size:
             raise Incompatible(
-                f"transfer_size {self.ov.transfer_size} must divide the per-channel "
+                f"transfer_size {self.transfer_size} must divide the per-channel "
                 f"transfer {per_channel} (= {self.src.elements} / {channels} channels)"
             )
 
@@ -209,7 +186,7 @@ class Copy(Operator[CopyOverlay]):
         """
         sizes, strides = _pad4(walk.sizes, walk.strides)
         highest = max(i for i, sz in enumerate(sizes) if sz >= 1)
-        channels = self.ov.num_aie_channels
+        channels = self.num_aie_channels
         share = sizes[highest] // channels
         split = sizes[:highest] + [share] + sizes[highest + 1 :]
         return [
@@ -237,7 +214,7 @@ class Copy(Operator[CopyOverlay]):
             self.src,
             self.output_buffer_size,
             self.dst,
-            self.ov.num_aie_channels,
+            self.num_aie_channels,
             input_offset_addend=int(in_offset),
             output_offset_addend=int(out_offset),
             into=None if y is None else y.reshape(-1),
@@ -250,13 +227,13 @@ class Copy(Operator[CopyOverlay]):
         in_off = self.in_offset if self.uses_value("in_offset") else None
         out_off = self.out_offset if self.uses_value("out_offset") else None
         with rt.group() as tg:
-            for c in range(self.ov.num_aie_channels):
+            for c in range(self.num_aie_channels):
                 for acc in ins[c]:
-                    rt.fill(self.ov.s[c], (self.x, acc), group=tg, offset_by=in_off)
+                    rt.fill(self.x.lane(c), acc, group=tg, offset_by=in_off)
                 for acc in outs[c]:
                     rt.drain(
-                        self.ov.d[c],
-                        (self.y, acc),
+                        self.y.lane(c),
+                        acc,
                         group=tg,
                         wait=acc is outs[c][-1],
                         offset_by=out_off,

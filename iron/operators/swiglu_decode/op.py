@@ -12,7 +12,7 @@ import aie.utils as aie_utils
 
 import iron
 from iron.operators.elementwise_mul import ElementwiseMul
-from iron.operators.gemv.op import GEMV, GEMVOverlay
+from iron.operators.gemv.op import GEMV
 from iron.operators.silu import SiLU
 
 
@@ -36,9 +36,7 @@ def swiglu_decode(w_gate, w_up, w_down, *, num_aie_columns=None):
 
     @iron.graph
     def decode(x):
-        cols = num_aie_columns or GEMVOverlay.shim_columns(
-            aie_utils.get_current_device()
-        )
+        cols = num_aie_columns or GEMV.shim_columns(aie_utils.get_current_device())
         gate = GEMV(
             w_gate,
             x,

@@ -8,12 +8,12 @@ saturate DDR bandwidth. It is a superset of passthrough_kernel and
 passthrough_dmas, so it serves as a microbenchmark and as a template for
 multi-core unary operations.
 
-:class:`MemCopyOverlay` is ``num_cores`` cores (or, with ``bypass``, memtile
-forwards) each streaming ``line_size``-element lines; the cores loop
-forever, so no trip count reaches the array. :class:`MemCopy` copies a flat
-``size`` buffer through it: whole partitions split evenly across the cores,
-and a remainder handled by re-reading already-copied data to pad a full
-line, which is the hand-written sequence kept as an override.
+The array is ``num_cores`` cores (or, with ``bypass``, memtile forwards)
+each streaming ``line_size``-element lines; the cores loop over one
+``tile_size`` each, so no trip count reaches the array. The sequence copies
+a flat ``size`` buffer through it: whole partitions split evenly across the
+cores, and a remainder handled by re-reading already-copied data to pad a
+full line, which is the hand-written sequence kept as an override.
 """
 
 import dataclasses
@@ -26,17 +26,7 @@ import numpy as np
 
 from aie.utils.verify import Tolerance
 
-from iron.common.declare import (
-    In,
-    Operator,
-    Out,
-    Overlay,
-    StreamIn,
-    StreamOut,
-    Unresolvable,
-    param,
-    auto,
-)
+from iron.common.declare import In, Operator, Out, Unresolvable, param, auto
 from iron.common.testing import Case, Testing, device_columns
 from iron.common.tiling import bank_elements
 from iron.common.tiling import Access
@@ -48,86 +38,7 @@ TASK_GROUP_SIZE = 4
 
 
 # --------------------------------------------------------------------------
-# The overlay: cores (or forwards) over fixed lines.
-# --------------------------------------------------------------------------
-
-
-class MemCopyOverlay(Overlay):
-    """``num_cores`` copy paths, at most ``num_channels`` per column."""
-
-    # None: one core per column, one channel, 1024-element tiles.
-    num_cores: int | None = auto()
-    num_channels: int = auto(1)
-    tile_size: int | None = auto()
-    bypass: bool = False
-    # min(tile_size, 8192): one 16 KB line at most; filled by tuning.
-    line_size: int | None = auto(repr=False)
-
-    s = StreamIn(line_size, per=num_cores)
-    d = StreamOut(line_size, per=num_cores)
-
-    def resolve(self, dev) -> "MemCopyOverlay":
-
-        cores = self.num_cores
-        if cores is None:
-            if dev is None:
-                raise Unresolvable("num_cores defaults from the device; none given")
-            cores = self.shim_columns(dev, self.num_channels) * self.num_channels
-        tile_size = 1024 if self.tile_size is None else self.tile_size
-        return dataclasses.replace(
-            self, num_cores=cores, tile_size=tile_size, line_size=min(tile_size, 8192)
-        )
-
-    def array(self, target) -> list:
-        from aie.iron import ObjectFifo, Worker
-        from aie.iron.controlflow import range_
-
-        line_type = self.s.tile
-        line_size, num_cores = self.line_size, self.num_cores
-        # A line spanning more than one bank cannot be double-buffered in
-        # what is left of local memory.
-        fifodepth = 1 if line_size > bank_elements(self.s.dtype) else 2
-
-        of_ins = [
-            ObjectFifo(line_type, name=f"in{i}", depth=fifodepth)
-            for i in range(num_cores)
-        ]
-        # Bypass path is a special case where we don't need to create a
-        # Worker: the ObjectFifo is forwarded through a MemTile.
-        if self.bypass:
-            of_outs = [of_ins[i].cons().forward() for i in range(num_cores)]
-            workers = []
-        else:
-            of_outs = [
-                ObjectFifo(line_type, name=f"out{i}", depth=fifodepth)
-                for i in range(num_cores)
-            ]
-            # passthrough is the 16-bit passThroughLine; the lines are bf16.
-            mem_copy_fcn = eltwise.passthrough(line_size, np.int16).object_file.bind(
-                "passThroughLine", [line_type, line_type, np.int32]
-            )
-            num_lines = self.tile_size // line_size
-
-            def core_fn(of_in, of_out, mem_copy_line):
-                for _ in range_(num_lines):
-                    elem_in = of_in.acquire(1)
-                    elem_out = of_out.acquire(1)
-                    mem_copy_line(elem_in, elem_out, line_size)
-                    of_in.release(1)
-                    of_out.release(1)
-
-            workers = [
-                Worker(core_fn, [of_ins[i].cons(), of_outs[i].prod(), mem_copy_fcn])
-                for i in range(num_cores)
-            ]
-        for i in range(num_cores):
-            self.s[i].bind(of_ins[i].prod())
-            self.d[i].bind(of_outs[i].cons())
-        return workers
-
-
-# --------------------------------------------------------------------------
-# The operator: a flat buffer through it.
+# The remainder after the whole partitions.
 # --------------------------------------------------------------------------
 
 
@@ -246,16 +157,82 @@ def _cases():
     return out
 
 
-class MemCopy(Operator[MemCopyOverlay]):
-    """AIE-accelerated memory copy operator."""
+class MemCopy(Operator):
+    """AIE-accelerated memory copy operator: ``num_cores`` copy paths, at
+    most ``num_channels`` per column."""
 
     # A copy that alters a value is a broken copy, so gate it exactly.
     test = Testing(_cases, tolerance=Tolerance.exact())
 
     size: int = param()
+    # None: one core per column, one channel, 1024-element tiles.
+    num_cores: int = auto()
+    num_channels: int = auto(1)
+    tile_size: int = auto(array=True)  # what one core copies: its loop count
+    bypass: bool = param(default=False, array=True)
+    # min(tile_size, 8192): one 16 KB line at most; filled by resolve.
+    line_size: int = auto(repr=False)
 
-    x = In(size, to=MemCopyOverlay.s)
-    y = Out(size, from_=MemCopyOverlay.d)
+    x = In(size, tile=(line_size,), per=(num_cores,))
+    y = Out(size, tile=(line_size,), per=(num_cores,))
+
+    def resolve(self, dev):
+        cores = self.num_cores
+        if cores is None:
+            if dev is None:
+                raise Unresolvable("num_cores defaults from the device; none given")
+            cores = self.shim_columns(dev, self.num_channels) * self.num_channels
+        tile_size = 1024 if self.tile_size is None else self.tile_size
+        return dataclasses.replace(
+            self, num_cores=cores, tile_size=tile_size, line_size=min(tile_size, 8192)
+        )
+
+    def array(self, target) -> list:
+        from aie.iron import ObjectFifo, Worker
+        from aie.iron.controlflow import range_
+
+        line_type = self.x.tile
+        line_size, num_cores = self.line_size, self.num_cores
+        # A line spanning more than one bank cannot be double-buffered in
+        # what is left of local memory.
+        fifodepth = 1 if line_size > bank_elements(self.x.dtype) else 2
+
+        of_ins = [
+            ObjectFifo(line_type, name=f"in{i}", depth=fifodepth)
+            for i in range(num_cores)
+        ]
+        # Bypass path is a special case where we don't need to create a
+        # Worker: the ObjectFifo is forwarded through a MemTile.
+        if self.bypass:
+            of_outs = [of_ins[i].cons().forward() for i in range(num_cores)]
+            workers = []
+        else:
+            of_outs = [
+                ObjectFifo(line_type, name=f"out{i}", depth=fifodepth)
+                for i in range(num_cores)
+            ]
+            # passthrough is the 16-bit passThroughLine; the lines are bf16.
+            mem_copy_fcn = eltwise.passthrough(line_size, np.int16).object_file.bind(
+                "passThroughLine", [line_type, line_type, np.int32]
+            )
+            num_lines = self.tile_size // line_size
+
+            def core_fn(of_in, of_out, mem_copy_line):
+                for _ in range_(num_lines):
+                    elem_in = of_in.acquire(1)
+                    elem_out = of_out.acquire(1)
+                    mem_copy_line(elem_in, elem_out, line_size)
+                    of_in.release(1)
+                    of_out.release(1)
+
+            workers = [
+                Worker(core_fn, [of_ins[i].cons(), of_outs[i].prod(), mem_copy_fcn])
+                for i in range(num_cores)
+            ]
+        for i in range(num_cores):
+            self.x.lane(i).bind(of_ins[i].prod())
+            self.y.lane(i).bind(of_outs[i].cons())
+        return workers
 
     def reference(self, x):
         """CPU reference: the copy."""
@@ -264,9 +241,7 @@ class MemCopy(Operator[MemCopyOverlay]):
     # -- the runtime sequence --------------------------------------------------
 
     def sequence(self, rt):
-        ov = self.ov
-        size, num_cores, line_size = self.size, ov.num_cores, ov.line_size
-        s, d = ov.s, ov.d
+        size, num_cores, line_size = self.size, self.num_cores, self.line_size
         x, y = self.x, self.y
 
         # How much of the workload partitions evenly, and what remains.
@@ -281,9 +256,9 @@ class MemCopy(Operator[MemCopyOverlay]):
             )
             with rt.group():
                 for i in range(num_cores):
-                    rt.fill(s[i], (x, taps[i]))
+                    rt.fill(x.lane(i), taps[i])
                 for i in range(num_cores):
-                    rt.drain(d[i], (y, taps[i]), wait=True)
+                    rt.drain(y.lane(i), taps[i], wait=True)
 
         if partial_work_size == 0:
             return
@@ -296,7 +271,7 @@ class MemCopy(Operator[MemCopyOverlay]):
             partial_work_size,
         )
 
-        def padded(verb, slot, buf):
+        def padded(verb, lane):
             """The padding repeats then the partial tile on one fifo, in
             groups of TASK_GROUP_SIZE transfers, each group awaited."""
             tg = rt.new_group()
@@ -304,11 +279,11 @@ class MemCopy(Operator[MemCopyOverlay]):
             for repeats, tap in zip(partial.padding_tap_repeats, partial.padding_taps):
                 for _ in range(repeats):
                     if count % TASK_GROUP_SIZE == 0:
-                        verb(slot, (buf, tap), wait=True, group=tg)
+                        verb(lane, tap, wait=True, group=tg)
                         tg.finish()
                         tg = rt.new_group()
                     else:
-                        verb(slot, (buf, tap), wait=False, group=tg)
+                        verb(lane, tap, wait=False, group=tg)
                     count += 1
             return tg, count
 
@@ -320,13 +295,13 @@ class MemCopy(Operator[MemCopyOverlay]):
                 idx += partial.num_cores_with_no_tiles
             elif idx == num_cores - 1 and partial.partial_tap is not None:
                 # Fill the last fifo with padding + real data
-                tg, count = padded(rt.fill, s[idx], x)
+                tg, count = padded(rt.fill, x.lane(idx))
                 if count % TASK_GROUP_SIZE == 0:
-                    rt.fill(s[idx], (x, partial.partial_tap), wait=True, group=tg)
+                    rt.fill(x.lane(idx), partial.partial_tap, wait=True, group=tg)
                     tg.finish()
                     tg = rt.new_group()
                 else:
-                    rt.fill(s[idx], (x, partial.partial_tap), wait=False, group=tg)
+                    rt.fill(x.lane(idx), partial.partial_tap, wait=False, group=tg)
                 count += 1
                 # Drain it the same way, continuing the same count.
                 for repeats, tap in zip(
@@ -334,19 +309,19 @@ class MemCopy(Operator[MemCopyOverlay]):
                 ):
                     for _ in range(repeats):
                         if count % TASK_GROUP_SIZE == 0:
-                            rt.drain(d[idx], (y, tap), wait=True, group=tg)
+                            rt.drain(y.lane(idx), tap, wait=True, group=tg)
                             tg.finish()
                             tg = rt.new_group()
                         else:
-                            rt.drain(d[idx], (y, tap), wait=False, group=tg)
+                            rt.drain(y.lane(idx), tap, wait=False, group=tg)
                         count += 1
-                rt.drain(d[idx], (y, partial.partial_tap), wait=True, group=tg)
+                rt.drain(y.lane(idx), partial.partial_tap, wait=True, group=tg)
                 tg.finish()
                 idx += 1
             else:
                 with rt.group():
                     for j in range(partial.num_cores_with_full_tiles):
-                        rt.fill(s[idx + j], (x, partial.full_taps[j]))
+                        rt.fill(x.lane(idx + j), partial.full_taps[j])
                     for j in range(partial.num_cores_with_full_tiles):
-                        rt.drain(d[idx + j], (y, partial.full_taps[j]), wait=True)
+                        rt.drain(y.lane(idx + j), partial.full_taps[j], wait=True)
                 idx += partial.num_cores_with_full_tiles

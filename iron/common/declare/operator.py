@@ -344,7 +344,9 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
             return {
                 m.name: m.derive(self)
                 for m in self._members
-                if isinstance(m, Value) and m.derive is not None
+                if isinstance(m, Value)
+                and m.derive is not None
+                and not self.uses_value(m.name)  # bound per call: not a resident
             }
         return {}
 
@@ -378,6 +380,10 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
             for f in dataclasses.fields(self)
             if f.compare and f.name != "ov"
         )
+        # A per-call value a graph bound is built in (a device parameter, a
+        # patched descriptor, a core that reads it), so it tells designs apart.
+        if self.used_values:
+            own += (("values", tuple(sorted(self.used_values))),)
         if self.merged:
             return (type(self).__qualname__, own)
         return (type(self).__qualname__, self.ov.design_key(), own)

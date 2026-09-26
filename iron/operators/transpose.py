@@ -15,11 +15,8 @@ from iron.common.declare import (
     In,
     Operator,
     Out,
-    Overlay,
-    Resident,
-    StreamIn,
-    StreamOut,
     Unresolvable,
+    Value,
     param,
     optional,
     auto,
@@ -28,26 +25,96 @@ from iron.common.testing import Case, Testing, device_columns
 from iron.common.tiling import Access
 
 
-class TransposeOverlay(Overlay):
-    """The array for a shuffle transpose: one core per (column, channel).
+def _transformation_dims(sizes, strides):
+    """What ``TensorAccessPattern.transformation_dims`` returns for these sizes/strides."""
+    from aie.helpers.taplib.tap import TensorAccessPattern
+
+    return TensorAccessPattern((1, 1), 0, sizes, strides).transformation_dims
+
+
+def _cases():
+    m = n = 64
+    out = []
+    for M in (64, 2048):
+        for N in (64, 128, 256, 512):
+            for cols in range(1, device_columns() + 1):
+                for channels in (1, 2):
+                    if (M // channels) % m or (N // cols) % n:
+                        continue
+                    if (M // channels) * (N // cols) * channels * cols != M * N:
+                        continue
+                    out.append(
+                        Case(
+                            dict(
+                                M=M,
+                                N=N,
+                                num_aie_columns=cols,
+                                num_channels=channels,
+                                m=m,
+                                n=n,
+                                s=8,
+                                num_batches=1,
+                            ),
+                            extensive=(M, N) != (2048, 64),
+                        )
+                    )
+    # num_batches > 1: independent same-shape transposes in one dispatch, on
+    # the regular shape; two batches in the default suite, four extensive.
+    for batches in (2, 4):
+        out.append(
+            Case(
+                dict(
+                    M=2048,
+                    N=64,
+                    num_aie_columns=1,
+                    num_channels=1,
+                    m=m,
+                    n=n,
+                    s=8,
+                    num_batches=batches,
+                ),
+                extensive=batches != 2,
+            )
+        )
+    return out
+
+
+class Transpose(Operator):
+    """AIE-accelerated shuffle transpose: one core per (column, channel).
 
     The memtile partially transposes each m x n tile on the way in so a core
     only transposes s x s sub-tiles. The three trip counts (batches, tiles
-    per column, tiles per channel) are residents the sequence writes.
+    per column, tiles per channel) are values the sequence writes.
+
+    ``num_batches`` > 1 performs that many independent (M,N)->(N,M) transposes on
+    contiguous matrices laid back-to-back in memory (results concatenated),
+    mirroring GEMV's batching: the per-batch tile work rides the same
+    ObjectFifos, so B batched transposes cost ONE dispatch instead of B.
     """
 
+    # A transpose is a permutation. Any tolerance here also accepts some class
+    # of wrong permutation, so gate it exactly.
+    test = Testing(_cases, tolerance=Tolerance.exact())
+
+    M: int = param()
+    N: int = param()
+    num_batches: int = param(default=1)
     # Defaults: 64 x 64 tiles of 8 x 8 sub-tiles, every column, one channel.
     m: int = auto(64)
     n: int = auto(64)
-    s: int = auto(8)
-    num_aie_columns: int | None = auto()
+    s: int = auto(8, array=True)
+    num_aie_columns: int = auto()
     num_channels: int = auto(1)
 
-    x = StreamIn(m, n, per=(num_aie_columns, num_channels))
-    y = StreamOut(m, n, per=(num_aie_columns, num_channels))
-    batches = Resident(np.int32)
-    col_tiles = Resident(np.int32)
-    chan_tiles = Resident(np.int32)
+    x = In(
+        optional(num_batches), M, N, tile=(m, n), per=(num_aie_columns, num_channels)
+    )
+    y = Out(
+        optional(num_batches), N, M, tile=(m, n), per=(num_aie_columns, num_channels)
+    )
+    batches = Value(np.int32, derive=lambda op: op.num_batches)
+    col_tiles = Value(np.int32, derive=lambda op: op.N // op.n // op.num_aie_columns)
+    chan_tiles = Value(np.int32, derive=lambda op: op.M // op.m // op.num_channels)
 
     def validate(self) -> None:
         if self.m % self.s != 0:
@@ -69,7 +136,7 @@ class TransposeOverlay(Overlay):
                 f"Kernel tile {self.s} needs AIE tile rows > 16 and columns > 16."
             )
 
-    def resolve(self, dev) -> "TransposeOverlay":
+    def resolve(self, dev):
         cols = self.num_aie_columns
         if cols is None:
             if dev is None:
@@ -80,6 +147,37 @@ class TransposeOverlay(Overlay):
         elif dev is not None:
             self.check_shim_columns(dev, cols, self.num_channels)
         return dataclasses.replace(self, num_aie_columns=cols)
+
+    def compatible(self) -> None:
+        cols, chans = self.num_aie_columns, self.num_channels
+        if self.M % self.m != 0:
+            raise Incompatible(f"Matrix rows ({self.M}) must be a multiple of {self.m}")
+        if self.N % self.n != 0:
+            raise Incompatible(
+                f"Matrix columns ({self.N}) must be a multiple of {self.n}"
+            )
+        if self.M * self.N % (self.m * self.n * cols * chans) != 0:
+            raise Incompatible(
+                "Transfer size must be divisible by m*n*num_columns*num_channels"
+            )
+        # The product check is necessary but not sufficient: the design tiles each
+        # dimension separately, as [M // num_channels // m, N // num_columns // n, m, n].
+        # A quotient that is not a whole number of tiles silently drops the remainder,
+        # and one that floors to zero reaches the transfer as a zero-length size.
+        if (self.N // cols) % self.n:
+            raise Incompatible(
+                f"num_aie_columns ({cols}) does not split N={self.N} "
+                f"into whole n-wide tiles: each column gets "
+                f"{self.N // cols} columns, which is not a multiple "
+                f"of n={self.n}"
+            )
+        if (self.M // chans) % self.m:
+            raise Incompatible(
+                f"num_channels ({chans}) does not split M={self.M} "
+                f"into whole m-tall tiles: each channel gets "
+                f"{self.M // chans} rows, which is not a multiple "
+                f"of m={self.m}"
+            )
 
     def array(self, target) -> list:
         from aie.iron import ObjectFifo, Worker
@@ -141,133 +239,18 @@ class TransposeOverlay(Overlay):
             for k in range(n_cores)
         ]
         for k in range(n_cores):
-            self.x[k].bind(of_l3l2[k].prod())
-            self.y[k].bind(of_outs[k].cons())
+            self.x.lane(k).bind(of_l3l2[k].prod())
+            self.y.lane(k).bind(of_outs[k].cons())
         self.batches.bind(counts, 0)
         self.col_tiles.bind(counts, 1)
         self.chan_tiles.bind(counts, 2)
         return workers
 
-
-def _transformation_dims(sizes, strides):
-    """What ``TensorAccessPattern.transformation_dims`` returns for these sizes/strides."""
-    from aie.helpers.taplib.tap import TensorAccessPattern
-
-    return TensorAccessPattern((1, 1), 0, sizes, strides).transformation_dims
-
-
-def _cases():
-    m = n = 64
-    out = []
-    for M in (64, 2048):
-        for N in (64, 128, 256, 512):
-            for cols in range(1, device_columns() + 1):
-                for channels in (1, 2):
-                    if (M // channels) % m or (N // cols) % n:
-                        continue
-                    if (M // channels) * (N // cols) * channels * cols != M * N:
-                        continue
-                    out.append(
-                        Case(
-                            dict(
-                                M=M,
-                                N=N,
-                                num_aie_columns=cols,
-                                num_channels=channels,
-                                m=m,
-                                n=n,
-                                s=8,
-                                num_batches=1,
-                            ),
-                            extensive=(M, N) != (2048, 64),
-                        )
-                    )
-    # num_batches > 1: independent same-shape transposes in one dispatch, on
-    # the regular shape; two batches in the default suite, four extensive.
-    for batches in (2, 4):
-        out.append(
-            Case(
-                dict(
-                    M=2048,
-                    N=64,
-                    num_aie_columns=1,
-                    num_channels=1,
-                    m=m,
-                    n=n,
-                    s=8,
-                    num_batches=batches,
-                ),
-                extensive=batches != 2,
-            )
-        )
-    return out
-
-
-class Transpose(Operator[TransposeOverlay]):
-    """AIE-accelerated transpose operator.
-
-    ``num_batches`` > 1 performs that many independent (M,N)->(N,M) transposes on
-    contiguous matrices laid back-to-back in memory (results concatenated),
-    mirroring GEMV's batching: the per-batch tile work rides the same
-    ObjectFifos, so B batched transposes cost ONE dispatch instead of B.
-    """
-
-    # A transpose is a permutation. Any tolerance here also accepts some class
-    # of wrong permutation, so gate it exactly.
-    test = Testing(_cases, tolerance=Tolerance.exact())
-
-    M: int = param()
-    N: int = param()
-    num_batches: int = param(default=1)
-
-    x = In(optional(num_batches), M, N, to=TransposeOverlay.x)
-    y = Out(optional(num_batches), N, M, from_=TransposeOverlay.y)
-
-    def compatible(self) -> None:
-        ov = self.ov
-        if self.M % ov.m != 0:
-            raise Incompatible(f"Matrix rows ({self.M}) must be a multiple of {ov.m}")
-        if self.N % ov.n != 0:
-            raise Incompatible(
-                f"Matrix columns ({self.N}) must be a multiple of {ov.n}"
-            )
-        if self.M * self.N % (ov.m * ov.n * ov.num_aie_columns * ov.num_channels) != 0:
-            raise Incompatible(
-                "Transfer size must be divisible by m*n*num_columns*num_channels"
-            )
-        # The product check is necessary but not sufficient: the design tiles each
-        # dimension separately, as [M // num_channels // m, N // num_columns // n, m, n].
-        # A quotient that is not a whole number of tiles silently drops the remainder,
-        # and one that floors to zero reaches the transfer as a zero-length size.
-        if (self.N // ov.num_aie_columns) % ov.n:
-            raise Incompatible(
-                f"num_aie_columns ({ov.num_aie_columns}) does not split N={self.N} "
-                f"into whole n-wide tiles: each column gets "
-                f"{self.N // ov.num_aie_columns} columns, which is not a multiple "
-                f"of n={ov.n}"
-            )
-        if (self.M // ov.num_channels) % ov.m:
-            raise Incompatible(
-                f"num_channels ({ov.num_channels}) does not split M={self.M} "
-                f"into whole m-tall tiles: each channel gets "
-                f"{self.M // ov.num_channels} rows, which is not a multiple "
-                f"of m={ov.m}"
-            )
-
-    def resident_values(self) -> dict[str, int]:
-        ov = self.ov
-        return {
-            "batches": self.num_batches,
-            "col_tiles": self.N // ov.n // ov.num_aie_columns,
-            "chan_tiles": self.M // ov.m // ov.num_channels,
-        }
-
     def sequence(self, rt):
         """One task group per batch (a parallel fill+drain over all cores), so the
         contiguous matrices stream through the same fifos in sequence."""
-        ov = self.ov
         M, N, nb = self.M, self.N, self.num_batches
-        m, n, cols, chans = ov.m, ov.n, ov.num_aie_columns, ov.num_channels
+        m, n, cols, chans = self.m, self.n, self.num_aie_columns, self.num_channels
         elems = M * N
         for batch in range(nb):
             with rt.group() as tg:
@@ -282,7 +265,7 @@ class Transpose(Operator[TransposeOverlay]):
                             (M // chans // m, N // cols // n, m, n),
                             (m * N, n, N, 1),
                         )
-                        rt.fill(ov.x[k], (self.x, tap_in), group=tg)
+                        rt.fill(self.x.lane(k), tap_in, group=tg)
                 for i in range(cols):
                     for j in range(chans):
                         k = i * chans + j
@@ -292,7 +275,7 @@ class Transpose(Operator[TransposeOverlay]):
                             (M // chans // m, N // cols // n, n, m),
                             (m, n * M, M, 1),
                         )
-                        rt.drain(ov.y[k], (self.y, tap_out), group=tg, wait=True)
+                        rt.drain(self.y.lane(k), tap_out, group=tg, wait=True)
 
     def reference(self, x):
         """CPU reference: 2D transpose of each (M, N) matrix stored row-major."""

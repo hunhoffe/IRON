@@ -123,7 +123,7 @@ class DimRef:
     """A reference to a ``param()`` or ``auto()`` field of a declared class.
 
     As a class is created, each field is re-attached to the
-    class as a ``DimRef``, so ``GEMVOverlay.K`` names the dimension from
+    class as a ``DimRef``, so ``GEMV.K`` names the dimension from
     outside the class body while ``ov.K`` on an instance is the integer. A
     non-data descriptor: instance attributes take precedence.
     """

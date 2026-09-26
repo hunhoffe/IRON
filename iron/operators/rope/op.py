@@ -16,108 +16,11 @@ from iron.common.declare import (
     In,
     Operator,
     Out,
-    Overlay,
-    Resident,
-    StreamIn,
-    StreamOut,
+    Value,
     param,
     auto,
 )
 from iron.common.testing import Case, Testing, device_columns
-
-
-class RoPEOverlay(Overlay):
-    """The array for RoPE: one core per column, each rotating rows of ``cols``.
-
-    Applies RoPE to each row of the input against a row of precomputed
-    angles. The angle table may have fewer rows than the input; each angle
-    row is then reused for ``rows / angle_rows`` consecutive input rows,
-    which is the layout of a tensor holding several heads per token.
-
-    - cols: the head dimension; rope.cc processes two 16-element vectors at a time
-    - method_type: 0 = two-halves (HF), 1 = interleaved/Llama
-    """
-
-    cols: int = param()
-    # None: every column the device's shim budget allows.
-    num_aie_columns: int | None = auto()
-    method_type: int = 0
-
-    x = StreamIn(1, cols, per=num_aie_columns)
-    lut = StreamIn(1, cols, per=num_aie_columns)
-    y = StreamOut(1, cols, per=num_aie_columns)
-    lut_rows = Resident(np.int32)  # angle rows each core consumes
-    rows_per_lut = Resident(np.int32)  # input rows per angle row
-
-    def validate(self) -> None:
-        if not (self.cols % 32 == 0 and self.cols >= 32):
-            raise ValueError("cols must be multiple of 32 and >= 32")
-        if self.method_type not in {0, 1}:
-            raise ValueError(f"method_type must be 0 or 1, got {self.method_type}")
-
-    def resolve(self, dev) -> "RoPEOverlay":
-        cols = self.num_aie_columns
-        if cols is None:
-            if dev is None:
-                raise Unresolvable(
-                    "num_aie_columns defaults from the device; none given"
-                )
-            cols = self.shim_columns(dev)
-        elif dev is not None:
-            self.check_shim_columns(dev, cols)
-        return dataclasses.replace(self, num_aie_columns=cols)
-
-    def array(self, target) -> list:
-        from aie.iron import ObjectFifo, Worker
-        from aie.iron.controlflow import range_
-
-        tile = self.x.tile
-        n = self.num_aie_columns
-        # method_type 0 = two-halves (HF), 1 = interleaved (Llama paper).
-        kernel = kernels.datamovement.rope(self.cols, two_halves=self.method_type == 0)
-        of_in = [ObjectFifo(tile, name=f"in_{i}") for i in range(n)]
-        of_lut = [ObjectFifo(self.lut.tile, name=f"lut_{i}") for i in range(n)]
-        of_out = [ObjectFifo(tile, name=f"out_{i}") for i in range(n)]
-        i32x2 = np.ndarray[(2,), np.dtype[np.int32]]
-        counts = [target.rtp(i32x2, name=f"counts_{i}") for i in range(n)]
-        barriers = [target.barrier() for _ in range(n)]
-        cols = self.cols
-
-        def core_body(of_in, of_lut, of_out, rope_kernel, counts, barrier):
-            barrier.wait_for_value(1)
-            lut_rows = counts[0]
-            rows_per_lut = counts[1]
-            for _ in range_(lut_rows):
-                elem_lut = of_lut.acquire(1)
-                for _ in range_(rows_per_lut):
-                    elem_in = of_in.acquire(1)
-                    elem_out = of_out.acquire(1)
-                    rope_kernel(elem_in, elem_lut, elem_out, cols)
-                    of_in.release(1)
-                    of_out.release(1)
-                of_lut.release(1)
-
-        workers = [
-            Worker(
-                core_body,
-                [
-                    of_in[i].cons(),
-                    of_lut[i].cons(),
-                    of_out[i].prod(),
-                    kernel,
-                    counts[i],
-                    barriers[i],
-                ],
-            )
-            for i in range(n)
-        ]
-        for i in range(n):
-            self.x[i].bind(of_in[i].prod())
-            self.lut[i].bind(of_lut[i].prod())
-            self.y[i].bind(of_out[i].cons())
-        self.lut_rows.bind(counts, 0)
-        self.rows_per_lut.bind(counts, 1)
-        return workers
 
 
 def _cases():
@@ -156,19 +59,41 @@ def _angles(op):
     return dict(angles=angle_table(op.angle_rows, op.cols, op.method_type))
 
 
-class RoPE(Operator[RoPEOverlay]):
-    """AIE-accelerated RoPE (Rotary Position Embedding) operator"""
+class RoPE(Operator):
+    """AIE-accelerated RoPE (Rotary Position Embedding) operator: one core per
+    column, each rotating rows of ``cols``.
+
+    Applies RoPE to each row of the input against a row of precomputed
+    angles. The angle table may have fewer rows than the input; each angle
+    row is then reused for ``rows / angle_rows`` consecutive input rows,
+    which is the layout of a tensor holding several heads per token.
+
+    - cols: the head dimension; rope.cc processes two 16-element vectors at a time
+    - method_type: 0 = two-halves (HF), 1 = interleaved/Llama
+    """
 
     test = Testing(_cases, tolerance=Tolerance.relative(0.05), draw=_angles)
 
     rows: int = param()
-    angle_rows: int | None = param(default=None)
+    cols: int = param()
+    angle_rows: int | None = param(default=None)  # None: rows
+    # None: every column the device's shim budget allows.
+    num_aie_columns: int = auto()
+    method_type: int = param(default=0, array=True)
 
-    x = In(rows, RoPEOverlay.cols, to=RoPEOverlay.x)
-    angles = In(angle_rows, RoPEOverlay.cols, to=RoPEOverlay.lut)
-    y = Out(rows, RoPEOverlay.cols, from_=RoPEOverlay.y)
+    x = In(rows, cols, tile=(1, cols), per=(num_aie_columns,))
+    angles = In(angle_rows, cols, tile=(1, cols), per=(num_aie_columns,))
+    y = Out(rows, cols, tile=(1, cols), per=(num_aie_columns,))
+    # Angle rows each core consumes, and input rows per angle row: the
+    # core's trip counts, written once per build.
+    lut_rows = Value(np.int32, derive=lambda op: op.angle_rows // op.num_aie_columns)
+    rows_per_lut = Value(np.int32, derive=lambda op: op.rows // op.angle_rows)
 
     def validate(self) -> None:
+        if not (self.cols % 32 == 0 and self.cols >= 32):
+            raise ValueError("cols must be multiple of 32 and >= 32")
+        if self.method_type not in {0, 1}:
+            raise ValueError(f"method_type must be 0 or 1, got {self.method_type}")
         if self.angle_rows is None:
             self.angle_rows = self.rows
         if not (self.angle_rows <= self.rows and self.rows % self.angle_rows == 0):
@@ -177,38 +102,83 @@ class RoPE(Operator[RoPEOverlay]):
     def resolve(self, dev):
         """Columns default to the most the device's shim budget allows that
         divide both the rows and the angle rows."""
-        ov = self.ov
-        if ov.num_aie_columns is None and dev is not None:
+        cols = self.num_aie_columns
+        if cols is None:
+            if dev is None:
+                raise Unresolvable(
+                    "num_aie_columns defaults from the device; none given"
+                )
             assert self.angle_rows is not None  # validate() filled it
-            budget = ov.shim_columns(dev)
+            budget = self.shim_columns(dev)
             fits = [
                 c
                 for c in range(1, budget + 1)
                 if self.rows % c == 0 and self.angle_rows % c == 0
             ]
-            ov = dataclasses.replace(ov, num_aie_columns=max(fits))
-        return dataclasses.replace(self, ov=ov.resolved(dev).copy())
+            cols = max(fits)
+        elif dev is not None:
+            self.check_shim_columns(dev, cols)
+        return dataclasses.replace(self, num_aie_columns=cols)
 
     def compatible(self) -> None:
-        n = self.ov.num_aie_columns
+        n = self.num_aie_columns
+        assert self.angle_rows is not None
         if self.rows % n:
             raise Incompatible("rows must be divisible by num_aie_columns")
         if not (self.angle_rows >= n and self.angle_rows % n == 0):
             raise Incompatible("angle_rows must be divisible by num_aie_columns")
 
-    def resident_values(self) -> dict[str, int]:
-        return {
-            "lut_rows": self.angle_rows // self.ov.num_aie_columns,
-            "rows_per_lut": self.rows // self.angle_rows,
-        }
+    def array(self, target) -> list:
+        from aie.iron import ObjectFifo, Worker
+        from aie.iron.controlflow import range_
 
-    @property
-    def cols(self) -> int:
-        return self.ov.cols
+        tile = self.x.tile
+        n = self.num_aie_columns
+        # method_type 0 = two-halves (HF), 1 = interleaved (Llama paper).
+        kernel = kernels.datamovement.rope(self.cols, two_halves=self.method_type == 0)
+        of_in = [ObjectFifo(tile, name=f"in_{i}") for i in range(n)]
+        of_lut = [ObjectFifo(self.angles.tile, name=f"lut_{i}") for i in range(n)]
+        of_out = [ObjectFifo(tile, name=f"out_{i}") for i in range(n)]
+        i32x2 = np.ndarray[(2,), np.dtype[np.int32]]
+        counts = [target.rtp(i32x2, name=f"counts_{i}") for i in range(n)]
+        barriers = [target.barrier() for _ in range(n)]
+        cols = self.cols
 
-    @property
-    def method_type(self) -> int:
-        return self.ov.method_type
+        def core_body(of_in, of_lut, of_out, rope_kernel, counts, barrier):
+            barrier.wait_for_value(1)
+            lut_rows = counts[0]
+            rows_per_lut = counts[1]
+            for _ in range_(lut_rows):
+                elem_lut = of_lut.acquire(1)
+                for _ in range_(rows_per_lut):
+                    elem_in = of_in.acquire(1)
+                    elem_out = of_out.acquire(1)
+                    rope_kernel(elem_in, elem_lut, elem_out, cols)
+                    of_in.release(1)
+                    of_out.release(1)
+                of_lut.release(1)
+
+        workers = [
+            Worker(
+                core_body,
+                [
+                    of_in[i].cons(),
+                    of_lut[i].cons(),
+                    of_out[i].prod(),
+                    kernel,
+                    counts[i],
+                    barriers[i],
+                ],
+            )
+            for i in range(n)
+        ]
+        for i in range(n):
+            self.x.lane(i).bind(of_in[i].prod())
+            self.angles.lane(i).bind(of_lut[i].prod())
+            self.y.lane(i).bind(of_out[i].cons())
+        self.lut_rows.bind(counts, 0)
+        self.rows_per_lut.bind(counts, 1)
+        return workers
 
     def reference(self, x, angles):
         """CPU reference for RoPE: see :func:`reference`."""

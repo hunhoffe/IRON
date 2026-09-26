@@ -107,6 +107,19 @@ def test_a_value_a_graph_binds_is_per_call():
     assert [b.member.name for b in t.bindings] == ["start"]
 
 
+def test_a_derived_value_a_graph_binds_is_per_call_and_no_longer_a_resident():
+    @iron.graph
+    def g(a, b, *, n: Scratchpad[np.int32]):
+        return MV(a, b, columns=8, count=n)  # pyright: ignore[reportCallIssue]
+
+    (op,) = g.trace(a=(1024, 128), b=(128,)).operators
+    assert [v.name for v in op.values] == ["count"] and op.residents == {}
+    assert op.resident_values() == {}  # the preamble writes nothing for it
+    # What an instance binds per call is part of its identity: an array
+    # reading the value from the scratchpad is not the one reading a resident.
+    assert op.design_key() != MV(M=1024, K=128, columns=8).design_key()
+
+
 def test_identity_is_the_array_tier_for_sharing_and_every_field_for_a_build():
     a = MV(M=1024, K=128).resolved(FakeDev(cols=8))
     b = MV(M=2048, K=128).resolved(FakeDev(cols=8))

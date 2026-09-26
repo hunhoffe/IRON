@@ -284,7 +284,22 @@ today**.
 
 ## Progress
 
-- (this commit) Step 7, rung 1: the elementwise family is one class per
+- (this commit) Step 7, rung 2: GEMV, Softmax, RoPE, Transpose, Repeat,
+  MemCopy and Copy are one class each (7 files, −177 lines net). Their
+  trip counts are derived `Value`s; GEMV's `tiles` replaces the rows per
+  column it compiled into its core loop, so the C11 gate now passes for
+  it too (the strict xfail is gone), and Softmax's `vector_size` is one
+  `Value` that is the whole row unless a graph binds a per-call handle:
+  `DynamicSoftmax` and its overlay are gone, `resolve_class` with them.
+  What an array bakes beyond its tiles is declared (`kernel_vector_size`,
+  `epilogue`, `method_type`, `s`, `tile_size`, `bypass`); a tile's dtype
+  field is array-tier too. In a sequence an operand is its own stream:
+  `rt.fill(self.A.lane(col), access)`, the buffer implied. The per-call
+  values an instance binds are part of its `design_key`, and a derived
+  value a graph binds is not written as a resident (the toolchain gate
+  caught that on llama's decode graph). Both suites identical to
+  baseline.
+- `08e1f7a` Step 7, rung 1: the elementwise family is one class per
   operator. `iron/common/elementwise.py` is `Elementwise` (the array over
   lines, its `count` a derived `Value`) with `UnaryElementwise` and
   `BinaryElementwise` declaring the operand shapes as their own streams;

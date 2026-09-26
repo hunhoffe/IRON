@@ -33,7 +33,6 @@ _OPERATOR_MODULES = {
     "Sigmoid": "sigmoid",
     "SiLU": "silu",
     "Softmax": "softmax",
-    "DynamicSoftmax": "softmax",
     "Copy": "copy",
     "SwiGLUDecode": "swiglu_decode.op",
     "SwiGLUPrefill": "swiglu_prefill.op",

@@ -20,7 +20,7 @@ from iron.common.graph import Handle, TracedGraph
 from iron.operators.copy import Copy
 from iron.operators.elementwise_add import ElementwiseAdd
 from iron.operators.elementwise_mul import ElementwiseMul
-from iron.operators.gemv.op import GEMV, GEMVOverlay
+from iron.operators.gemv.op import GEMV
 from iron.operators.rms_norm import RMSNorm, WeightedRMSNorm
 from iron.operators.silu import SiLU
 
@@ -102,17 +102,19 @@ def test_overlays_are_shared_by_design_key_and_extents_are_not():
     ffn, _ = _ffn()
     t = ffn.trace(x=(1, E))
     gate, up, down = (s.op for s in t.steps if type(s.op) is GEMV)
-    assert gate.ov is up.ov and gate is not up  # one array, two operators
-    assert down.ov is not gate.ov  # a different K is a different array
+    assert (
+        gate.array_key() == up.array_key() and gate is not up
+    )  # one array, two operators
+    assert down.array_key() != gate.array_key()  # a different K is a different array
     assert [type(o).__name__ for o in t.overlays] == [
-        "WeightedRMSNorm",  # a one-class operator is its own array
-        "GEMVOverlay",
+        "WeightedRMSNorm",
+        "GEMV",
         "SiLU",
         "ElementwiseMul",
-        "CopyOverlay",
-        "GEMVOverlay",
+        "Copy",
+        "GEMV",
     ]
-    assert (gate.M, gate.ov.K, gate.num_batches) == (H, E, 1)
+    assert (gate.M, gate.K, gate.num_batches) == (H, E, 1)
 
 
 def test_per_call_values_bind_to_the_operator_and_enable_it():
@@ -136,15 +138,11 @@ def test_every_traced_operator_tunes_from_the_device_alone():
     silu = next(s.op for s in t.steps if type(s.op) is SiLU).resolved(
         aie_utils.get_current_device()
     )
-    assert (silu.ov.num_aie_columns, silu.ov.num_channels, silu.ov.tile_size) == (
-        8,
-        1,
-        256,
-    )
+    assert (silu.num_aie_columns, silu.num_channels, silu.tile_size) == (8, 1, 256)
     norm = next(s.op for s in t.steps if type(s.op) is WeightedRMSNorm).resolved(
         aie_utils.get_current_device()
     )
-    assert norm.ov.num_aie_columns == 1  # one row: one core
+    assert norm.num_aie_columns == 1  # one row: one core
 
 
 def test_a_state_written_by_one_step_is_pinned_and_readable():
@@ -184,8 +182,7 @@ def test_binding_two_handles_to_one_instance_is_an_error():
 
 
 def test_an_explicit_instance_is_applied_like_the_class():
-    ov = GEMVOverlay(K=E, num_aie_columns=8, tile_size_input=4, tile_size_output=32)
-    q = GEMV(ov, M=256)
+    q = GEMV(M=256, K=E, num_aie_columns=8, tile_size_input=4, tile_size_output=32)
     w = z(256, E)
 
     @iron.graph
@@ -266,9 +263,9 @@ def test_swiglu_decode_shares_one_array_and_one_build_for_gate_and_up():
         "GEMV",
     ]
     gate, up, down = (s.op for s in t.steps if type(s.op) is GEMV)
-    assert gate.ov is up.ov and gate.design_key() == up.design_key()
+    assert gate.array_key() == up.array_key() and gate.design_key() == up.design_key()
     assert down.design_key() != gate.design_key()
-    assert (gate.ov.num_aie_columns, gate.ov.tile_size_output) == (8, H // 8)
+    assert (gate.num_aie_columns, gate.tile_size_output) == (8, H // 8)
     assert t.input_args == ["x"] and t.output_args == ["out"]
     with pytest.raises(ValueError, match="do not agree"):
         m.swiglu_decode(z(H, E), z(H, E), z(H, E))
@@ -294,7 +291,7 @@ def test_two_spellings_of_one_array_are_one_design():
     )
     seq.prepare()
     designs, _ = seq.unique_designs()
-    assert len(designs) == 1 and designs[0].ov.tile_size_output == 2
+    assert len(designs) == 1 and designs[0].tile_size_output == 2
     ffn, _ = _ffn()
     seq = ffn.trace(x=(1, E)).sequence()
     seq.prepare()
@@ -340,7 +337,7 @@ def test_llama_decode_traces_and_tunes():
         "Repeat",
         "GEMV",
         "ElementwiseMul",
-        "DynamicSoftmax",
+        "Softmax",
         "Transpose",
         "GEMV",
         "GEMV",
@@ -362,23 +359,23 @@ def test_llama_decode_traces_and_tunes():
     assert "layers.1.attn.q.weight" in t.pinned and "keys_cache_0" in t.pinned
     assert t.pinned["keys_cache_0"] == cfg.n_kv_groups * L * cfg.head_dim * 2
     # One strided copy instance per layer is bound to cache_offset on both of
-    # its call sites; every softmax binds vector_size on its overlay.
+    # its call sites; every softmax binds vector_size.
     copies = [
         (b.op, b.member.name) for b in t.bindings if b.value.name == "cache_offset"
     ]
     assert len(copies) == cfg.n_layers * 2 and all(n == "out_offset" for _, n in copies)
     softmaxes = [b.op for b in t.bindings if b.value.name == "vector_size"]
     assert len(softmaxes) == cfg.n_layers
-    assert type(softmaxes[0].ov).__name__ == "DynamicSoftmaxOverlay"
+    assert all(s.uses_value("vector_size") for s in softmaxes)
     # The same array serves every layer's like projections.
-    q_ovs = {
-        id(s.op.ov)
+    q_arrays = {
+        s.op.array_key()
         for s in t.steps
         if type(s.op) is GEMV
         and s.op.M == cfg.n_heads * cfg.head_dim
-        and s.op.ov.K == cfg.emb_dim
+        and s.op.K == cfg.emb_dim
     }
-    assert len(q_ovs) == 1
+    assert len(q_arrays) == 1
     # Every operator tunes and is compatible on an 8-column device.
     for op in t.operators:
         op.resolved(aie_utils.get_current_device())

@@ -281,7 +281,7 @@ class Tracer:
             **infer_kwargs(cls, kwargs),
         )
         if cls._overlay_class is None:
-            return cls(**kwargs, **inferred)
+            return cls(**{**kwargs, **inferred})
         # The two-class form: the overlay is split off and shared by key,
         # one object per distinct array.
         ov, op_kwargs = cls._split_kwargs({**kwargs, **inferred})

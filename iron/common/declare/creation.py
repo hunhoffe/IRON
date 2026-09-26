@@ -182,7 +182,7 @@ def declare(cls: type, *, repr: bool) -> None:
     cls._members = tuple(members)  # type: ignore[attr-defined]
     cls._param_fields = tuple(f.name for f in fields.values() if _tier_of(f) == "param")  # type: ignore[attr-defined]
     cls._auto_fields = tuple(f.name for f in fields.values() if _tier_of(f) == "auto")  # type: ignore[attr-defined]
-    # The array tier: what a stream's tile, replication or depth names, and
+    # The array tier: what a stream's tile, its dtype or its replication names, and
     # what declares itself array=True. On a two-class overlay every field
     # configures the array; its operator's fields never do.
     named: set[str] = set()
@@ -191,6 +191,8 @@ def declare(cls: type, *, repr: bool) -> None:
             named.update(_named_fields(m.dims))
             if m.per is not None:
                 named.update(_named_fields(m.per))
+            if isinstance(m.dtype, DimRef):
+                named.add(m.dtype.name)
     cls._array_fields = tuple(  # type: ignore[attr-defined]
         f.name for f in fields.values() if f.name in named or _declares_array(f)
     )

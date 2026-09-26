@@ -118,7 +118,7 @@ class Sequence(Transfers):
     def _transfer(self, verb: str, stream, what, group, wait: bool, offset_by=None):
         handle = self._handle(stream)
         self.used.add(id(handle))
-        buffer, accesses, sliced_by = self._resolve(what)
+        buffer, accesses, sliced_by = self._resolve(what, stream)
         offset_by = offset_by or sliced_by
         if offset_by is not None and offset_by.param is None:
             raise ValueError(
@@ -169,13 +169,27 @@ class Sequence(Transfers):
         return tasks[-1] if len(tasks) == 1 else tasks
 
     def _handle(self, stream):
-        if isinstance(stream, _StreamSlot):
+        if isinstance(stream, BoundBuffer):
+            stream = stream.lanes  # an operand that is its own stream
+        if isinstance(stream, (_StreamSlot, BoundStream)):
             return stream.handle
-        if isinstance(stream, BoundStream):
-            return stream.handle
-        raise TypeError(f"fill/drain take a stream or a stream slot, got {stream!r}")
+        raise TypeError(
+            f"fill/drain take a stream, one lane of it, or an operand that is its "
+            f"own stream, got {stream!r}"
+        )
 
-    def _resolve(self, what) -> tuple[BoundBuffer, list[Access], BoundValue | None]:
+    def _resolve(
+        self, what, stream
+    ) -> tuple[BoundBuffer, list[Access], BoundValue | None]:
+        if isinstance(what, Access):
+            # The buffer is the one the stream belongs to.
+            buffer = stream if isinstance(stream, BoundBuffer) else _buffer_of(stream)
+            if buffer is None:
+                raise TypeError(
+                    f"an Access alone names no buffer; {stream!r} is not an "
+                    f"operand's own stream, so give (buffer, Access)"
+                )
+            return buffer, [what], None
         if isinstance(what, BoundBuffer):
             return (
                 what,
@@ -302,6 +316,13 @@ def transfers(
             f"{stream.name!r}: {e}. Check {type(buffer._op).__name__}.compatible()"
         ) from None
     return [(stream[b.slot], encode(b, buffer.elements, buffer.dtype)) for b in blocks]
+
+
+def _buffer_of(stream) -> BoundBuffer | None:
+    """The operand a stream or one of its lanes is the own stream of."""
+    if isinstance(stream, _StreamSlot):
+        stream = stream.stream
+    return stream.buffer if isinstance(stream, BoundStream) else None
 
 
 def per_call_values(op: Operator) -> list:

@@ -41,6 +41,8 @@ class BoundStream:
         self.replicate = member.replicate
         self.depth = member.depth
         self.via = member.via
+        # The buffer this is the own stream of (In(..., tile=)), else None.
+        self.buffer: "BoundBuffer | None" = None
         self._handle_slots: list[Any] | None = None
 
     def _resolve(self, spec) -> int:
@@ -170,6 +172,8 @@ class BoundBuffer:
         self.lanes: BoundStream | None = (
             BoundStream(member.stream, op) if member.stream is not None else None
         )
+        if self.lanes is not None:
+            self.lanes.buffer = self
 
     # Resolved on use, not at construction: a shape or dtype may follow a
     # tunable the device fills (flm/gemm's B layout), and an operator on an
@@ -245,6 +249,11 @@ class BoundBuffer:
     def count(self) -> int:
         """How many lanes (fifos) the stream is replicated over."""
         return self._own().count
+
+    @property
+    def depth(self) -> int:
+        """The declared fifo depth of this buffer's stream."""
+        return self._own().depth
 
     def lane(self, index: int = 0) -> "_StreamSlot":
         """One lane of the stream, to bind a fifo's shim end to or fill/drain."""

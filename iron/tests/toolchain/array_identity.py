@@ -46,15 +46,11 @@ PAIRS = [
         dict(num_aie_columns=1, num_channels=1, tile_size=256),
         ("rows", 4),
     ),
-    pytest.param(
+    (
         "gemv.op",
         "GEMV",
         dict(K=64, num_aie_columns=2, tile_size_input=2, tile_size_output=2),
         ("M", 256),
-        marks=pytest.mark.xfail(
-            strict=True,
-            reason="GEMV bakes the rows per column into the core loop; a Value in step 7",
-        ),
     ),
     ("gemm.op", "GEMM", dict(K=64, N=512, num_aie_columns=4), ("M", 256)),
 ]
