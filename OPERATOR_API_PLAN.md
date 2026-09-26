@@ -284,7 +284,20 @@ today**.
 
 ## Progress
 
-- (this commit) Step 7, rung 4b: `iron/operators/flm` → `iron/exports/flm`
+- (this commit) Step 7, rung 5: the two-class form is gone. `Overlay`,
+  `Operator[OV]`, the `ov` field and its `__init__` wrapper,
+  `_split_kwargs`, the tier guards, `Resident`/`BoundResident`,
+  `StreamIn`/`StreamOut` and `to=`/`from_=` as declarations, `InOut`, the
+  `residents()` bridge, `per_call_values` and `Overlay.prebuilt/build`
+  are deleted (−420 lines net in `iron/common`); the shim budget is
+  `declare/shim.py`. A sequence is `Sequence(op, data)`; a build hashes
+  every declared base of the operator's class into its cache key (the
+  elementwise base counted for nothing before). `Traced.overlays` is
+  `Traced.arrays`, one operator per distinct array. The declaration tests
+  are one file on a one-class `MV` (`tests/common/merged.py` folded into
+  `declare.py`); the docs describe one class. Both suites identical to
+  baseline; pyright and ruff clean on the same scope.
+- `0f6fd26` Step 7, rung 4b: `iron/operators/flm` → `iron/exports/flm`
   (`git mv`; every import and path rewritten; `iron.operators` lists
   IRON's own operators alone, its `_SUBPACKAGES` gone; `iron/exports` is
   a pytest testpath). Both suites identical to baseline.

@@ -3,17 +3,12 @@
 
 """The declaration layer, device-free.
 
-Everything here runs without a device and without generating MLIR: it checks
-what class creation records and rejects, how bound members
-resolve on instances, how inference binds fields from operand shapes, and how
-tuning and specialisation behave. The design-generating half is
-``iron/common/design/`` and needs the toolchain.
+Everything here runs without a device and without generating MLIR: what
+class creation records and rejects, how bound members resolve on instances,
+how inference binds fields from operand shapes, and how resolution behaves.
+The design-generating half is ``iron/common/design/`` and needs the
+toolchain.
 """
-
-# pyright: reportCallIssue=false
-# The two-class form passes its overlay positionally, which a checker reads
-# as the first field; the form, and this file with it, is on its way out.
-
 
 import dataclasses
 
@@ -21,22 +16,19 @@ import numpy as np
 import pytest
 from ml_dtypes import bfloat16
 
+import iron
 from iron.common.declare import (
     DeclarationError,
     DimRef,
     DispatchTime,
     In,
     Incompatible,
-    InOut,
     Operator,
     Out,
-    Overlay,
-    Resident,
     Scratchpad,
     Shim,
-    StreamIn,
-    StreamOut,
     Unresolvable,
+    Value,
     auto,
     from_spec,
     infer,
@@ -54,43 +46,43 @@ class FakeDev:
 
 
 # --------------------------------------------------------------------------
-# A worked pair, close to GEMV
+# A worked operator, close to GEMV
 # --------------------------------------------------------------------------
 
 
-class MVOverlay(Overlay):
+class MV(Operator):
+    M: int = param()
     K: int = param()
-    num_aie_columns: int = auto()
-    tile_size_output: int = auto(64)
-    vec: int = auto(repr=False)
+    num_batches: int = param(default=1)
+    columns: int | None = auto()
+    tile_out: int = auto(64)
+    vec: int | None = auto(repr=False)
+    epilogue: str = param(default="none", array=True)
 
-    a = StreamIn(tile_size_output, K, per=num_aie_columns)
-    b = StreamIn(K, broadcast=True)
-    c = StreamOut(tile_size_output, per=num_aie_columns)
-    count = Resident(np.int32)
+    A = In(optional(num_batches), M, K, tile=(tile_out, K), per=columns)
+    B = In(optional(num_batches), K, tile=(K,), broadcast=True)
+    C = Out(optional(num_batches), M, tile=(tile_out,), per=columns)
+    count = Value(np.int32, derive=lambda op: op.M // (op.columns * op.tile_out))
+    start = Value(np.int32)  # per-call when a graph binds it, else unused
 
     def resolve(self, dev):
-        cols = self.num_aie_columns or dev.columns()
-        vec = self.vec or next(
-            (w for w in (64, 32, 16) if self.K % w == 0 and self.K >= 2 * w), None
-        )
+        cols = self.columns or dev.columns()
+        vec = self.vec or next((w for w in (64, 32, 16) if self.K % w == 0), None)
         if vec is None:
             raise Unresolvable(f"K={self.K}: no vector width divides it")
-        return dataclasses.replace(self, num_aie_columns=cols, vec=vec)
-
-
-class MV(Operator[MVOverlay]):
-    M: int = param()
-    num_batches: int = param(default=1)
-
-    A = In(optional(num_batches), M, MVOverlay.K, to=MVOverlay.a)
-    B = In(optional(num_batches), MVOverlay.K, to=MVOverlay.b)
-    C = Out(optional(num_batches), M, from_=MVOverlay.c)
+        return dataclasses.replace(self, columns=cols, vec=vec)
 
     def compatible(self):
-        unit = self.ov.num_aie_columns * self.ov.tile_size_output
+        assert self.columns is not None
+        unit = self.columns * self.tile_out
         if self.M % unit:
             raise Incompatible(f"M={self.M} is not a multiple of {unit}")
+
+    def uses_value(self, name):
+        return name in self.used_values if name == "start" else super().uses_value(name)
+
+    def array(self, target):
+        return [self.K, self.columns, self.tile_out, self.epilogue]
 
     def reference(self, A, B):
         return A @ B
@@ -102,32 +94,47 @@ class MV(Operator[MVOverlay]):
 
 
 def test_fields_are_reattached_as_dim_refs():
-    assert isinstance(MVOverlay.K, DimRef)
-    assert MVOverlay.K.name == "K" and MVOverlay.K.tier == "param"
-    assert isinstance(MVOverlay.tile_size_output, DimRef)
-    assert MVOverlay.tile_size_output.tier == "auto"
-    assert isinstance(MV.M, DimRef) and MV.M.owner is MV
+    assert isinstance(MV.K, DimRef) and MV.K.owner is MV
+    assert MV.K.name == "K" and MV.K.tier == "param"
+    assert isinstance(MV.tile_out, DimRef) and MV.tile_out.tier == "auto"
 
 
 def test_members_keep_declaration_order_and_names():
-    assert [m.name for m in MVOverlay._members] == ["a", "b", "c", "count"]
-    assert [m.name for m in MV._members] == ["A", "B", "C"]
+    # An operand's own stream follows it, under its name.
+    assert [m.name for m in MV._members] == [
+        "A",
+        "A",
+        "B",
+        "B",
+        "C",
+        "C",
+        "count",
+        "start",
+    ]
     assert MV.A.direction == "in" and MV.C.direction == "out"
+    assert MV.A.stream is not None and MV.A.stream.direction == "in"
 
 
 def test_shapes_captured_bare_names_resolve_to_refs():
-    # ``M`` and ``num_batches`` were Field objects in the class body; the
-    # decorator rewrote them to DimRefs on the class.
+    # ``M`` and ``num_batches`` were Field objects in the class body; class
+    # creation rewrote them to DimRefs on the class.
     dims = MV.A.dims
     assert dims[0].ref.name == "num_batches"
-    assert dims[1] == MV.M
-    assert dims[2] is MVOverlay.K
+    assert dims[1] == MV.M and dims[2] is MV.K
+    assert MV.A.stream is not None
+    assert MV.A.stream.dims == (MV.tile_out, MV.K) and MV.A.stream.per == (MV.columns,)
 
 
 def test_dataclass_constructor_is_typed_by_real_fields():
-    params = list(dataclasses.fields(MV))
-    assert [p.name for p in params] == ["ov", "M", "num_batches"]
-    assert dataclasses.fields(MVOverlay)[0].name == "K"
+    assert [f.name for f in dataclasses.fields(MV)] == [
+        "M",
+        "K",
+        "num_batches",
+        "columns",
+        "tile_out",
+        "vec",
+        "epilogue",
+    ]
 
 
 # --------------------------------------------------------------------------
@@ -135,94 +142,57 @@ def test_dataclass_constructor_is_typed_by_real_fields():
 # --------------------------------------------------------------------------
 
 
-def test_tunable_in_a_buffer_shape_is_rejected():
+def test_a_knob_in_a_buffer_shape_is_rejected():
     with pytest.raises(DeclarationError, match="host shape may not depend on tuning"):
 
-        class Bad(Operator[MVOverlay]):
+        class Bad(Operator):
             M: int = param()
-            A = In(M, MVOverlay.tile_size_output, to=MVOverlay.a)
+            t: int = auto(64)
+            A = In(M, t)
 
 
-def test_tunable_in_a_stream_tile_is_allowed():
-    assert MVOverlay.a.dims[0] is MVOverlay.tile_size_output
+def test_a_knob_in_a_tile_is_allowed():
+    assert MV.A.stream is not None and MV.A.stream.dims[0] is MV.tile_out
 
 
 def test_plain_defaulted_field_in_a_shape_is_its_literal():
     # A plain field with a default is bound to that default in the class
     # body, so a shape written against it captures the literal, not the
     # field. This is why anything a shape names must be declared with param().
-    class Plain(Overlay):
+    class Plain(Operator):
         n: int = 4
-        s = StreamIn(n)
+        x = In(n, tile=(n,))
 
-    assert Plain.s.dims == (4,)
-    assert Plain(n=8).s.shape == (4,)
+    assert Plain.x.dims == (4,)
+    assert Plain(n=8).x.shape == (4,)
 
 
 def test_plain_field_reference_from_outside_is_rejected():
-    class Plain(Overlay):
+    class Plain(Operator):
         n: int = 4
-        s = StreamIn(4)
+        x = In(4)
 
     with pytest.raises(DeclarationError, match="not declared with param"):
 
-        class Bad(Operator[Plain]):
+        class Bad(Plain):
             M: int = param()
-            A = In(M, Plain.n, to=Plain.s)
+            A = In(M, Plain.n)
 
 
 def test_expression_in_a_shape_is_rejected():
     with pytest.raises(DeclarationError, match="Expressions are not allowed"):
 
-        class Bad(Overlay):
+        class Bad(Operator):
             n: int = param()
-            s = StreamIn("n // 2")
+            x = In("n // 2")
 
 
 def test_annotated_member_is_rejected():
     with pytest.raises(DeclarationError, match="without an annotation"):
 
-        class Bad(Operator[MVOverlay]):
+        class Bad(Operator):
             M: int = param()
-            A: In = In(M, to=MVOverlay.a)
-
-
-def test_buffers_on_an_overlay_are_rejected():
-    with pytest.raises(
-        DeclarationError, match="buffers and DispatchTime values belong"
-    ):
-
-        class Bad(Overlay):
-            n: int = param()
-            x = In(n)
-
-
-def test_streams_on_an_operator_are_rejected():
-    with pytest.raises(DeclarationError, match="leaves streams and residents"):
-
-        class Bad(Operator[MVOverlay]):
-            n: int = param()
-            s = StreamIn(n)
-
-
-def test_stream_of_another_overlay_is_rejected():
-    class Other(Overlay):
-        n: int = param()
-        s = StreamIn(n)
-
-    with pytest.raises(DeclarationError, match="belongs to Other"):
-
-        class Bad(Operator[MVOverlay]):
-            M: int = param()
-            A = In(M, to=Other.s)
-
-
-def test_wrong_stream_direction_is_rejected():
-    with pytest.raises(DeclarationError, match="to= must be a StreamIn"):
-
-        class Bad(Operator[MVOverlay]):
-            M: int = param()
-            A = In(M, to=MVOverlay.c)
+            A: In = In(M)
 
 
 def test_float_scratchpad_is_rejected():
@@ -232,7 +202,11 @@ def test_float_scratchpad_is_rejected():
 
 def test_per_and_broadcast_are_exclusive():
     with pytest.raises(DeclarationError, match="either per"):
-        StreamIn(4, per=MVOverlay.num_aie_columns, broadcast=True)
+
+        class Bad(Operator):
+            n: int = param()
+            c: int = auto(2)
+            x = In(n, tile=(4,), per=(c,), broadcast=True)
 
 
 # --------------------------------------------------------------------------
@@ -240,43 +214,23 @@ def test_per_and_broadcast_are_exclusive():
 # --------------------------------------------------------------------------
 
 
-def test_overlay_streams_resolve_shape_count_and_tile():
-    ov = MVOverlay(K=256, num_aie_columns=4)
-    assert ov.a.shape == (64, 256) and ov.a.count == 4
-    assert ov.b.shape == (256,) and ov.b.count == 1 and ov.b.broadcast
-    assert ov.c.direction == "out"
-    assert ov.a.tile == np.ndarray[(64, 256), np.dtype[bfloat16]]
-    assert ov.a.elements == 64 * 256
-    assert ov.count.dtype is np.int32
-
-
-def test_operator_buffers_resolve_across_the_seam():
-    ov = MVOverlay(K=256, num_aie_columns=4)
-    op = MV(ov, M=1024)
-    assert op.A.shape == (1024, 256)
-    assert op.B.shape == (256,)
-    assert op.C.shape == (1024,)
-    assert op.A.stream(ov) is ov.a
-    assert [b.name for b in op.inputs] == ["A", "B"]
-    assert [b.name for b in op.outputs] == ["C"]
-
-
-def test_optional_leading_dim_is_omitted_when_one():
-    ov = MVOverlay(K=256)
-    assert MV(ov, M=64).A.shape == (64, 256)
-    assert MV(ov, M=64, num_batches=3).A.shape == (3, 64, 256)
-    assert MV(ov, M=64, num_batches=3).C.shape == (3, 64)
-
-
-def test_buffers_carry_direction_shape_and_dtype():
-    ov = MVOverlay(K=256)
-    specs = MV(ov, M=64, num_batches=2).buffers
+def test_buffers_resolve_shape_dtype_and_direction():
+    specs = MV(M=64, K=256, num_batches=2).buffers
     assert [(s.direction, s.shape) for s in specs] == [
         ("in", (2, 64, 256)),
         ("in", (2, 256)),
         ("out", (2, 64)),
     ]
     assert specs[0].dtype is bfloat16
+    op = MV(M=1024, K=256)
+    assert [b.name for b in op.inputs] == ["A", "B"]
+    assert [b.name for b in op.outputs] == ["C"]
+
+
+def test_optional_leading_dim_is_omitted_when_one():
+    assert MV(M=64, K=256).A.shape == (64, 256)
+    assert MV(M=64, K=256, num_batches=3).A.shape == (3, 64, 256)
+    assert MV(M=64, K=256, num_batches=3).C.shape == (3, 64)
 
 
 def test_buffers_carry_the_declared_dtype_and_size():
@@ -285,80 +239,63 @@ def test_buffers_carry_the_declared_dtype_and_size():
     """
     from iron.operators.repeat import Repeat
 
-    # The flat-kwargs constructor is installed per class; a checker sees the
-    # dataclass one, whose overlay fields ride on ``ov``.
-    x, y = Repeat(rows=8, cols=64, repeat=4, dtype=np.int32).buffers  # pyright: ignore
+    x, y = Repeat(rows=8, cols=64, repeat=4, dtype=np.int32).buffers
     assert x.dtype == np.int32 and y.dtype == np.int32
     assert (x.direction, y.direction) == ("in", "out")
     assert y.nbytes == 8 * 64 * 4 * 4
 
 
 def test_instance_values_shadow_dim_refs():
-    ov = MVOverlay(K=256, num_aie_columns=2)
-    assert ov.K == 256 and ov.num_aie_columns == 2
-    assert isinstance(MVOverlay.K, DimRef) and MVOverlay.K.name == "K"
+    op = MV(M=64, K=256, columns=2)
+    assert op.K == 256 and op.columns == 2
+    assert isinstance(MV.K, DimRef) and MV.K.name == "K"
 
 
-def test_stream_binding_slots():
-    ov = MVOverlay(K=256, num_aie_columns=2)
-    ov.a[0].bind("h0")
-    ov.a[1].bind("h1")
-    ov.b.bind("hb")
-    assert ov.a.handles == ["h0", "h1"]
-    assert ov.b.handle == "hb"
+def test_a_stream_is_bound_lane_by_lane():
+    op = MV(M=1024, K=256, columns=2)
+    op.A.lane(0).bind("h0")
+    op.A.lane(1).bind("h1")
+    op.B.bind("hb")
+    assert op.A.handles == ["h0", "h1"]
+    assert op.B.handle == "hb"
     with pytest.raises(ValueError, match="already bound"):
-        ov.a[0].bind("again")
+        op.A.lane(0).bind("again")
     with pytest.raises(ValueError, match="never bound"):
-        ov.c.handles
+        op.C.handles
     with pytest.raises(ValueError, match="index it"):
-        ov.a.handle
+        op.A.handle
+
+    class NoTile(Operator):
+        n: int = param()
+        x = In(n)
+
+    with pytest.raises(TypeError, match="without a tile"):
+        NoTile(n=4).x.tile
 
 
 def test_per_call_values_bind_on_the_operator():
-    class Copy(Operator[MVOverlay]):
+    class Copy(Operator):
         n: int = param()
-        src = In(n, to=MVOverlay.b)
+        src = In(n, tile=(n,))
         off = Scratchpad(np.int32)
         live = DispatchTime(np.int32)
 
-    op = Copy(MVOverlay(K=256), n=256)
+    op = Copy(n=256)
     assert [v.name for v in op.values] == ["off", "live"]
     assert op.off.kind == "scratchpad" and op.live.kind == "dispatch"
 
 
-# --------------------------------------------------------------------------
-# Tuning and specialisation
-# --------------------------------------------------------------------------
-
-
-def test_tuning_fills_tunables_from_the_device_only():
-    ov = MVOverlay(K=256).resolved(FakeDev(cols=8))
-    assert ov.num_aie_columns == 8 and ov.vec == 64
-    assert ov.a.count == 8
-    assert ov.resolved(FakeDev(cols=4)) is ov  # idempotent once tuned
-
-
-def test_untunable_is_raised_not_defaulted():
-    with pytest.raises(Unresolvable, match="K=24"):
-        MVOverlay(K=24).resolved(FakeDev())
-
-
-def test_tuning_that_leaves_a_tunable_unset_is_an_error():
-    class Lazy(Overlay):
+def test_shim_pins_declare():
+    class Pinned(Operator):
         n: int = param()
-        t: int = auto()
-        s = StreamIn(n)
+        c: int = auto(2)
+        x = In(n, tile=(n,), via=Shim(col=1, channel=0))
+        y = Out(n, tile=(n,), via=[Shim(col=c, channel=0) for c in range(2)], per=(c,))
 
-    with pytest.raises(Unresolvable, match=r"left \['t'\] unset"):
-        Lazy(n=4).resolved(FakeDev())
-
-
-def test_operator_tuned_runs_compatible():
-    op = MV(MVOverlay(K=256, tile_size_output=64), M=1000)
-    with pytest.raises(Incompatible, match="M=1000"):
-        op.resolved(FakeDev(cols=8))
-    ok = MV(MVOverlay(K=256, tile_size_output=64), M=1024).resolved(FakeDev(cols=8))
-    assert ok.ov.num_aie_columns == 8
+    op = Pinned(n=2)
+    pins = [op.x.lane().shim] + [op.y.lane(i).shim for i in range(2)]
+    assert op.y.count == 2
+    assert [p.col for p in pins if p is not None] == [1, 0, 1]
 
 
 # --------------------------------------------------------------------------
@@ -366,7 +303,7 @@ def test_operator_tuned_runs_compatible():
 # --------------------------------------------------------------------------
 
 
-def test_infer_binds_both_layers_from_operands():
+def test_infer_binds_the_fields_from_operands():
     assert infer(MV, (1024, 256), (256,)) == {"M": 1024, "K": 256, "num_batches": 1}
     assert infer(MV, (3, 1024, 256), (3, 256)) == {
         "num_batches": 3,
@@ -386,48 +323,6 @@ def test_infer_reports_conflicts_naming_both_operands():
         infer(MV, (1024, 512), (512,), K=256)
 
 
-def test_from_operands_constructs_overlay_and_operator():
-    op = MV.from_operands((1024, 256), (256,), num_aie_columns=2)
-    assert isinstance(op.ov, MVOverlay)
-    assert (op.ov.K, op.ov.num_aie_columns, op.M, op.num_batches) == (256, 2, 1024, 1)
-
-
-def test_classic_construction_splits_overlay_fields():
-    # The flat-kwargs constructor is installed per class; a checker sees the
-    # dataclass one, whose overlay fields ride on ``ov``.
-    op = MV(M=1024, K=256, num_aie_columns=2, tile_size_output=32)  # pyright: ignore
-    assert op.ov == MVOverlay(K=256, num_aie_columns=2, tile_size_output=32)
-    assert op.M == 1024
-    op2 = MV(op.ov, M=64)
-    assert op2.ov is op.ov
-
-
-def test_wrong_overlay_type_is_rejected():
-    class Other(Overlay):
-        n: int = param()
-        s = StreamIn(n)
-
-    with pytest.raises(TypeError, match="declared against MVOverlay"):
-        MV(Other(n=4), M=64)  # pyright: ignore[reportArgumentType]
-
-
-def test_inout_and_shim_pins_declare():
-    class Pinned(Overlay):
-        n: int = param()
-        s = StreamIn(n, via=Shim(col=1, channel=0))
-        d = StreamOut(n, via=[Shim(col=c, channel=0) for c in range(2)], per=n)
-
-    class Inplace(Operator[Pinned]):
-        n: int = param()
-        x = InOut(n, to=Pinned.s, from_=Pinned.d)
-
-    ov = Pinned(n=2)
-    assert isinstance(ov.s.via, Shim) and ov.s.via.col == 1
-    assert isinstance(ov.d.via, list) and len(ov.d.via) == 2 and ov.d.count == 2
-    op = Inplace(ov, n=2)
-    assert op.x.direction == "inout" and op.inputs == op.outputs
-
-
 def test_from_spec_builds_an_operator_from_literal_shapes():
     # swiglu_prefill_stream's escape: shapes from an exported graph, a
     # design that is not derived, an identity for sharing.
@@ -439,7 +334,7 @@ def test_from_spec_builds_an_operator_from_literal_shapes():
         params={"seq_len": 64, "k": 2},
         generator=lambda self, image="elf": "generator",
     )
-    op = Group(Group._overlay_class())
+    op = Group()
     assert [b.name for b in op.buffers] == ["input", "w_gate", "left"]
     assert [b.shape for b in op.buffers] == [(64, 128), (128, 256), (64, 256)]
     assert (op.seq_len, op.k) == (64, 2)
@@ -449,6 +344,112 @@ def test_from_spec_builds_an_operator_from_literal_shapes():
     assert infer(Group, (64, 128), (128, 256)) == {}
     with pytest.raises(ValueError):
         infer(Group, (64, 128), (128, 512))
+
+
+# --------------------------------------------------------------------------
+# The array tier, resolution, identity
+# --------------------------------------------------------------------------
+
+
+def test_the_array_tier_is_what_the_tiles_name_and_what_says_so():
+    assert MV._array_fields == ("K", "columns", "tile_out", "epilogue")
+    assert MV._param_fields == ("M", "K", "num_batches", "epilogue")
+    assert MV._auto_fields == ("columns", "tile_out", "vec")
+
+
+def test_an_operand_with_a_tile_is_its_own_stream():
+    op = MV(M=1024, K=128).resolved(FakeDev(cols=8))
+    assert {k: (s.count, s.shape) for k, s in op.streams.items()} == {
+        "A": (8, (64, 128)),
+        "B": (1, (128,)),
+        "C": (8, (64,)),
+    }
+    assert op.A.count == 8 and op.A.tile == np.ndarray[(64, 128), np.dtype[op.A.dtype]]
+    assert op.A.shape == (1024, 128) and op.C.shape == (1024,)
+    op.A.lane(3).bind("h3")
+    assert op.A.lane(3).handle == "h3"
+    op.B.bind("hb")
+    assert op.B.handle == "hb"
+
+
+def test_a_derived_value_is_written_once_per_build():
+    op = MV(M=1024, K=128).resolved(FakeDev(cols=8))
+    assert list(op.residents) == ["count"] and op.values == []
+    assert op.resident_values() == {"count": 2}
+
+
+def test_a_value_a_graph_binds_is_per_call():
+    @iron.graph
+    def g(a, b, *, pos: Scratchpad[np.int32]):
+        # A per-call value at a call site is not a field a checker knows (yet).
+        return MV(a, b, columns=8, start=pos)  # pyright: ignore[reportCallIssue]
+
+    t = g.trace(a=(1024, 128), b=(128,))
+    (op,) = t.operators
+    assert op.uses_value("start") and [v.name for v in op.values] == ["start"]
+    assert [b.member.name for b in t.bindings] == ["start"]
+
+
+def test_a_derived_value_a_graph_binds_is_per_call_and_no_longer_a_resident():
+    @iron.graph
+    def g(a, b, *, n: Scratchpad[np.int32]):
+        return MV(a, b, columns=8, count=n)  # pyright: ignore[reportCallIssue]
+
+    (op,) = g.trace(a=(1024, 128), b=(128,)).operators
+    assert [v.name for v in op.values] == ["count"] and op.residents == {}
+    assert op.resident_values() == {}  # the preamble writes nothing for it
+    # What an instance binds per call is part of its identity: an array
+    # reading the value from the scratchpad is not the one reading a resident.
+    assert op.design_key() != MV(M=1024, K=128, columns=8).design_key()
+
+
+def test_identity_is_the_array_tier_for_sharing_and_every_field_for_a_build():
+    a = MV(M=1024, K=128).resolved(FakeDev(cols=8))
+    b = MV(M=2048, K=128).resolved(FakeDev(cols=8))
+    assert a.array_key() == b.array_key()
+    assert a.design_key() != b.design_key()
+    assert a.array_key() == (
+        "MV",
+        ("K", 128),
+        ("columns", 8),
+        ("tile_out", 64),
+        ("epilogue", "none"),
+    )
+
+
+def test_array_sees_the_array_tier_alone():
+    class Leaky(MV):
+        def array(self, target):
+            return self.M
+
+    op = MV(M=1024, K=128).resolved(FakeDev(cols=8))
+    assert op.build_array(None) == [128, 8, 64, "none"]
+    with pytest.raises(TypeError, match="reads M, which no tile names"):
+        Leaky(M=1024, K=128).resolved(FakeDev(cols=8)).build_array(None)
+
+
+def test_resolution_fills_every_knob_or_says_which_it_left():
+    with pytest.raises(Unresolvable, match="no vector width"):
+        MV(M=1024, K=24).resolved(FakeDev())
+    with pytest.raises(Incompatible, match="not a multiple"):
+        MV(M=1000, K=128).resolved(FakeDev(cols=8))
+    ok = MV(M=1024, K=128, columns=2)
+    assert not ok._resolved
+    r = ok.resolved(FakeDev(cols=8))
+    assert r._resolved and r.resolved(FakeDev()) is r and (r.columns, r.vec) == (2, 64)
+    assert ok.columns == 2 and ok.vec is None  # the original is untouched
+
+
+def test_inference_binds_the_fields_from_the_operands():
+    op = MV.from_operands(
+        (3, 1024, 128),
+        (
+            3,
+            128,
+        ),
+    )
+    assert (op.M, op.K, op.num_batches) == (1024, 128, 3)
+    assert op.A.shape == (3, 1024, 128)
 
 
 # --------------------------------------------------------------------------

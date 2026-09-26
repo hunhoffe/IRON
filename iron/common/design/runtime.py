@@ -17,14 +17,7 @@ from aie.extras.dialects import arith
 from aie.ir import IntegerType
 from aie.iron import TaskGroup, sync_parameters
 
-from ..declare import (
-    BoundBuffer,
-    BoundStream,
-    BoundValue,
-    BufferView,
-    Operator,
-    Overlay,
-)
+from ..declare import BoundBuffer, BoundStream, BoundValue, BufferView, Operator
 from ..declare.bound import _StreamSlot
 from ..tiling import Access, encode, legalize, split, whole
 from .target import Target
@@ -33,16 +26,15 @@ from .target import Target
 class Transfers:
     """What an operator's sequence issues, over either way of issuing it.
 
-    A concrete sequence supplies ``op``, ``ov`` and the ``fill``/``drain``/
-    ``group`` surface; this decides what goes through it -- the overlay's own
-    sequence, the operator's ``sequence(rt)`` override, or the one derived from
-    the declarations. :class:`Sequence` lowers a transfer to MLIR tasks;
+    A concrete sequence supplies ``op`` and the ``fill``/``drain``/``group``
+    surface; this decides what goes through it -- the operator's
+    ``sequence(rt)`` override, or the one derived from the declarations.
+    :class:`Sequence` lowers a transfer to MLIR tasks;
     :class:`~iron.common.external.ExternalSequence` emits it as words for a
     downloaded image.
     """
 
     op: Operator
-    ov: Overlay
 
     def fill(self, stream, source, *, group=None, wait: bool = False, offset_by=None):
         raise NotImplementedError
@@ -54,12 +46,10 @@ class Transfers:
         raise NotImplementedError
 
     def run(self) -> None:
-        """The transfers: the overlay's sequence when it owns one, else the
-        operator's override, else the one derived from the declarations.
+        """The transfers: the operator's override, else the one derived from
+        the declarations.
         """
-        if self.ov.has_sequence():
-            self.ov.sequence(self.op, self)
-        elif self.op.has_sequence_override():
+        if self.op.has_sequence_override():
             self.op.sequence(self)
         else:
             self._derived()
@@ -67,25 +57,21 @@ class Transfers:
     def _derived(self) -> None:
         with self.group() as tg:
             for buf in self.op.inputs:
-                stream = buf.stream(self.ov)
-                if stream is None:
-                    raise ValueError(
-                        f"{type(self.op).__name__}.{buf.name} names no stream (to=), so its "
-                        f"sequence cannot be derived; add to= or override sequence(rt)"
-                    )
-                for slot, accesses in transfers(buf, stream):
+                for slot, accesses in transfers(buf, self._stream_of(buf)):
                     for acc in accesses:
                         self.fill(slot, (buf, acc), group=tg)
             for buf in self.op.outputs:
-                stream = buf.stream(self.ov)
-                if stream is None:
-                    raise ValueError(
-                        f"{type(self.op).__name__}.{buf.name} names no stream (from_=), so its "
-                        f"sequence cannot be derived; add from_= or override sequence(rt)"
-                    )
-                for slot, accesses in transfers(buf, stream):
+                for slot, accesses in transfers(buf, self._stream_of(buf)):
                     for acc in accesses:
                         self.drain(slot, (buf, acc), group=tg, wait=True)
+
+    def _stream_of(self, buf: BoundBuffer) -> BoundStream:
+        if buf.lanes is None:
+            raise ValueError(
+                f"{type(self.op).__name__}.{buf.name} has no tile=, so its "
+                f"sequence cannot be derived; add tile= or override sequence(rt)"
+            )
+        return buf.lanes
 
 
 class Sequence(Transfers):
@@ -98,9 +84,8 @@ class Sequence(Transfers):
     exit.
     """
 
-    def __init__(self, op: Operator, ov: Overlay, rt_data: dict[str, Any]):
+    def __init__(self, op: Operator, rt_data: dict[str, Any]):
         self.op = op
-        self.ov = ov
         self._rt_data = rt_data
         self._group = None
         # The shim handles this sequence issued a transfer on; the build
@@ -243,19 +228,19 @@ class Sequence(Transfers):
 
     def preamble(self, target: Target) -> None:
         """Residents, then barriers, then the parameter sync, before any DMA."""
-        values = self.ov.resident_values(self.op)
+        op = self.op
+        values = op.resident_values()
         writes: dict[int, tuple] = {}  # id(buffer) -> (buffer, {index: value})
-        for name, res in self.ov.residents.items():
+        for name, res in op.residents.items():
             if res.optional and not res.targets:
                 continue  # this configuration does not allocate it
             if name not in values:
                 raise ValueError(
-                    f"{type(self.ov).__name__}.{name} is a Resident but "
-                    f"{type(self.op).__name__}.resident_values() does not supply it"
+                    f"{type(op).__name__}.resident_values() does not supply {name}"
                 )
             if not res.targets:
                 raise ValueError(
-                    f"{type(self.ov).__name__}.{name}: design() never bound this Resident"
+                    f"{type(op).__name__}.{name}: array() never bound this value"
                 )
             for buf, index in res.targets:
                 writes.setdefault(id(buf), (buf, {}))[1][index] = values[name]
@@ -266,7 +251,7 @@ class Sequence(Transfers):
                 buf[index] = words[index]
         # A core-read value on an image without a scratchpad: written from the
         # sequence's per-call scalar, after the residents, before the barriers.
-        for value in per_call_values(self.op):
+        for value in op.values:
             for buf, index in value.targets:
                 if value.ssa is None:
                     raise ValueError(
@@ -275,15 +260,15 @@ class Sequence(Transfers):
                         f"without a scratchpad (target.image != 'elf')"
                     )
                 buf[index] = value.ssa
-        unknown = set(values) - set(self.ov.residents)
+        unknown = set(values) - set(op.residents)
         if unknown:
             raise ValueError(
-                f"{type(self.op).__name__}.resident_values() names {sorted(unknown)}, which "
-                f"{type(self.ov).__name__} does not declare"
+                f"{type(op).__name__}.resident_values() names {sorted(unknown)}, which "
+                f"{type(op).__name__} does not declare"
             )
         for b in target.barriers:
             b.set(1)
-        if target.image == "elf" and (self.op.values or self.ov.values):
+        if target.image == "elf" and op.values:
             sync_parameters()
 
 
@@ -323,15 +308,6 @@ def _buffer_of(stream) -> BoundBuffer | None:
     if isinstance(stream, _StreamSlot):
         stream = stream.stream
     return stream.buffer if isinstance(stream, BoundStream) else None
-
-
-def per_call_values(op: Operator) -> list:
-    """Every per-call value of ``op``: its own, and its overlay's core-read
-    ones when the overlay is a separate object.
-    """
-    if op.ov is op:
-        return list(op.values)
-    return list(op.ov.values) + list(op.values)
 
 
 def _plus(ssa, constant: int):

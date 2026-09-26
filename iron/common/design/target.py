@@ -15,7 +15,7 @@ from ..kernels import declare_kernel, target_arch
 
 
 class Target:
-    """What an overlay's ``design()`` is given besides the overlay itself.
+    """What an operator's ``array()`` is given besides the operator itself.
 
     Carries the device and the kernel tree. ``kernel`` is
     :func:`~iron.common.kernels.declare_kernel`, whose digest prefix keeps

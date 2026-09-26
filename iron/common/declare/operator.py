@@ -1,13 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""The buffer-sizing half of a declaration.
+"""The operator: one class declaring the array, the buffers and the sequence.
 
-An operator is declared against one overlay and adds the extents that size
-the host buffers. Changing an extent re-issues the runtime sequence; it does
-not rebuild the array, which is why the two layers are separate classes.
-Calling one binds it: :func:`~iron.common.declare.infer` turns operand shapes into the
-extents, and the instance's buffer attributes answer in elements.
+Its fields sort by when a change rebuilds: the array tier is what a tile
+names (plus what says ``array=True``), and one array serves every extent;
+the rest sizes the host buffers and reaches the runtime sequence alone.
+Calling the class binds it: :func:`~iron.common.declare.infer` turns operand
+shapes into the extents, and the instance's buffer attributes answer in
+elements.
 """
 
 from __future__ import annotations
@@ -15,16 +16,7 @@ from __future__ import annotations
 import dataclasses
 import inspect
 from types import FunctionType
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Callable,
-    ClassVar,
-    Generic,
-    Self,
-    TypeVar,
-    dataclass_transform,
-)
+from typing import Any, ClassVar, Self, dataclass_transform
 
 import aie.utils as aie_utils
 from aie.utils.npukernel import NPUKernel
@@ -32,15 +24,13 @@ from aie.utils.verify import Tolerance
 
 from ..kernels import kernels_dir
 from ..testing import Testing
-from .bound import BoundBuffer, BoundResident, BoundStream, BoundValue
+from .bound import BoundBuffer, BoundStream, BoundValue
 from .creation import declare
-from .field import DeclarationError, DimRef, Unresolvable, _Optional, param
+from .field import DeclarationError, Unresolvable, param
 from .infer import infer, infer_kwargs
-from .member import Resident, Value, _Buffer, _Member, _Stream, _Value
+from .member import Value, _Buffer, _Member, _Stream, _Value
 from .naming import label_parts
-from .overlay import Overlay, check_shim_columns, shim_columns
-
-OV = TypeVar("OV", bound=Overlay)
+from .shim import check_shim_columns, shim_columns
 
 
 class _OperatorMeta(type):
@@ -58,17 +48,6 @@ class _OperatorMeta(type):
         if tracer is not None and args and all(_graph.is_operand(a) for a in args):
             return tracer.call(cls, args, kwargs)
         return super().__call__(*args, **kwargs)
-
-
-def _overlay_class_of(cls: type) -> type | None:
-    """The ``OV`` in ``class X(Operator[OV])``, searched up the bases."""
-    for klass in cls.__mro__:
-        for base in getattr(klass, "__orig_bases__", ()):
-            args = getattr(base, "__args__", ())
-            for a in args:
-                if isinstance(a, type) and issubclass(a, Overlay):
-                    return a
-    return None
 
 
 def _check_shipped(cls: type) -> None:
@@ -89,17 +68,6 @@ def _check_shipped(cls: type) -> None:
                 f"{cls.__name__}.{m.name}: a value written into a shipped image "
                 f"needs an address; the sequence writes it there"
             )
-
-
-class _Itself:
-    """``op.ov`` on a one-class operator: the operator is its own array.
-
-    A non-data descriptor, so a two-class operator's ``ov`` field (set on
-    the instance) takes precedence.
-    """
-
-    def __get__(self, instance, owner=None):
-        return self if instance is None else instance
 
 
 class _ArrayView:
@@ -124,7 +92,7 @@ class _ArrayView:
 
     def __getattr__(self, name: str):
         op = object.__getattribute__(self, "_op")
-        fields = {f.name for f in dataclasses.fields(op)} - {"ov"}
+        fields = {f.name for f in dataclasses.fields(op)}
         if name in fields and name not in op._array_fields:
             raise TypeError(
                 f"{type(op).__name__}.array() reads {name}, which no tile names: "
@@ -145,136 +113,49 @@ class _ArrayView:
 
 # Keyword-only to a checker, as every declared field is passed by keyword
 # (a required field after one with a default is keyword-only at runtime too,
-# see field._specifier); auto unlisted: see Overlay.
+# see field._specifier). ``param`` is a field specifier, so a ``param()``
+# without a ``default=`` is a required constructor argument; ``auto`` is not
+# listed, since pyright reads a specifier's default only from a ``default=``
+# keyword and ``auto(2)`` gives it positionally: unlisted, an ``auto()`` field
+# is one with a default of type Any, which is what it is.
 @dataclass_transform(kw_only_default=True, field_specifiers=(param,))
 @dataclasses.dataclass(eq=False, repr=True)
-class Operator(Generic[OV], metaclass=_OperatorMeta):
+class Operator(metaclass=_OperatorMeta):
     """An operator. Subclass it.
 
     One class declares the whole thing: ``param()``/``auto()`` fields,
     ``In``/``Out`` operands (with ``tile=`` an operand is its own stream),
     ``Value`` members, :meth:`array` for the dataflow, :meth:`sequence` when
     the derived one is not wanted, :meth:`resolve`/:meth:`compatible` and
-    :meth:`reference`. ``Operator[XOverlay]`` is the two-class form, its
-    array on a separate :class:`Overlay` reached as ``op.ov``; on a
-    one-class operator ``op.ov`` is the operator itself. Every subclass is
-    a dataclass and is checked as its body finishes (:mod:`.creation`).
+    :meth:`reference`. A class declared with ``image=`` runs a shipped
+    binary instead of building an array. Every subclass is a dataclass and
+    is checked as its body finishes (:mod:`.creation`).
     """
-
-    if TYPE_CHECKING:
-        # To a checker the operator is its own array; the two-class form's
-        # positional ``ov`` is a runtime arrangement on its way out.
-        @property
-        def ov(self) -> Any: ...
-
-    else:
-        ov = _Itself()
 
     _members: ClassVar[tuple[_Member, ...]] = ()
     _param_fields: ClassVar[tuple[str, ...]] = ()
     _auto_fields: ClassVar[tuple[str, ...]] = ()
     _array_fields: ClassVar[tuple[str, ...]] = ()
-    _overlay_class: ClassVar[type | None] = None
     _external: ClassVar[Any] = None
     # The cases iron/operators/test.py runs this operator at; None for an
     # operator tested by its own test.py, or not on its own.
     test: ClassVar[Testing | None] = None
 
     def __init_subclass__(cls, image=None, **kwargs) -> None:
-        super().__init_subclass__(**kwargs)  # Generic's, first: it sets __parameters__
-        overlay_cls = _overlay_class_of(cls)
-        cls._overlay_class = overlay_cls
+        super().__init_subclass__(**kwargs)
         if image is not None:
             # A shipped image: ``class Shipped(GEMM, image=Xclbin(...))``.
             # Nothing builds its array, so it declares where every stream
             # enters and every value lives, and may not define array().
             cls._external = image
-        if overlay_cls is not None and not any(
-            "ov" in getattr(b, "__dataclass_fields__", {}) for b in cls.__mro__[1:]
-        ):
-            # The two-class form: the overlay is the first, positional field.
-            own = cls.__dict__.get("__annotations__", {})
-            cls.__annotations__ = {"ov": overlay_cls, **own}
-        declare(cls, repr=False)
+        declare(cls)
         if image is not None:
             _check_shipped(cls)
-        for m in cls._members:
-            if overlay_cls is not None and isinstance(m, (_Stream, Resident)):
-                raise DeclarationError(
-                    f"{cls.__name__}.{m.name}: an Operator declared against an Overlay "
-                    f"leaves streams and residents to it"
-                )
-            if not isinstance(m, _Buffer):
-                continue
-            target = m.to if m.direction == "in" else m.from_
-            if m.direction == "inout":
-                target = m.to or m.from_
-            if target is not None and not isinstance(target, _Stream):
-                raise DeclarationError(
-                    f"{cls.__name__}.{m.name}: to=/from_= must name a stream, got {target!r}"
-                )
-            if (
-                target is not None
-                and overlay_cls is not None
-                and not issubclass(overlay_cls, target.owner)  # type: ignore[arg-type]
-            ):
-                raise DeclarationError(
-                    f"{cls.__name__}.{m.name}: stream {target!r} belongs to "
-                    f"{target.owner.__name__}, not to {overlay_cls.__name__}"  # type: ignore[union-attr]
-                )
-            if m.to is not None and m.to.direction != "in":
-                raise DeclarationError(
-                    f"{cls.__name__}.{m.name}: to= must be a StreamIn"
-                )
-            if m.from_ is not None and m.from_.direction != "out":
-                raise DeclarationError(
-                    f"{cls.__name__}.{m.name}: from_= must be a StreamOut"
-                )
-            for d in m.dims:
-                ref = d.ref if isinstance(d, _Optional) else d
-                if (
-                    isinstance(ref, DimRef)
-                    and not issubclass(cls, ref.owner)
-                    and overlay_cls is not None
-                    and not issubclass(overlay_cls, ref.owner)
-                ):
-                    raise DeclarationError(
-                        f"{cls.__name__}.{m.name}: {ref!r} is neither a field of "
-                        f"{cls.__name__} nor of its overlay {overlay_cls.__name__}"
-                    )
-
-        # Classic construction: overlay fields as keyword arguments. The operator
-        # builds the overlay itself. dataclass writes a fresh __init__ into
-        # every subclass, so the wrap is reapplied on each.
-        if overlay_cls is not None:
-            generated_init: Callable[..., None] = cls.__init__
-
-            def __init__(self, ov=None, *args, **kwargs):
-                if ov is None or not isinstance(ov, Overlay):
-                    if ov is not None:
-                        args = (ov,) + args
-                    ov, kwargs = type(self)._split_kwargs(dict(kwargs))
-                generated_init(self, ov, *args, **kwargs)
-
-            __init__.__wrapped__ = generated_init  # type: ignore[attr-defined]
-            cls.__init__ = __init__  # type: ignore[misc]
 
     def __post_init__(self) -> None:
         self._resolved = False
-        if self._overlay_class is not None and not isinstance(
-            self.ov, self._overlay_class
-        ):
-            raise TypeError(
-                f"{type(self).__name__} is declared against {self._overlay_class.__name__}, "
-                f"got {type(self.ov).__name__}"
-            )
         self.validate()
         self._bind()
-
-    @property
-    def merged(self) -> bool:
-        """One class: the operator is its own array."""
-        return self._overlay_class is None
 
     # -- declared surface --------------------------------------------------
 
@@ -282,15 +163,14 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
         """Check the sequence-tier fields on their own. Runs at construction."""
 
     def compatible(self) -> None:
-        """Check the extents against the resolved overlay; raise :class:`Incompatible`."""
+        """Check the extents against the resolved knobs; raise :class:`Incompatible`."""
 
     def resolve(self, dev) -> Self:
         """Return a copy resolved for ``dev``: every ``auto()`` filled, from
         the device and from this operator's extents; raise :class:`Unresolvable`.
 
-        The one hook that sees both. The default fills nothing (a two-class
-        operator's default resolves its overlay from the device alone). A
-        knob left ``None`` is an error once this returns::
+        The one hook that sees both. The default fills nothing. A knob left
+        ``None`` is an error once this returns::
 
             def resolve(self, dev):
                 cols = self.columns or self.shim_columns(dev)
@@ -299,9 +179,7 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
         Identity for sharing a build is taken after this runs, so two ways
         of spelling one array resolve to one design.
         """
-        if self.merged:
-            return dataclasses.replace(self)
-        return dataclasses.replace(self, ov=self.ov.resolved(dev).copy())
+        return dataclasses.replace(self)
 
     def array(self, target) -> list:
         """Build the array for ``target`` and return its workers.
@@ -328,10 +206,6 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
         """The device the Program is built for; the current device by default."""
         return target.dev
 
-    @classmethod
-    def has_sequence(cls) -> bool:
-        return False
-
     @property
     def external(self):
         """The downloaded image this operator runs on, if IRON did not build it."""
@@ -341,7 +215,7 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
         """The file the declared image names, fetched if it is not in the cache."""
         from ..external import fetch  # imports this package: a cycle at module scope
 
-        return fetch(self.ov.external)
+        return fetch(self.external)
 
     @classmethod
     def shim_columns(cls, dev, num_channels: int = 1) -> int:
@@ -350,9 +224,6 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
 
     def check_shim_columns(self, dev, cols: int, num_channels: int = 1) -> None:
         check_shim_columns(self, dev, cols, num_channels)
-
-    def name_parts(self) -> list[str]:
-        return label_parts(self)
 
     def reference(self, *inputs):
         raise NotImplementedError(
@@ -368,35 +239,23 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
         """
         raise NotImplementedError
 
-    def resident_values(self, op=None) -> dict[str, Any]:
-        """What the preamble writes once per build, beyond what each
-        ``Value(derive=)`` derives: a two-class operator's words for its
-        overlay's residents (trip counts, RTPs), from the extents.
+    def resident_values(self) -> dict[str, Any]:
+        """What the preamble writes once per build: every ``Value(derive=)``
+        no graph bound per call, derived from this instance.
         """
-        if self.merged:
-            return {
-                m.name: m.derive(self)
-                for m in self._members
-                if isinstance(m, Value)
-                and m.derive is not None
-                and not self.uses_value(m.name)  # bound per call: not a resident
-            }
-        return {}
+        return {
+            m.name: m.derive(self)
+            for m in self._members
+            if isinstance(m, Value)
+            and m.derive is not None
+            and not self.uses_value(m.name)  # bound per call: not a resident
+        }
 
     @classmethod
     def has_sequence_override(cls) -> bool:
         return cls.sequence is not Operator.sequence
 
     # -- library surface ---------------------------------------------------
-
-    @classmethod
-    def _split_kwargs(cls, kwargs: dict) -> tuple["Overlay", dict]:
-        """Split keyword arguments into the overlay's and the operator's own."""
-        overlay_cls = cls._overlay_class
-        assert overlay_cls is not None
-        names = {f.name for f in dataclasses.fields(overlay_cls) if f.init}
-        ov_kwargs = {k: kwargs.pop(k) for k in list(kwargs) if k in names}
-        return overlay_cls(**ov_kwargs), kwargs
 
     def value_symbol(self, value: "BoundValue") -> str | None:
         """An explicit device symbol for a per-call value, or ``None`` for the default."""
@@ -411,46 +270,38 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
         own = tuple(
             (f.name, getattr(self, f.name))
             for f in dataclasses.fields(self)
-            if f.compare and f.name != "ov"
+            if f.compare
         )
         # A per-call value a graph bound is built in (a device parameter, a
         # patched descriptor, a core that reads it), so it tells designs apart.
         if self.used_values:
             own += (("values", tuple(sorted(self.used_values))),)
-        if self.merged:
-            return (type(self).__qualname__, own)
-        return (type(self).__qualname__, self.ov.design_key(), own)
+        return (type(self).__qualname__, own)
 
     def array_key(self):
         """Identity for sharing an array: the class and its array-tier fields."""
-        if not self.merged:
-            return self.ov.design_key()
         return (type(self).__qualname__,) + tuple(
             (name, getattr(self, name)) for name in self._array_fields
         )
 
     def resolved(self, dev) -> Self:
         """This operator resolved for ``dev``: itself if it already is, else
-        :meth:`resolve`'s copy, bound to its own resolved overlay, with
+        :meth:`resolve`'s copy, every knob filled and :meth:`validate` and
         :meth:`compatible` checked. The one place :meth:`resolve` is called.
         """
         if self._resolved:
             return self
         new = self.resolve(dev)
-        if not isinstance(new, type(self)) or (
-            not self.merged and not new.ov._resolved
-        ):
+        if not isinstance(new, type(self)):
             raise TypeError(
-                f"{type(self).__name__}.resolve() must return a {type(self).__name__} "
-                f"on a resolved overlay"
+                f"{type(self).__name__}.resolve() must return a {type(self).__name__}"
             )
-        if self.merged:
-            missing = [n for n in self._auto_fields if getattr(new, n) is None]
-            if missing:
-                raise Unresolvable(
-                    f"{type(self).__name__}.resolve() left {missing} unset for {dev}"
-                )
-            new.validate()
+        missing = [n for n in self._auto_fields if getattr(new, n) is None]
+        if missing:
+            raise Unresolvable(
+                f"{type(self).__name__}.resolve() left {missing} unset for {dev}"
+            )
+        new.validate()
         # What a graph bound on this instance is part of it, not of a field:
         # the build works on the copy, and a copy that forgot would silently
         # drop the per-call value from the sequence.
@@ -461,22 +312,18 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
         return new
 
     def copy(self) -> Self:
-        """A fresh instance for one build: its own copy of the overlay, so the
-        streams a design binds are this build's alone; resolution state and
-        the per-call values a graph bound are kept.
+        """A fresh instance for one build, so the streams a build binds are
+        this build's alone; resolution state and the per-call values a graph
+        bound are kept.
         """
-        new = (
-            dataclasses.replace(self)
-            if self.merged
-            else dataclasses.replace(self, ov=self.ov.copy())
-        )
+        new = dataclasses.replace(self)
         if self.used_values:
             vars(new)["_used_values"] = set(self.used_values)
         new._resolved = self._resolved
         if self._resolved:
-            # What compatible() records on the overlay (GEMV's rows per
-            # column) is part of a resolved instance; a replace() resets an
-            # init=False field to its default, so the copy records it again.
+            # What compatible() records is part of a resolved instance; a
+            # replace() resets an init=False field to its default, so the
+            # copy records it again.
             new.compatible()
         return new
 
@@ -503,31 +350,24 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
 
     @property
     def streams(self) -> dict[str, BoundStream]:
-        """Every stream of a one-class operator: its operands' own, and any
-        declared apart.
-        """
-        out: dict[str, BoundStream] = {}
-        for m in self._members:
-            if isinstance(m, _Buffer) and m.stream is not None:
-                out[m.name] = self._bound[m.name].lanes
-            elif isinstance(m, _Stream) and m.name not in out:
-                out[m.name] = self._bound[m.name]
-        return out
+        """Every operand's own stream, by the operand's name."""
+        return {
+            m.name: self._bound[m.name].lanes
+            for m in self._members
+            if isinstance(m, _Buffer) and m.stream is not None
+        }
 
     @property
-    def residents(self) -> dict[str, Any]:
-        """What the preamble writes once per build: residents, and every
-        ``Value(derive=)`` no graph bound per call.
+    def residents(self) -> dict[str, BoundValue]:
+        """What the preamble writes once per build: every ``Value(derive=)``
+        no graph bound per call.
         """
         return {
             m.name: self._bound[m.name]
             for m in self._members
-            if isinstance(m, Resident)
-            or (
-                isinstance(m, Value)
-                and m.derive is not None
-                and not self.uses_value(m.name)
-            )
+            if isinstance(m, Value)
+            and m.derive is not None
+            and not self.uses_value(m.name)
         }
 
     def uses_value(self, name: str) -> bool:
@@ -583,12 +423,7 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
         bound: dict[str, Any] = {}
         for m in self._members:
             if isinstance(m, _Buffer):
-                bound[m.name] = BoundBuffer(m, self)
-            elif isinstance(m, _Stream):
-                if m.name not in bound:  # an operand's own stream is bound with it
-                    bound[m.name] = BoundStream(m, self)
-            elif isinstance(m, Resident):
-                bound[m.name] = BoundResident(m, self)
+                bound[m.name] = BoundBuffer(m, self)  # its own stream with it
             elif isinstance(m, _Value):
                 bound[m.name] = BoundValue(m, self)
         self._bound = bound
@@ -597,21 +432,20 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
 
     @classmethod
     def from_operands(cls, *operand_shapes, **overrides) -> Self:
-        """Construct an operator (and its overlay) from operand shapes."""
+        """Construct an operator from operand shapes."""
         values = infer(cls, *operand_shapes, **infer_kwargs(cls, overrides))
-        kwargs = {**overrides, **values}
-        return cls(**kwargs)  # classic-construction path splits overlay fields
+        return cls(**{**overrides, **values})
 
     def reference_tolerance(self) -> Tolerance | None:
         """How close the NPU output must come to :meth:`reference`: the
-        tuned overlay's :meth:`~iron.common.declare.Overlay.tolerance` for
-        this device, ``None`` when it states none.
+        resolved operator's :meth:`tolerance` for this device, ``None`` when
+        it states none.
         """
         from ..design.target import (
             Target,
         )  # imports this package: a cycle at module scope
 
-        return self.resolved(self.dev).ov.tolerance(Target(self.dev, kernels_dir()))
+        return self.resolved(self.dev).tolerance(Target(self.dev, kernels_dir()))
 
     # -- the image of one operator on its own -------------------------------
 
@@ -632,8 +466,8 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
 
     @property
     def name(self) -> str:
-        """This instance's label: the class, every shown field of both layers
-        as resolved for the device, the device. It names the per-call value
+        """This instance's label: the class, every shown field as resolved
+        for the device, the device. It names the per-call value
         symbols a host writes through and the kernel instances a chained
         image carries; nothing on disk, which the compile cache keys by
         content. A name describes what is built, so it is the resolved
@@ -641,10 +475,7 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
         """
         dev = aie_utils.get_current_device()
         assert dev is not None, f"{type(self).__name__}.name needs a bound device"
-        resolved = self.resolved(dev)
-        own = label_parts(resolved, skip=("ov",))
-        if not self.merged:
-            own += resolved.ov.name_parts()
+        own = label_parts(self.resolved(dev))
         base = type(self).__name__ + "_" + "_".join(own)
         # Upstream annotates Device.resolve() -> None; it returns the AIEDevice.
         return f"{base}_{dev.resolve().name}"  # pyright: ignore[reportAttributeAccessIssue]
@@ -697,20 +528,20 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
         return {b.name: ("arg", i, b.nbytes) for i, b in enumerate(resolved.buffers)}
 
     def _build(self):
-        """Compile to an xclbin and an instruction stream, or, on an external
-        overlay, to the stream alone against the downloaded image.
+        """Compile to an xclbin and an instruction stream, or, on a shipped
+        image, to the stream alone against the download.
         """
         # image/ reads this package, so naming it at module scope would make
         # the two import each other.
         from ..image.artifacts import Artifacts, Design, Step
         from ..image.jit_compile import cache_entry, insts_design, xclbin_design
 
-        image = self.ov.external
+        image = self.external
         if image is None:
             picture = None
             design = xclbin_design(self.generator(), kernel_name="MLIR_AIE")
         else:
-            picture = self.ov.prebuilt()
+            picture = self.prebuilt()
             design = insts_design(self.generator())
         entry = cache_entry(design)
         insts = entry.insts
@@ -740,7 +571,7 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
     def get_callable(self):
         """The loaded image, ready to call on device tensors."""
         artifacts = self.compile()._artifacts
-        image = self.ov.external
+        image = self.external
         npu_kernel = NPUKernel(
             xclbin_path=str(artifacts.image),
             kernel_name="MLIR_AIE" if image is None else image.kernel_name,
@@ -757,8 +588,6 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
         own = ", ".join(
             f"{f.name}={getattr(self, f.name)!r}"
             for f in dataclasses.fields(self)
-            if f.repr and f.name != "ov"
+            if f.repr
         )
-        if self.merged:
-            return f"{type(self).__name__}({own})"
-        return f"{type(self).__name__}({self.ov!r}, {own})"
+        return f"{type(self).__name__}({own})"

@@ -37,7 +37,7 @@ def device():
 
     The shim budget these graphs size themselves from used to be faked at 16
     here, which is what eight columns of NPU2 actually offers; binding the
-    device says the same thing without the stub, and an overlay that reads
+    device says the same thing without the stub, and an operator that reads
     ``dev.cols`` gets an answer.
     """
     import aie.utils as aie_utils
@@ -98,7 +98,7 @@ def test_tracing_records_the_runlist_with_names_from_roles():
     }
 
 
-def test_overlays_are_shared_by_design_key_and_extents_are_not():
+def test_arrays_are_shared_by_array_key_and_extents_are_not():
     ffn, _ = _ffn()
     t = ffn.trace(x=(1, E))
     gate, up, down = (s.op for s in t.steps if type(s.op) is GEMV)
@@ -106,7 +106,7 @@ def test_overlays_are_shared_by_design_key_and_extents_are_not():
         gate.array_key() == up.array_key() and gate is not up
     )  # one array, two operators
     assert down.array_key() != gate.array_key()  # a different K is a different array
-    assert [type(o).__name__ for o in t.overlays] == [
+    assert [type(o).__name__ for o in t.arrays] == [
         "WeightedRMSNorm",
         "GEMV",
         "SiLU",

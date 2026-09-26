@@ -13,7 +13,7 @@ it replaced was one test module per operator, each a single call with
 this body.
 
 An operator whose device test is more than that -- a composite compared
-step by step, a shipped overlay checked against its own accumulator --
+step by step, a shipped binary checked against its own accumulator --
 keeps its own ``test.py`` beside it.
 """
 

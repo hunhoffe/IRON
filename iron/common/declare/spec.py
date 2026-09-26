@@ -13,7 +13,6 @@ from ml_dtypes import bfloat16
 from .field import param
 from .member import In, Out
 from .operator import Operator
-from .overlay import Overlay
 
 
 def from_spec(
@@ -34,22 +33,15 @@ def from_spec(
     the numbers that identify the instance (they become ``param()`` fields
     with those defaults and reach the name); ``key`` identifies the
     generated design, for sharing; ``generator`` replaces
-    :meth:`Operator.generator`, since the sequence is not derived. The
-    overlay is a stand-in carrying only ``key``. A class made this way goes
-    through the same creation checks as one written in a class body.
+    :meth:`Operator.generator`, since the sequence is not derived. A class
+    made this way goes through the same creation checks as one written in
+    a class body.
     """
-    module = Operator.__module__
-
-    def overlay_ns(ns):
-        ns["__module__"] = module
-        ns["__annotations__"] = {"key": str}
-        ns["key"] = param(default=key, repr=False)
-
-    overlay_cls = types.new_class(f"{name}Overlay", (Overlay,), {}, overlay_ns)
 
     def operator_ns(ns):
-        ns["__module__"] = module
-        ns["__annotations__"] = {}
+        ns["__module__"] = Operator.__module__
+        ns["__annotations__"] = {"key": str}
+        ns["key"] = param(default=key, repr=False)
         for pname, value in (params or {}).items():
             ns["__annotations__"][pname] = type(value)
             ns[pname] = param(default=value)
@@ -57,8 +49,8 @@ def from_spec(
             ns[bname] = In(*shape, dtype=dtype)
         for bname, shape in outputs.items():
             ns[bname] = Out(*shape, dtype=dtype)
-        ns["design_key"] = lambda self: self.ov.key or None
+        ns["design_key"] = lambda self: self.key or None
         if generator is not None:
             ns["generator"] = generator
 
-    return types.new_class(name, (Operator[overlay_cls],), {}, operator_ns)
+    return types.new_class(name, (Operator,), {}, operator_ns)

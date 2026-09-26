@@ -11,7 +11,7 @@ import numpy as np
 from aie.utils import bfp
 from ml_dtypes import bfloat16
 
-from ..declare import Operator, Overlay
+from ..declare import Operator
 from ..tiling import Walk
 
 
@@ -197,7 +197,7 @@ def is_operand(x) -> bool:
     """A graph handle, a state (or a view of one), or a host tensor (a weight)."""
     if isinstance(x, (Handle, State, _HostView)):
         return True
-    if isinstance(x, (Overlay, Operator, type)):
+    if isinstance(x, (Operator, type)):
         return False
     return hasattr(x, "shape") and hasattr(x, "dtype")
 

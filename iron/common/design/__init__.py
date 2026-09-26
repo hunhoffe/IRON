@@ -5,18 +5,18 @@
 
 A declared :class:`~iron.common.declare.Operator` never constructs a
 ``Runtime`` or a ``Program``. :func:`build_design` does, from the
-declaration: it tunes the overlay for the device, calls the overlay's
-``array(target)`` to build the array and bind its streams, opens the runtime
-sequence from the operator's buffers in declaration order, runs the
-preamble (residents, barriers, parameter sync), then either derives the
-fill/drain sequence from the buffer-to-stream bindings or hands a
-:class:`Sequence` to the operator's ``sequence(rt)`` override.
+declaration: it resolves the operator for the device, calls its
+``array(target)`` to build the array and bind its operands' lanes, opens
+the runtime sequence from the operator's buffers in declaration order, runs
+the preamble (values, barriers, parameter sync), then either derives the
+fill/drain sequence from the operands' tiles or hands a :class:`Sequence`
+to the operator's ``sequence(rt)`` override.
 
 ``build_design`` is also the one design function every declared operator
 compiles through, so the compile and fusion paths (``xclbin_design``,
 ``fuse_mlir``) see nothing new: they call it with the operator bound by name.
 
-One module per participant: :mod:`.target` is what an overlay's ``design()``
+One module per participant: :mod:`.target` is what an operator's ``array()``
 receives, :mod:`.runtime` what an operator's ``sequence(rt)`` receives,
 :mod:`.generator` the callable a compile runs, and :mod:`.build` the
 function that puts the three together.

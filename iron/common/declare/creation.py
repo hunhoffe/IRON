@@ -3,13 +3,13 @@
 
 """What a declared class goes through once its body has run.
 
-Both layers' bases call :func:`declare` from ``__init_subclass__``, so every
+:class:`Operator` calls :func:`declare` from ``__init_subclass__``, so every
 subclass is processed and none can forget to be. It applies ``dataclass``,
 resolves the field objects the class body captured in its shapes to names,
 re-attaches every field as a :class:`DimRef`, checks the shape rule, and
 records the members in declaration order. What it cannot prove then -- an
-operator's extents against a tuned overlay -- is left to
-:func:`~iron.common.declare.infer`.
+operator's extents against its resolved knobs -- is left to
+:meth:`Operator.compatible`.
 """
 
 from __future__ import annotations
@@ -47,8 +47,8 @@ def members_of(cls: type) -> list[_Member]:
                 continue
             seen.add(name)
             # A subclass hides an inherited member by assigning it None: a
-            # external overlay of a built one keeps its fields and streams but
-            # not its residents, whose block the image lays out differently.
+            # shipped image keeps the port's fields and operands but not its
+            # values, whose block the image lays out differently.
             if isinstance(value, _Member):
                 ordered[name] = value
     members = []
@@ -128,12 +128,10 @@ def _check_dim_ref(
     )
 
 
-def declare(cls: type, *, repr: bool) -> None:
-    """Process a freshly created :class:`Overlay` or :class:`Operator` subclass.
+def declare(cls: type) -> None:
+    """Process a freshly created :class:`Operator` subclass.
 
-    ``repr`` is whether ``dataclass`` generates one (overlays) or the base
-    defines its own (operators). Equality is identity on both; the base
-    supplies ``__eq__`` where it means more.
+    Equality is identity; the base defines its own ``repr``.
     """
     # Members must be unannotated, or dataclass would make them constructor args.
     annotations = cls.__dict__.get("__annotations__", {})
@@ -144,7 +142,7 @@ def declare(cls: type, *, repr: bool) -> None:
                 f"annotation; annotating one turns it into a constructor argument"
             )
 
-    dataclasses.dataclass(cls, eq=False, repr=repr)  # in place; the same object
+    dataclasses.dataclass(cls, eq=False, repr=False)  # in place; the same object
 
     # dataclass keeps the Field objects the class body bound to bare names
     # and sets their .name, so a shape that captured one is resolved by
@@ -182,9 +180,8 @@ def declare(cls: type, *, repr: bool) -> None:
     cls._members = tuple(members)  # type: ignore[attr-defined]
     cls._param_fields = tuple(f.name for f in fields.values() if _tier_of(f) == "param")  # type: ignore[attr-defined]
     cls._auto_fields = tuple(f.name for f in fields.values() if _tier_of(f) == "auto")  # type: ignore[attr-defined]
-    # The array tier: what a stream's tile, its dtype or its replication names, and
-    # what declares itself array=True. On a two-class overlay every field
-    # configures the array; its operator's fields never do.
+    # The array tier: what a stream's tile, its dtype or its replication
+    # names, and what declares itself array=True.
     named: set[str] = set()
     for m in members:
         if isinstance(m, _Stream):

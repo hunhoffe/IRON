@@ -37,7 +37,7 @@ from aie.ir import BF16Type, F32Type, IntegerType, MemRefType
 from aie.utils.compile import NPU_CACHE_HOME
 from ml_dtypes import bfloat16
 
-from .declare import BoundBuffer, BoundStream, Operator, Overlay
+from .declare import BoundBuffer, BoundStream, Operator
 from .declare.bound import _StreamSlot
 from .design import Transfers
 from .tiling import Access
@@ -53,15 +53,14 @@ class _NoGroup:
 
 
 class ExternalSequence(Transfers):
-    """What an operator's ``sequence(rt)`` receives against an external overlay.
+    """What an operator's ``sequence(rt)`` receives against a shipped image.
 
     The same surface :class:`~iron.common.design.Sequence` offers, lowering a
     transfer to words for a downloaded image instead of MLIR tasks.
     """
 
-    def __init__(self, op: Operator, ov: Overlay, rt_data: dict[str, Any], emit):
+    def __init__(self, op: Operator, rt_data: dict[str, Any], emit):
         self.op = op
-        self.ov = ov
         self._rt_data = rt_data
         self._emit = emit
         self._queues: dict[tuple[str, int], list] = {}
@@ -77,7 +76,7 @@ class ExternalSequence(Transfers):
     def _transfer(self, stream, what, offset_by) -> None:
         if offset_by is not None:
             raise NotImplementedError(
-                "per-call offsets are not supported on an external overlay"
+                "per-call offsets are not supported on a shipped image"
             )
         key = self._key(stream)
         depth = self._depth(stream)
@@ -155,33 +154,32 @@ class ExternalSequence(Transfers):
         return self._rt_data[buffer.name]
 
 
-def write_residents(op: Operator, ov: Overlay, core_tiles, emit) -> None:
-    """Write every resident's words into every core, then release the locks.
+def write_residents(op: Operator, core_tiles, emit) -> None:
+    """Write every resident value's words into every core, then release the locks.
 
-    A resident's value may be one word or a sequence of words written at
-    consecutive addresses. All writes precede the first lock release, so no
-    core reads a half-written buffer.
+    A value may be one word or a sequence of words written at consecutive
+    addresses. All writes precede the first lock release, so no core reads
+    a half-written buffer.
     """
-    values = ov.resident_values(op)
-    residents = list(ov.residents.values())
+    values = op.resident_values()
+    residents = list(op.residents.values())
     for res in residents:
         if res.name not in values:
             raise ValueError(
-                f"{type(ov).__name__}.{res.name} is a Resident but "
-                f"{type(op).__name__}.resident_values() does not supply it"
+                f"{type(op).__name__}.resident_values() does not supply {res.name}"
             )
     unknown = set(values) - {r.name for r in residents}
     if unknown:
         raise ValueError(
             f"{type(op).__name__}.resident_values() names {sorted(unknown)}, which "
-            f"{type(ov).__name__} does not declare"
+            f"{type(op).__name__} does not declare"
         )
     for col, row in core_tiles:
         for res in residents:
             words = values[res.name]
             if isinstance(words, (int, np.integer)):
                 words = [words]
-            assert res.address is not None, "a resident of an external overlay"
+            assert res.address is not None, "a value written into a shipped image"
             for i, word in enumerate(words):
                 emit.write32(res.address + 4 * i, int(word), col, row)
     for col, row in core_tiles:
@@ -190,10 +188,10 @@ def write_residents(op: Operator, ov: Overlay, core_tiles, emit) -> None:
                 emit.write32(LOCK_ADDRESS_BASE + 16 * res.lock, 1, col, row)
 
 
-def run_sequence(op: Operator, ov: Overlay, rt_data, core_tiles, emit) -> None:
-    """Residents, then the operator's sequence, then the trailing awaits."""
-    write_residents(op, ov, core_tiles, emit)
-    seq = ExternalSequence(op, ov, rt_data, emit)
+def run_sequence(op: Operator, rt_data, core_tiles, emit) -> None:
+    """The values, then the operator's sequence, then the trailing awaits."""
+    write_residents(op, core_tiles, emit)
+    seq = ExternalSequence(op, rt_data, emit)
     seq.run()
     seq.finish()
 
@@ -272,7 +270,6 @@ def fetch(image, directory=None) -> Path:
 
 def build_external(dev, op: Operator):
     """The module whose runtime sequence drives ``op``'s downloaded image."""
-    ov = op.ov
     tm = get_target_model(dev.resolve())
     core_tiles = [
         (col, row)
@@ -292,13 +289,13 @@ def build_external(dev, op: Operator):
         def device_body():
             shim: dict[int, Any] = {}
             allocations: dict[tuple[str, int], str] = {}
-            for s in ov.streams.values():
+            for s in op.streams.values():
                 for i in range(s.count):
                     pin = s.pin(i)
                     if pin is None or pin.channel is None:
                         raise ValueError(
-                            f"{type(ov).__name__}.{s.name}[{i}] has no (column, "
-                            f"channel) pin; an external overlay's streams need one"
+                            f"{type(op).__name__}.{s.name}[{i}] has no (column, "
+                            f"channel) pin; a shipped image's streams need one"
                         )
                     tile = shim.setdefault(pin.col, aie.tile(pin.col, 0))
                     name = f"{s.name}_{i}"
@@ -313,6 +310,6 @@ def build_external(dev, op: Operator):
             @aiex.runtime_sequence(*types)
             def sequence(*args):
                 rt_data = {b.name: a for b, a in zip(buffers, args)}
-                run_sequence(op, ov, rt_data, core_tiles, _MLIREmitter(allocations))
+                run_sequence(op, rt_data, core_tiles, _MLIREmitter(allocations))
 
         return ctx.module

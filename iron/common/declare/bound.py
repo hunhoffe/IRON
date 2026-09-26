@@ -18,23 +18,23 @@ from aie.utils import bfp
 
 from ..tiling import view
 from .field import DeclarationError, DimRef, Incompatible, _Optional, _Select
-from .member import Resident, Shim, _Buffer, _Stream, _Value
+from .member import Shim, _Buffer, _Stream, _Value
 
 if TYPE_CHECKING:
     from .operator import Operator
-    from .overlay import Overlay
 
 
 class BoundStream:
-    """A stream on an overlay instance: concrete tile, count, and fifo handles.
+    """An operand's stream on an operator instance: concrete tile, count, and
+    fifo handles.
 
-    Resolved lazily, because a tile or a ``per=`` count may name a tunable
-    that is ``None`` until :meth:`Overlay.resolved` fills it.
+    Resolved lazily, because a tile or a ``per=`` count may name a knob that
+    is ``None`` until :meth:`Operator.resolved` fills it.
     """
 
-    def __init__(self, member: _Stream, overlay: Any) -> None:
+    def __init__(self, member: _Stream, op: Any) -> None:
         self.member = member
-        self.overlay = overlay  # an Overlay, or the one-class operator itself
+        self.op = op
         self.name = member.name
         self.direction = member.direction
         self.broadcast = member.broadcast
@@ -47,10 +47,10 @@ class BoundStream:
 
     def _resolve(self, spec) -> int:
         try:
-            return _resolve_dim(spec, self.overlay)
+            return _resolve_dim(spec, self.op)
         except Incompatible as e:
             raise Incompatible(
-                f"stream {self.name!r}: {e}. Resolve the overlay first (resolved(dev))"
+                f"stream {self.name!r}: {e}. Resolve the operator first (resolved(dev))"
             ) from None
 
     @property
@@ -59,7 +59,7 @@ class BoundStream:
 
     @property
     def dtype(self):
-        return _resolve_dtype(self.member.dtype, self.overlay)
+        return _resolve_dtype(self.member.dtype, self.op)
 
     @property
     def count(self) -> int:
@@ -125,8 +125,8 @@ class BoundStream:
         h = self._handles[index]
         if h is None:
             raise ValueError(
-                f"stream {self.name!r}[{index}] was never bound: the overlay's "
-                f"design() must call .bind() on every declared stream"
+                f"stream {self.name!r}[{index}] was never bound: array() must "
+                f"call .bind() on every operand's lane"
             )
         return h
 
@@ -165,8 +165,6 @@ class BoundBuffer:
         self._op = op
         self.name = member.name
         self.direction = member.direction
-        self.to = member.to
-        self.from_ = member.from_
         # The buffer's own stream (In(..., tile=)), bound on the same
         # instance: what its tile, lanes and handles answer for.
         self.lanes: BoundStream | None = (
@@ -176,8 +174,8 @@ class BoundBuffer:
             self.lanes.buffer = self
 
     # Resolved on use, not at construction: a shape or dtype may follow a
-    # tunable the device fills (flm/gemm's B layout), and an operator on an
-    # untuned overlay is still a valid thing to hold.
+    # knob the device fills (flm/gemm's B layout), and an unresolved
+    # operator is still a valid thing to hold.
     @property
     def shape(self) -> tuple[int, ...]:
         return _resolve_shape(self.member.dims, self._op)
@@ -220,24 +218,11 @@ class BoundBuffer:
         """
         return np.ndarray[(self.elements,), np.dtype[self.dtype]]  # type: ignore[misc]
 
-    def stream(self, overlay: "Overlay") -> BoundStream | None:
-        """The bound stream this buffer feeds or drains: its own, or the one
-        it names on ``overlay``.
-        """
-        if self.lanes is not None:
-            return self.lanes
-        member = self.to if self.direction == "in" else self.from_
-        if member is None:
-            return None
-        return getattr(overlay, member.name)
-
     # -- the stream side of a buffer that is its own stream ----------------
 
     def _own(self) -> BoundStream:
         if self.lanes is None:
-            raise TypeError(
-                f"{self.name} names a stream elsewhere (to=/from_=); it has no tile"
-            )
+            raise TypeError(f"{self.name} is declared without a tile=: no stream")
         return self.lanes
 
     @property
@@ -333,14 +318,14 @@ class BufferView:
 
 
 class BoundValue:
-    """A per-call value on an operator (or, for a core-read Scratchpad, an overlay).
+    """A value on an operator: per call, or written once per build.
 
     On a full ELF ``param`` is the upstream ``ScratchpadParameter`` the
     build creates. On an image without a scratchpad (xclbin, spike S2) the
     value is lowered as a dispatch-time scalar of the sequence: ``param`` is
     the dispatch parameter, ``ssa`` its live value inside the sequence body,
     an offset use adds it to the transfer's offset, and a core-read use is a
-    resident the preamble writes from it (``bind``, as a Resident binds).
+    resident the preamble writes from it (``bind``).
     """
 
     def __init__(self, member: _Value, owner) -> None:
@@ -348,7 +333,7 @@ class BoundValue:
         self.name = member.name
         self.kind = member.kind
         self.dtype = member.dtype
-        self.param = None  # the upstream ScratchpadParameter, set by the build
+        self.param: Any = None  # the upstream ScratchpadParameter, set by the build
         self.symbol: str | None = None
         self.ssa = None  # the sequence's scalar, when lowered at dispatch time
         self.targets: list[tuple[Any, int]] = []
@@ -370,43 +355,18 @@ class BoundValue:
         return f"<{self.kind} {self.name} {np.dtype(self.dtype).name}>"
 
 
-class BoundResident:
-    """A resident on an overlay instance; ``bind()`` names what the preamble writes."""
-
-    def __init__(self, member: Resident, overlay: Any) -> None:
-        self.member = member
-        self.name = member.name
-        self.dtype = member.dtype
-        self.address = member.address
-        self.lock = member.lock
-        self.optional = member.optional
-        self.targets: list[tuple[Any, int]] = []
-
-    def bind(self, buffers, index: int = 0) -> None:
-        """Bind to one runtime-parameter buffer, or one per worker; the preamble writes ``[index]``."""
-        if not isinstance(buffers, (list, tuple)):
-            buffers = [buffers]
-        self.targets.extend((b, index) for b in buffers)
-
-    def __repr__(self) -> str:
-        return f"<resident {self.name} {np.dtype(self.dtype).name}>"
-
-
 # --------------------------------------------------------------------------
 # Resolution
 # --------------------------------------------------------------------------
 
 
 def _lookup_ref(ref: DimRef, instance) -> Any:
-    """Follow a DimRef from an instance: its own class, or its overlay's class."""
+    """Follow a DimRef from an instance of its class (or a subclass)."""
     if isinstance(instance, ref.owner):
         return getattr(instance, ref.name)
-    ov = getattr(instance, "ov", None)
-    if ov is not None and isinstance(ov, ref.owner):
-        return getattr(ov, ref.name)
     raise DeclarationError(
         f"{ref!r} is not reachable from {type(instance).__name__}: a shape may "
-        f"reference the class's own fields or its overlay's"
+        f"reference the class's own fields"
     )
 
 
@@ -433,7 +393,7 @@ def _flag_value(flag, instance) -> bool:
         value = _lookup_ref(flag, instance)
         if value is None:
             raise Incompatible(
-                f"{flag!r} is None; a select() on it needs a tuned overlay"
+                f"{flag!r} is None; a select() on it needs a resolved operator"
             )
         return bool(value)
     if isinstance(flag, Field):

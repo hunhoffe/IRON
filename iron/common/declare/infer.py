@@ -3,11 +3,11 @@
 
 """Operand shapes to dimension fields: the lookup a declaration makes possible.
 
-A host buffer's dimension is a :func:`~iron.common.declare.dim` field or an
+A host buffer's dimension is a :func:`~iron.common.declare.param` field or an
 integer literal, nothing else (see the package docstring), so binding an
 operator to its operands is a lookup over the declared members rather than a
 solver. These take the class because that is all they read: its members, its
-name for the errors, and its overlay's fields.
+name for the errors, and its fields.
 """
 
 from __future__ import annotations
@@ -26,8 +26,8 @@ def infer(cls, *operand_shapes, outputs=(), **given) -> dict[str, Any]:
     """Bind dimension fields from operand shapes, in ``In`` declaration order.
 
     A lookup, not a solver: each declared dimension is a field or a
-    literal. Returns ``{field: value}`` for both the operator's and the
-    overlay's fields; ``given`` pins values and is checked for agreement.
+    literal. Returns ``{field: value}``; ``given`` pins values and is
+    checked for agreement.
     ``outputs`` are the shapes of caller-supplied ``Out`` buffers, in
     declaration order, which bind the same way.
     """
@@ -122,12 +122,10 @@ def infer(cls, *operand_shapes, outputs=(), **given) -> dict[str, Any]:
 
 
 def infer_kwargs(cls, kwargs) -> dict[str, Any]:
-    """The part of ``kwargs`` that :func:`infer` takes: both layers' dimension
-    fields and the flags that select a buffer's shape.
+    """The part of ``kwargs`` that :func:`infer` takes: the dimension fields
+    and the flags that select a buffer's shape.
     """
     names = set(cls._param_fields)
-    if cls._overlay_class:
-        names.update(cls._overlay_class._param_fields)
     for m in cls._members:
         if isinstance(m, _Buffer):
             names.update(d.flag.name for d in m.dims if isinstance(d, _Select))

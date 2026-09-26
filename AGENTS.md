@@ -144,18 +144,19 @@ reuse lint
      `op.py` for one that also has a design, a reference, a README or a
      device test of its own (`gemm/`, `mha/`, `flm/gemm/`).
    - An operator module holds:
-     - the operator, declared as two classes (`iron/common/declare/`,
-       `OPERATOR_MODEL_PLAN.md`). The **overlay** (`XOverlay(Overlay)`) is the
-       array configuration: `auto()` fields filled by `resolve(dev)` from the
-       device alone, `StreamIn`/`StreamOut` members in tile units, `Resident`
-       values the cores read (trip counts), and `array(target)`, which builds
-       ObjectFIFOs and Workers and binds each stream to a fifo's shim end. The
-       **operator** (`X(Operator[XOverlay])`) is the host side: `param()` fields,
-       `In`/`Out` buffers declared by shape against the overlay's streams,
-       `residents()` from the extents, and optionally `sequence(rt)` when the
-       runtime sequence is not the derived one. External overlays (a downloaded
-       xclbin) declare an `Xclbin` attribute and pinned streams instead of
-       `design()`.
+     - the operator, one class (`iron/common/declare/`,
+       `OPERATOR_API_PLAN.md`): `param()` fields for what a host shape
+       names, `auto()` knobs `resolve(dev)` fills from the device and the
+       extents, `In`/`Out` operands declared by shape whose `tile=` makes
+       each its own stream into the array (`per=` a column count), `Value`
+       members the cores read (trip counts, derived from the extents so the
+       array never depends on them), `array(target)`, which builds
+       ObjectFIFOs and Workers and binds each operand's lane to a fifo's
+       shim end, and optionally `sequence(rt)` when the runtime sequence is
+       not the derived one. The array tier is what a tile names plus what
+       says `array=True`; one array serves every extent. A shipped binary
+       is a subclass declared with `image=Xclbin(...)`, its operands pinned
+       with `via=`.
      - The operator's `reference(*inputs)` is the CPU reference the tests
        and the graph reference run; `vectors(op)` in `iron/common/harness`
        draws random inputs for its declared buffers and takes the outputs
@@ -166,7 +167,7 @@ reuse lint
        of the kernel it runs is not the gate. One module,
        `iron/operators/test.py`, runs every declaration against
        `reference()`. An operator whose device test is more than that (a
-       composite compared step by step, a shipped overlay against its own
+       composite compared step by step, a shipped binary against its own
        accumulator) keeps a `test.py` beside it.
 
 2. **AIE Kernels** ([mlir-aie `aie_kernels/`](https://github.com/Xilinx/mlir-aie/tree/main/aie_kernels))
@@ -183,18 +184,17 @@ reuse lint
    - Compiled to `.o` files and linked into operator `.xclbin`
 
 3. **Common Infrastructure** (`iron/common/`)
-   - `declare/`: the declaration layer (`Overlay`, `Operator`,
-     `dim`/`tunable`, streams, buffers, `Scratchpad`/`DispatchTime`, `Resident`,
-     `Xclbin`, inference)
+   - `declare/`: the declaration layer (`Operator`, `param`/`auto`,
+     operands, `Value`, `Scratchpad`/`DispatchTime`, `Xclbin`, inference)
    - `design/`, `tiling.py`, `external.py`: the library-owned build: the
      `Target` a design declares kernels against, the derived runtime
-     sequence, legal DMA descriptors, the external-overlay path
+     sequence, legal DMA descriptors, the shipped-image path
    - `graph/`: graph functions (`iron.graph`, `iron.state`) and
      `compile(dev, boundaries=, image=)`
    - `image/`: what a graph lowers onto: `OperatorSequence`, the buffer
      allocator, fusion, the seam onto mlir-aie's `CompilableDesign`, the
      runtime callables and the record of what a compiled image consists of
-   - `elementwise.py`: the shared elementwise template and its two stream shapes
+   - `elementwise.py`: the shared elementwise array and its two operand shapes
    - `kernels.py`: `kernels_dir()` and `declare_kernel`, for a kernel the
      factories do not cover
    - `harness.py`: the device test harness (`vectors`; `run_test`, timed with
@@ -240,7 +240,7 @@ parameters.
 **Compilation Flow**:
 
 ```text
-op.py (XOverlay.design + X.design or the derived sequence)
+op.py (X.array + X.sequence or the derived sequence)
     ↓
 iron.common.design.build_design (library-owned Runtime/Program)
     ↓
@@ -306,32 +306,38 @@ Data movement pattern: L3 → Shim DMA → L2 → L1 (tile local) → Compute
 1. Create `iron/operators/<operator_name>.py` (a directory with `op.py` only
    if it needs more than one module: a hand-written design, its own
    reference, a README, a device test of its own)
-2. Declare the overlay (`class XOverlay(Overlay)`):
-   - `auto()` fields with device defaults in `resolve(dev)`; `param()` fields
-     only for what a host shape names
-   - `StreamIn`/`StreamOut` members in tile units (`per=` a column count)
-   - a `Resident` for every trip count the core reads, so the array never
-     depends on the extent
+2. Declare the operator (`class X(Operator)`):
+   - `param()` fields for what a host shape names; `auto()` knobs, filled
+     by `resolve(dev)` from the device and the extents
+   - `In`/`Out` operands by shape, each with its `tile=` in the units a
+     core reads (`per=` a column count): an operand with a tile is its own
+     stream, `op.x.lane(i)` a shim endpoint, `op.x.tile` the fifo type
+   - a `Value(derive=...)` for every trip count the core reads, so the
+     array never depends on the extent; what else the array bakes is
+     `param(..., array=True)`
    - `array(target)`: build ObjectFIFOs and Workers (`target.kernel(...)`,
      `target.rtp(...)`, `target.barrier()`), `range_()` for loops, and
-     `self.x[i].bind(fifo.prod())` / `self.count.bind(rtps)` for every member
-3. Declare the operator (`class X(Operator[XOverlay])`):
-   - `param()` fields; `In`/`Out` buffers with `to=`/`from_=` naming the stream
-   - `compatible()` for divisibility against the tuned overlay, `residents()`
-     for the counts
-   - `sequence(rt)` only if the derived sequence is not the one you want
+     `self.x.lane(i).bind(fifo.prod())` / `self.count.bind(rtps)` for every
+     member. It sees the array tier alone: reading an extent raises
+   - `compatible()` for divisibility against the resolved knobs
+   - `sequence(rt)` only if the derived sequence is not the one you want:
+     `rt.fill(self.A.lane(i), access)`, `rt.drain(self.C.lane(i), access)`
    - see `iron/common/elementwise.py` for the elementwise families, and
      `gemm/op.py` or `mha/op.py` for hand-written sequences
+3. A shipped binary is a subclass declared with the image, `class
+   Shipped(X, image=Xclbin(url=, sha256=, filename=))`: it pins the knobs,
+   redeclares the operands with `via=` and lays the image's parameter block
+   out as a `Value(address=, lock=)`; nothing builds its array
 4. Name the kernel with a factory from `aie.iron.kernels`
    (`eltwise.relu_sized(line)`, `norm.rms_norm_eps(tile)`, ...): it carries
    the symbol, the source, the argument types, aie2's LUT tables and the
    tolerance contract. Bind a further symbol of the same object with
    `fn.object_file.bind(symbol, arg_types)`. `target.kernel(...)` declares
    one the factories do not cover -- a kernel whose compile flags are the
-   overlay's own, like flm's `mm_fused.cc` -- and, with `source_text=`, one
+   operator's own, like flm's `mm_fused.cc` -- and, with `source_text=`, one
    written in the operator's own file (the hello-world in
    `iron/tests/toolchain/inline_kernel.py`: a `vadd` in C++ text, the
-   argument types the streams' tiles). An overlay running one kernel
+   argument types the operands' tiles). An operator running one kernel
    reports its contract from `tolerance(target)` (`Elementwise` does this
    from `kernel(target)`). If a new C++ compute kernel is needed, add it
    to the
@@ -381,7 +387,7 @@ kv = iron.state((n_kv_groups, max_len, head_dim))
 @iron.graph(names_from=model)
 def decode(x, angles, *, pos: Scratchpad[np.int32]):
     h = RMSNorm(x, model.norm.weight)             # a bare tensor is a weight
-    k = RoPE(GEMV(model.wk, h), angles)          # class calls infer overlay and extent
+    k = RoPE(GEMV(model.wk, h), angles)          # class calls infer the extents
     Copy(k, kv[:, pos])                          # a state passed as an output is written
     return GEMV(model.wo, h)
 
@@ -389,8 +395,8 @@ net = decode.compile(dev, x=(1, emb), angles=(1, head_dim))
 logits = net(x_tok, ang_tok, pos=n)
 ```
 
-Overlays with equal `design_key()` are one array; operators with equal keys
-are one build. `compile(dev, boundaries=, image=)` derives the image (a
+Operators with equal `array_key()` share one array; with equal
+`design_key()` they are one build. `compile(dev, boundaries=, image=)` derives the image (a
 fused ELF on NPU2, per-step xclbins with `boundaries=iron.each_step`) and
 `verbose=True` prints why. It links the image (`net.image`) and stops
 there: the runtime that loads it is made on the first call, so a host with
@@ -552,13 +558,13 @@ logging.basicConfig(level=logging.DEBUG)
   overridden by `MLIR_AIE_KERNEL_SOURCES`)
 - Ensure the kernel's C++ signature matches the factory from
   `aie.iron.kernels` (or `bind()`'s argument types), or the
-  `target.kernel(...)` declaration, that the overlay's `design()` names
+  `target.kernel(...)` declaration, that the operator's `array()` names
 
 **Compilation hangs or fails**
 
 - Check MLIR-AIE is installed: `python -c "import aie.iron"`
 - Verify `llvm-aie` is available: `which aie-opt`
-- Look for errors in the overlay's `design()` (common: using `range` instead of `range_()`)
+- Look for errors in the operator's `array()` (common: using `range` instead of `range_()`)
 
 **Test failures with numerical differences**
 

@@ -14,19 +14,7 @@ import numpy as np
 import pytest
 from aie.helpers.util import v8bfp16ebs8
 
-from iron.common.declare import (
-    In,
-    Operator,
-    Out,
-    Overlay,
-    Resident,
-    Shim,
-    StreamIn,
-    StreamOut,
-    auto,
-    optional,
-    param,
-)
+from iron.common.declare import In, Operator, Out, Shim, Value, auto, optional, param
 from iron.common.design import Sequence, transfers
 from iron.common.tiling import Access
 
@@ -63,13 +51,13 @@ class FakeDev:
         return 4
 
 
-class UnaryOverlay(Overlay):
+class Unary(Operator):
+    size: int = param()
     tile: int = auto(1024)
     cols: int = auto()
     chans: int = auto(2)
-
-    x = StreamIn(tile, per=(cols, chans))
-    y = StreamOut(tile, per=(cols, chans))
+    A = In(size, tile=(tile,), per=(cols, chans))
+    B = Out(size, tile=(tile,), per=(cols, chans))
 
     def resolve(self, dev):
         import dataclasses
@@ -77,40 +65,26 @@ class UnaryOverlay(Overlay):
         return dataclasses.replace(self, cols=self.cols or dev.columns())
 
 
-class Unary(Operator[UnaryOverlay]):
-    size: int = param()
-    A = In(size, to=UnaryOverlay.x)
-    B = Out(size, from_=UnaryOverlay.y)
-
-
-class MVOverlay(Overlay):
+class MV(Operator):
+    M: int = param()
     K: int = param()
+    num_batches: int = param(default=1)
     cols: int = auto(2)
     tile_out: int = auto(64)
-    a = StreamIn(tile_out, K, per=cols)
-    b = StreamIn(K, broadcast=True)
-    c = StreamOut(tile_out, per=cols)
+    A = In(optional(num_batches), M, K, tile=(tile_out, K), per=(cols,))
+    B = In(optional(num_batches), K, tile=(K,), broadcast=True)
+    C = Out(optional(num_batches), M, tile=(tile_out,), per=(cols,))
 
 
-class MV(Operator[MVOverlay]):
-    M: int = param()
-    num_batches: int = param(default=1)
-    A = In(optional(num_batches), M, MVOverlay.K, to=MVOverlay.a)
-    B = In(optional(num_batches), MVOverlay.K, to=MVOverlay.b)
-    C = Out(optional(num_batches), M, from_=MVOverlay.c)
-
-
-def _bind_all(ov, log):
-    for s in ov.streams.values():
+def _bind_all(op, log):
+    for s in op.streams.values():
         for i in range(s.count):
             s.bind(FakeHandle(f"{s.name}{i}", log), i)
 
 
 def test_plan_reproduces_the_channeled_unary_split():
-    ov = UnaryOverlay().resolved(FakeDev())
-    op = Unary(ov, size=8192)
-    (x,) = [s for s in ov.streams.values() if s.name == "x"]
-    p = transfers(op.A, x)
+    op = Unary(size=8192).resolved(FakeDev())
+    p = transfers(op.A, op.A.lanes)
     assert len(p) == 8  # 4 columns x 2 channels
     chunk = 8192 // 8
     for i, (slot, accesses) in enumerate(p):
@@ -119,113 +93,94 @@ def test_plan_reproduces_the_channeled_unary_split():
 
 
 def test_plan_batched_gemv_coalesces_and_broadcasts():
-    ov = MVOverlay(K=128)
-    op = MV(ov, M=256, num_batches=100)
-    a_transfers = transfers(op.A, ov.a)
+    op = MV(M=256, K=128, num_batches=100)
+    a_transfers = transfers(op.A, op.A.lanes)
     assert [slot.index for slot, _ in a_transfers] == [0, 1]
     (acc,) = a_transfers[1][1]
     run = (256 // 2) * 128
     assert acc.offset == run and acc.sizes[1] == 100 and acc.strides[1] == 256 * 128
-    b_slot, b_accesses = transfers(op.B, ov.b)[0]
-    assert b_slot is ov.b and b_accesses == [
+    b_slot, b_accesses = transfers(op.B, op.B.lanes)[0]
+    assert b_slot is op.B.lanes and b_accesses == [
         Access(100 * 128, 0, (1, 1, 1, 100 * 128), (0, 0, 0, 1))
     ]
 
 
 def test_derived_sequence_issues_fills_then_waited_drains():
     log = []
-    ov = MVOverlay(K=128)
-    _bind_all(ov, log)
-    op = MV(ov, M=256)
-    rt = Sequence(op, ov, {"A": "dA", "B": "dB", "C": "dC"})
+    op = MV(M=256, K=128)
+    _bind_all(op, log)
+    rt = Sequence(op, {"A": "dA", "B": "dB", "C": "dC"})
     rt._derived()
     assert log == [
-        ("fill", "a0", "dA", False),
-        ("fill", "a1", "dA", False),
-        ("fill", "b0", "dB", False),
-        ("drain", "c0", "dC", True),
-        ("drain", "c1", "dC", True),
+        ("fill", "A0", "dA", False),
+        ("fill", "A1", "dA", False),
+        ("fill", "B0", "dB", False),
+        ("drain", "C0", "dC", True),
+        ("drain", "C1", "dC", True),
     ]
 
 
 def test_derived_sequence_names_a_buffer_without_a_stream():
-    class NoStream(Operator[MVOverlay]):
+    class NoStream(Operator):
         M: int = param()
-        A = In(M, MVOverlay.K)
-        C = Out(M, from_=MVOverlay.c)
+        K: int = param()
+        A = In(M, K)
+        C = Out(M, tile=(64,))
 
     log = []
-    ov = MVOverlay(K=128)
-    _bind_all(ov, log)
-    op = NoStream(ov, M=256)
-    with pytest.raises(ValueError, match="NoStream.A names no stream"):
-        Sequence(op, ov, {"A": "dA", "C": "dC"})._derived()
+    op = NoStream(M=256, K=128)
+    _bind_all(op, log)
+    with pytest.raises(ValueError, match="NoStream.A has no tile="):
+        Sequence(op, {"A": "dA", "C": "dC"})._derived()
 
 
 def test_override_slices_and_issues_through_the_same_sequence():
-    class Custom(Operator[MVOverlay]):
-        M: int = param()
-        A = In(M, MVOverlay.K, to=MVOverlay.a)
-        B = In(MVOverlay.K, to=MVOverlay.b)
-        C = Out(M, from_=MVOverlay.c)
-
+    class Custom(MV):
         def sequence(self, rt):
-            rows = self.M // self.ov.cols
-            rt.fill(self.ov.b, self.B)
+            rows = self.M // self.cols
+            rt.fill(self.B, self.B)
             with rt.group():
-                for col in range(self.ov.cols):
-                    rt.fill(self.ov.a[col], self.A[col * rows : (col + 1) * rows, :])
-                    rt.drain(self.ov.c[col], self.C[col * rows : (col + 1) * rows])
+                for col in range(self.cols):
+                    rt.fill(self.A.lane(col), self.A[col * rows : (col + 1) * rows, :])
+                    rt.drain(self.C.lane(col), self.C[col * rows : (col + 1) * rows])
 
     log = []
-    ov = MVOverlay(K=128)
-    _bind_all(ov, log)
-    op = Custom(ov, M=256)
+    op = Custom(M=256, K=128)
+    _bind_all(op, log)
     assert Custom.has_sequence_override() and not MV.has_sequence_override()
-    op.sequence(Sequence(op, ov, {"A": "dA", "B": "dB", "C": "dC"}))
+    op.sequence(Sequence(op, {"A": "dA", "B": "dB", "C": "dC"}))
     assert [(v, h) for v, h, _, _ in log] == [
-        ("fill", "b0"),
-        ("fill", "a0"),
-        ("drain", "c0"),
-        ("fill", "a1"),
-        ("drain", "c1"),
+        ("fill", "B0"),
+        ("fill", "A0"),
+        ("drain", "C0"),
+        ("fill", "A1"),
+        ("drain", "C1"),
     ]
 
 
-def test_preamble_writes_residents_and_rejects_missing_ones():
-    class Counted(Overlay):
-        tile: int = auto(64)
-        count = Resident(np.int32)
-        s = StreamIn(tile)
-
-    class Op(Operator[Counted]):
+def test_preamble_writes_residents_and_rejects_unbound_ones():
+    class Op(Operator):
         n: int = param()
-        A = In(n, to=Counted.s)
-
-        def resident_values(self):
-            return {"count": self.n // self.ov.tile}
+        tile: int = auto(64)
+        A = In(n, tile=(tile,))
+        count = Value(np.int32, derive=lambda op: op.n // op.tile)
 
     class FakeRTP(dict):
         pass
 
-    ov = Counted()
     rtps = [FakeRTP(), FakeRTP()]
-    ov.count.bind(rtps)
-    op = Op(ov, n=640)
+    op = Op(n=640)
+    op.count.bind(rtps)
 
     class FakeTarget:
         barriers = []
         image = "elf"
 
-    Sequence(op, ov, {}).preamble(FakeTarget())
+    Sequence(op, {}).preamble(FakeTarget())
     assert rtps == [{0: 10}, {0: 10}]
 
-    class Forgetful(Operator[Counted]):
-        n: int = param()
-        A = In(n, to=Counted.s)
-
-    with pytest.raises(ValueError, match="does not supply it"):
-        Sequence(Forgetful(ov, n=64), ov, {}).preamble(FakeTarget())
+    with pytest.raises(ValueError, match="never bound this value"):
+        Sequence(Op(n=64), {}).preamble(FakeTarget())
 
 
 def test_mha_sequence_is_one_descriptor_set_per_kv_group(monkeypatch):
@@ -257,8 +212,7 @@ def test_mha_sequence_is_one_descriptor_set_per_kv_group(monkeypatch):
 
     op = MHA(num_heads=2, seq_len=1000, d=64, num_KV_heads=1, num_of_pipelines=8)
     op = op.resolved(Dev())
-    ov = op.ov
-    assert op.seq_pad == 1024 and ov.q_shims == 2 and ov.join_rows == 256
+    assert op.seq_pad == 1024 and op.q_shims == 2 and op.join_rows == 256
     assert op.resident_values() == {
         "q_blocks_per_pipeline": 2,
         "kv_blocks": 16,
@@ -266,10 +220,10 @@ def test_mha_sequence_is_one_descriptor_set_per_kv_group(monkeypatch):
         "s_kv": 1000,
     }
     log = []
-    for s in ov.streams.values():
+    for s in op.streams.values():
         for i in range(s.count):
             s.bind(Handle(f"{s.name}{i}", log), i)
-    op.sequence(Sequence(op, ov, {"Q": "dQ", "K": "dK", "V": "dV", "O": "dO"}))
+    op.sequence(Sequence(op, {"Q": "dQ", "K": "dK", "V": "dV", "O": "dO"}))
 
     head, block = 1024 * 64, 256 * 64
     # Q: (heads, blocks, rows, d), one per slot. K and V: the re-read in the
@@ -321,12 +275,11 @@ def test_mha_sequence_over_interleaved_heads_is_strided_the_same_way(monkeypatch
         num_of_pipelines=8,
         heads_interleaved=True,
     ).resolved(Dev())
-    ov = op.ov
     log = []
-    for s in ov.streams.values():
+    for s in op.streams.values():
         for i in range(s.count):
             s.bind(Handle(f"{s.name}{i}", log), i)
-    op.sequence(Sequence(op, ov, {"Q": "dQ", "K": "dK", "V": "dV", "O": "dO"}))
+    op.sequence(Sequence(op, {"Q": "dQ", "K": "dK", "V": "dV", "O": "dO"}))
     assert [name for name, _ in log] == ["Q0", "Q1", "K0", "V0", "O0", "O1"] * 2
     q0, q1, k0, *_ = [tap for _, tap in log[:6]]
     # Q: (heads 2 at stride d, blocks 2, rows 256 at stride 4d, d)
@@ -407,18 +360,18 @@ class _Recorder:
         self.log.append(("drain", self.name, tap.offset, tap.sizes, wait))
 
 
-def _record(ov):
+def _record(op):
     log = []
-    for s in ov.streams.values():
+    for s in op.streams.values():
         for i in range(s.count):
             s.bind(_Recorder(f"{s.name}{i}", log), i)
     return log
 
 
 def test_flm_gemm_keyword_construction_tunes_from_the_device(flm):
-    # Keyword construction leaves every tunable to the overlay's tuning,
-    # which reads the device alone; the operator's extent is checked against
-    # the tuned overlay by compatible(), not folded into its defaults.
+    # Keyword construction leaves every knob to resolution, which reads the
+    # device alone; the operator's extent is checked against the resolved
+    # knobs by compatible(), not folded into its defaults.
     assert flm.GEMM(M=512, K=1024, N=1024).tile_n is None
     op = flm.GEMM(M=512, K=1024, N=1024).resolved(_NPU2())
     assert (op.tile_n, op.m_chunk, op.rows, op.cols, op.bfp16_b) == (64, 1, 4, 8, True)
@@ -461,7 +414,7 @@ def test_flm_gemm_layout_of_b_follows_the_device(flm):
 def test_flm_gemm_unsplit_sequence_issues_c_then_a_then_b_per_block(flm):
     op = flm.GEMM(M=512, K=1024, N=1024).resolved(_NPU2())
     log = _record(op)
-    op.sequence(Sequence(op, op, {"A": "dA", "B": "dB", "C": "dC"}))
+    op.sequence(Sequence(op, {"A": "dA", "B": "dB", "C": "dC"}))
     verbs = [v for v, *_ in log]
     # Two column-blocks (N = 2 * 8 * 64): each drains C on eight columns,
     # then fills A on four rows and B on eight columns.
@@ -482,7 +435,7 @@ def test_flm_gemm_split_sequence_drains_one_row_block_at_a_time(flm):
     op = flm.GEMM(M=512, K=1024, N=10240).resolved(_NPU2())
     assert op._c_split and not op._a_split
     log = _record(op)
-    op.sequence(Sequence(op, op, {"A": "dA", "B": "dB", "C": "dC"}))
+    op.sequence(Sequence(op, {"A": "dA", "B": "dB", "C": "dC"}))
     drains = [e for e in log if e[0] == "drain"]
     assert len(drains) == 20 * 8 * 2  # blocks x columns x row-blocks
     assert all(sizes == (1, 1, 256, 64) for _, _, _, sizes, _ in drains)
@@ -507,8 +460,8 @@ def test_mem_copy_sequence_pads_a_remainder_to_a_full_line(monkeypatch):
         op = MemCopy(
             size=size, num_cores=4, num_channels=1, bypass=False, tile_size=256
         ).resolved(Dev())
-        log = _record(op.ov)
-        op.sequence(Sequence(op, op.ov, {"x": "dx", "y": "dy"}))
+        log = _record(op)
+        op.sequence(Sequence(op, {"x": "dx", "y": "dy"}))
 
         def moved(verb):
             return sum(s[0] * s[3] for v, _, _, s, _ in log if v == verb)
@@ -606,7 +559,7 @@ def test_shipped_sequence_writes_every_core_then_streams_in_consume_order():
     }
     rec = _ForeignRecorder()
     cores = [(c, r) for r in range(2, 6) for c in range(8)]
-    run_sequence(op, op, {"A": "dA", "B": "dB", "C": "dC"}, cores, rec)
+    run_sequence(op, {"A": "dA", "B": "dB", "C": "dC"}, cores, rec)
     writes = [e for e in rec.log if e[0] == "w"]
     # 8 words on 32 cores, then one lock release per core, before any DMA.
     assert len(writes) == 32 * 8 + 32

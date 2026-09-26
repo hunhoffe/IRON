@@ -66,7 +66,7 @@ def _stream_group(seq_len, embedding_dim, hidden_dim, k, group_index, context):
         },
         generator=generator,
     )
-    return cls(cls._overlay_class(), context=context)
+    return cls(context=context)
 
 
 def _wiring(seq_len, embedding_dim, hidden_dim, k):

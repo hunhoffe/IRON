@@ -17,16 +17,16 @@ from typing import Any, Callable
 
 
 class Unresolvable(ValueError):
-    """No legal tuning exists for this overlay on this device.
+    """No legal resolution exists for this operator on this device.
 
-    An expected outcome, not a bug: raised by :meth:`Overlay.resolve` so the
-    caller learns at tune time rather than from a design that compiles and
+    An expected outcome, not a bug: raised by :meth:`Operator.resolve` so the
+    caller learns at resolution rather than from a design that compiles and
     then hangs.
     """
 
 
 class Incompatible(ValueError):
-    """An operator's extents do not fit the overlay it was declared against."""
+    """An operator's extents do not fit its resolved knobs."""
 
 
 class DeclarationError(TypeError):

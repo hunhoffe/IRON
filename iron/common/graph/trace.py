@@ -13,7 +13,7 @@ import numpy as np
 from aie.utils import bfp
 from ml_dtypes import bfloat16
 
-from ..declare import BoundValue, Operator, Resident, infer, infer_kwargs
+from ..declare import BoundValue, Operator, infer, infer_kwargs
 from ..declare.member import _Buffer as _Buffer_
 from ..declare.member import _Value
 from ..design import device_symbol
@@ -54,8 +54,7 @@ class TracedStep:
 class Binding:
     """A per-call value of the graph, bound to one operator's value member.
 
-    ``member`` is the operator's own, or its overlay's for a core-read value
-    the overlay declares (the dynamic softmax's vector size).
+    ``member`` is the value member the site binds.
     """
 
     op: Operator
@@ -165,10 +164,11 @@ class TracedGraph:
         return list(seen.values())
 
     @property
-    def overlays(self) -> list:
+    def arrays(self) -> list:
+        """One operator per distinct array, in runlist order."""
         seen = {}
         for op in self.operators:
-            seen.setdefault(op.array_key(), op.ov)
+            seen.setdefault(op.array_key(), op)
         return list(seen.values())
 
 
@@ -180,7 +180,6 @@ class Tracer:
         self.steps: list[TracedStep] = []
         self.weights: dict[int, tuple[object, Handle]] = {}
         self.states: dict[int, tuple[State, Handle]] = {}
-        self.overlays: dict = {}
         self.bindings: list[Binding] = []
         self._bound: dict[int, dict] = {}  # id(op) -> {member: Value}
         self._counter = itertools.count()
@@ -233,15 +232,12 @@ class Tracer:
         """
         operands = [self.operand(a) for a in args]
         kwargs = dict(kwargs)
-        # A keyword whose value is a per-call handle binds a value member: the
-        # operator's own, or one on the overlay of the class resolve_class
-        # picks for it (the dynamic softmax).
+        # A keyword whose value is a per-call handle binds a value member of
+        # the class resolve_class picks.
         values = {
             k: kwargs.pop(k) for k in list(kwargs) if isinstance(kwargs[k], Value)
         }
         if isinstance(target, type):
-            # The class sees the values too: a family that picks a member from
-            # a bound value (the dynamic softmax) decides here.
             cls = target.resolve_class(len(operands), {**kwargs, **values})
             own = self._split_values(cls, values)
             scales: dict[str, int] = {}
@@ -262,10 +258,12 @@ class Tracer:
                     f"{type(op).__name__} instance called with unexpected keyword "
                     f"arguments {sorted(kwargs) + sorted(values)}"
                 )
+        if values:
+            raise TypeError(
+                f"{type(op).__name__} has no per-call value {sorted(values)}"
+            )
         for name, value in own.items():
             self._bind(op, name, value, scales.get(name, 1))
-        for name, value in values.items():
-            self._bind_overlay(op, name, value)
         return self._record(op, operands)
 
     @staticmethod
@@ -280,13 +278,7 @@ class Tracer:
             outputs=[h.shape for h in outputs],
             **infer_kwargs(cls, kwargs),
         )
-        if cls._overlay_class is None:
-            return cls(**{**kwargs, **inferred})
-        # The two-class form: the overlay is split off and shared by key,
-        # one object per distinct array.
-        ov, op_kwargs = cls._split_kwargs({**kwargs, **inferred})
-        ov = self.overlays.setdefault(ov.design_key(), ov)
-        return cls(ov, **op_kwargs)
+        return cls(**{**kwargs, **inferred})
 
     def _bind(self, op, name, value, scale: int = 1) -> None:
         if not isinstance(value, Value):
@@ -306,24 +298,6 @@ class Tracer:
             bound[name] = value
             member = next(v for v in op.values if v.name == name)
             self.bindings.append(Binding(op, member, value, scale))
-
-    def _bind_overlay(self, op, name, value) -> None:
-        """Bind a core-read value the operator's overlay declares."""
-        if name not in {v.name for v in op.ov.values}:
-            raise TypeError(
-                f"{type(op).__name__} has no per-call value {name!r}, on itself or "
-                f"on {type(op.ov).__name__}"
-            )
-        bound = self._bound.setdefault(id(op), {})
-        if name in bound and bound[name] is not value:
-            raise ValueError(
-                f"{type(op).__name__}.{name} is bound to {bound[name]!r} at an "
-                f"earlier call site and to {value!r} here"
-            )
-        if name not in bound:
-            bound[name] = value
-            member = next(v for v in op.ov.values if v.name == name)
-            self.bindings.append(Binding(op, member, value))
 
     def _record(self, op, operands):
         buffers = op.buffers
@@ -449,19 +423,9 @@ class _ReferenceTracer(Tracer):
         kwargs = dict(kwargs)
         if isinstance(target, type):
             cls = target.resolve_class(len(tensors), kwargs)
+            # A per-call value's number goes to the reference, not to
+            # construction.
             values = self._split_values(cls, kwargs)
-            # A value bound on the overlay is a core-read one: a scratchpad on
-            # the dynamic overlay, or the resident a class swaps for it when a
-            # site binds a handle (the softmax's vector_size). Either way the
-            # number goes to the reference, not to construction.
-            overlay_cls = cls._overlay_class
-            if overlay_cls is not None:
-                names = {
-                    m.name
-                    for m in overlay_cls._members
-                    if isinstance(m, (_Value, Resident))
-                }
-                values.update({k: kwargs.pop(k) for k in list(kwargs) if k in names})
             shapes = [Handle(t.shape, _tensor_dtype(t), "", "input") for t in tensors]
             shapes = [h if k is None else h[k] for h, k in zip(shapes, keys)]
             shapes = _take_views(cls, shapes, kwargs, {}, {})

@@ -1,13 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""What an overlay or operator declares besides its fields.
+"""What an operator declares besides its fields.
 
-Streams are the overlay's ABI and buffers the operator's; the two agree by
-construction, since a buffer names the stream it feeds or drains. The rest
-name values no host buffer carries: a :class:`Scratchpad` or
-:class:`DispatchTime` written per call, a :class:`Resident` written once,
-before the first DMA.
+Buffers are the host ABI, and an operand declared with a tile is its own
+stream into the array, so direction, dtype and shim binding agree by
+construction. The rest name values no host buffer carries: a
+:class:`Value` written once per build, or per call when a graph binds it,
+and a :class:`Scratchpad` or :class:`DispatchTime` written per call.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from typing import Self
 
     # Named in the subclasses' base expressions as strings (bound imports member).
-    from .bound import BoundBuffer, BoundResident, BoundStream, BoundValue  # noqa: F401
+    from .bound import BoundBuffer, BoundStream, BoundValue  # noqa: F401
 
 
 B = TypeVar("B")  # the bound form an instance serves
@@ -43,12 +43,13 @@ class Shim:
 
 
 class Xclbin:
-    """An overlay someone else built: a downloaded xclbin, pinned by digest.
+    """An image someone else built: a downloaded xclbin, pinned by digest.
 
-    Declared as a class attribute of an :class:`Overlay` that has no
-    ``design()``. Every stream of such an overlay is pinned with ``via=`` and
-    every resident has an ``address``, because nothing else says where its
-    endpoints are; the library emits the sequence against those pins.
+    Given as ``image=`` when a class is declared (``class Shipped(GEMM,
+    image=Xclbin(...))``). Every stream of such a class is pinned with
+    ``via=`` and every derived value has an ``address``, because nothing else
+    says where its endpoints are; the library emits the sequence against
+    those pins.
     """
 
     def __init__(
@@ -64,7 +65,7 @@ class Xclbin:
 
 
 class _Member(Generic[B]):
-    """Base of everything declared unannotated in an Overlay or Operator body.
+    """Base of everything declared unannotated in an Operator body.
 
     ``__set_name__`` gives the member its name from the language, and the
     class body gives it its order. On an instance, ``__get__`` returns the
@@ -102,8 +103,8 @@ class _Buffer(_Member["BoundBuffer"]):
     ``tile`` is what one fifo element holds, in the units a core reads
     (its dimensions may be knobs), ``per=`` the field the stream is
     replicated over, ``depth`` the fifo depth, ``via=`` a pinned shim
-    endpoint. Without it, ``to=``/``from_=`` name a stream declared apart
-    (a two-class operator's overlay).
+    endpoint. Without it the buffer is an argument of a sequence written by
+    hand (:meth:`Operator.sequence`).
     """
 
     direction: ClassVar[str] = ""
@@ -112,8 +113,6 @@ class _Buffer(_Member["BoundBuffer"]):
         self,
         *dims: _DimSpec,
         dtype: Any = bfloat16,
-        to: "StreamIn | None" = None,
-        from_: "StreamOut | None" = None,
         tile: Any = None,
         per: _DimSpec | None = None,
         depth: int = 2,
@@ -123,14 +122,8 @@ class _Buffer(_Member["BoundBuffer"]):
     ) -> None:
         self.dims = tuple(dims)
         self.dtype = dtype
-        self.to = to
-        self.from_ = from_
         self.stream: _Stream | None = None
         if tile is not None:
-            if to is not None or from_ is not None:
-                raise DeclarationError(
-                    "a buffer with a tile= is its own stream; drop to=/from_="
-                )
             tile = tuple(tile) if isinstance(tile, (tuple, list)) else (tile,)
             kind = StreamIn if self.direction == "in" else StreamOut
             self.stream = kind(
@@ -142,10 +135,6 @@ class _Buffer(_Member["BoundBuffer"]):
                 replicate=replicate,
                 broadcast=broadcast,
             )
-            if self.direction == "in":
-                self.to = self.stream
-            else:
-                self.from_ = self.stream
 
     def __set_name__(self, owner: type, name: str) -> None:
         super().__set_name__(owner, name)
@@ -161,32 +150,20 @@ class In(_Buffer):
 
     direction = "in"
 
-    def __init__(self, *dims, dtype=bfloat16, to=None, **stream) -> None:
-        super().__init__(*dims, dtype=dtype, to=to, **stream)
-
 
 class Out(_Buffer):
     """A buffer the array writes and the host reads."""
 
     direction = "out"
 
-    def __init__(self, *dims, dtype=bfloat16, from_=None, **stream) -> None:
-        super().__init__(*dims, dtype=dtype, from_=from_, **stream)
-
-
-class InOut(_Buffer):
-    """A buffer read and written in place."""
-
-    direction = "inout"
-
 
 class _Stream(_Member["BoundStream"]):
-    """A stream into or out of the array, in tile units.
+    """An operand's stream into or out of the array, in tile units.
 
-    ``per=`` names the overlay dimension the stream is replicated over (one
-    fifo per column, say), or a tuple of dimensions whose product is the
-    count (columns x channels); ``broadcast=True`` is one fifo every worker
-    consumes. ``via=`` pins the shim endpoint(s). ``depth`` is the fifo depth.
+    ``per=`` names the field the stream is replicated over (one fifo per
+    column, say), or a tuple of fields whose product is the count (columns
+    x channels); ``broadcast=True`` is one fifo every worker consumes.
+    ``via=`` pins the shim endpoint(s). ``depth`` is the fifo depth.
     """
 
     direction: ClassVar[str] = ""
@@ -324,30 +301,3 @@ class Value(_Value):
 
     def __repr__(self) -> str:
         return f"Value({np.dtype(self.dtype).name})"
-
-
-class Resident(_Member["BoundResident"]):
-    """A value the sequence writes into the array before the first DMA.
-
-    Overlay-side: a runtime parameter (trip count, RTP) a core reads. The
-    sequence's preamble writes every resident the overlay declares.
-    """
-
-    def __init__(
-        self,
-        dtype: Any = np.int32,
-        *,
-        address: int | None = None,
-        lock: int | None = None,
-        optional: bool = False,
-    ) -> None:
-        self.dtype = dtype
-        self.address = address
-        self.lock = lock
-        # A resident only some configurations of the overlay allocate (a
-        # parameter word omitted when its value is a compile-time constant).
-        # The preamble skips it when design() left it unbound.
-        self.optional = optional
-
-    def __repr__(self) -> str:
-        return f"Resident({np.dtype(self.dtype).name})"

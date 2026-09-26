@@ -7,8 +7,8 @@ Inputs are its positional parameters, outputs its return values, weights
 what it closes over, state an :func:`state` object created outside, and
 per-call scalars its keyword-only parameters annotated ``Scratchpad[T]`` or
 ``DispatchTime[T]``. Operators are called on handles: ``GEMV(w, h)`` infers
-its overlay and extent from its arguments (deduplicating overlays by
-``design_key``), and an explicit instance ``q(w, h)`` is applied the same way.
+its extents from its arguments (operators with one ``array_key`` share an
+array), and an explicit instance ``q(w, h)`` is applied the same way.
 
     kv = [iron.state((n_kv, MAX, head_dim)) for _ in range(n_layers)]
 

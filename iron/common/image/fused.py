@@ -60,17 +60,16 @@ def build_fused_mlir(seq, plan=None) -> str:
 
 
 def _design_sources(generator) -> list:
-    """The modules a design is defined in: its function's, and its classes'.
+    """The modules a design is defined in: its function's, and its class's.
 
-    A design's own key spells the operator's and overlay's class source; the
-    fused key also takes their modules, since a helper beside the class is
-    as much the design as the class is.
+    A design's own key spells the operator's class source; the fused key
+    also takes its modules, since a helper beside the class is as much the
+    design as the class is.
     """
     design_fn, _, kwargs = generator.resolve()
     classes = []
     if "op" in kwargs:
-        op = kwargs["op"]
-        classes = [*type(op).__mro__, *type(op.ov).__mro__]
+        classes = list(type(kwargs["op"]).__mro__)
     files = set()
     for obj in (design_fn, *classes):
         try:

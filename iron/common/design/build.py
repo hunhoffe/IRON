@@ -17,19 +17,17 @@ from ..declare import BoundValue, Operator
 from ..kernels import kernels_dir
 from ..tracing import maybe_enable_trace
 from .generator import DesignGenerator
-from .runtime import Sequence, per_call_values
+from .runtime import Sequence
 from .target import Target
 
 
 def device_symbol(op: Operator, value: BoundValue) -> str:
     """The device symbol of a per-call value: stable across processes, unique per instance.
 
-    What the host writes through the parameter scratchpad. The declaring
-    layer gets the first word: whichever of the two declared the value may
-    name it through its ``value_symbol`` hook.
+    What the host writes through the parameter scratchpad. The operator
+    gets the first word, through its ``value_symbol`` hook.
     """
-    owner = op if value.name in {v.name for v in op.values} else op.ov
-    return owner.value_symbol(value) or f"{op.name}_{value.name}"
+    return op.value_symbol(value) or f"{op.name}_{value.name}"
 
 
 def build_design(
@@ -49,8 +47,7 @@ def build_design(
     key (see :func:`mlir_artifact_for`).
     """
     op = op.resolved(dev).copy()  # a build binds streams; each gets its own
-    ov = op.ov
-    if ov.external is not None:
+    if op.external is not None:
         # A downloaded image: no array to build, only the sequence against
         # its pins. external imports this package, so the name is local.
         from ..external import build_external
@@ -59,12 +56,12 @@ def build_design(
     target = Target(dev, kernels_dir, trace_size, image)
 
     # Per-call values get their device parameters before the array is built,
-    # so a core-read value can be handed to a worker by the overlay's design.
+    # so a core-read value can be handed to a worker by array().
     # On a full ELF they are scratchpad parameters; on an xclbin, which has
     # no scratchpad (spike S2), every one is a dispatch-time scalar of the
     # sequence, handed in by the generator's keyword parameters (see
     # ``mlir_artifact_for``), and DispatchTime members are always that.
-    values = per_call_values(op)
+    values = op.values
     for value in values:
         value.symbol = device_symbol(op, value)
         value.ssa = None
@@ -85,11 +82,11 @@ def build_design(
                 )
             value.param = dispatch[value.symbol]
 
-    workers = ov.build_array(target)
+    workers = op.build_array(target)
     if workers is None:
         workers = []
 
-    streams = list(ov.streams.values())
+    streams = list(op.streams.values())
     handles = [h for s in streams for h in s.handles]  # raises if any stream is unbound
 
     buffers = op.buffers
@@ -103,7 +100,7 @@ def build_design(
             # A dispatch parameter arrives in the body as its live scalar.
             for value, scalar in zip(values, args[len(buffers) + 1 :]):
                 value.ssa = scalar
-        seq = Sequence(op, ov, rt_data)
+        seq = Sequence(op, rt_data)
         seq.preamble(target)
         seq.run()
         # A declared stream slot this extent never transfers on (mem_copy's
@@ -116,21 +113,24 @@ def build_design(
                 rt._fifos.add(h)
 
     rt = Runtime(sequence, fn_args + params)
-    prog = Program(ov.device(target), rt, workers=workers)
+    prog = Program(op.device(target), rt, workers=workers)
     if trace_size:
         maybe_enable_trace(prog, trace_size, workers)
     return prog.resolve_program()
 
 
 def _design_code(op: Operator) -> str:
-    """A digest of the overlay's and operator's class source, for the cache key.
+    """A digest of the operator's class source, its declared bases included,
+    for the cache key.
 
     ``CompilableDesign`` hashes the design *function* by its code, and
     that function is :func:`build_design` for every declared operator. The
-    code that actually varies is the two classes', so it is spelled here.
+    code that actually varies is the classes', so it is spelled here.
     """
     h = hashlib.sha256()
-    for cls in (type(op.ov), type(op)):
+    for cls in reversed(type(op).__mro__):
+        if not issubclass(cls, Operator) or cls is Operator:
+            continue
         try:
             h.update(inspect.getsource(cls).encode())
         except (OSError, TypeError):
@@ -140,7 +140,7 @@ def _design_code(op: Operator) -> str:
 
 def dispatch_parameters(op: Operator) -> list[tuple[str, Any]]:
     """The (symbol, dtype) of every per-call value, as dispatch-time scalars."""
-    return [(device_symbol(op, v), v.dtype) for v in per_call_values(op)]
+    return [(device_symbol(op, v), v.dtype) for v in op.values]
 
 
 def generator_for(op: Operator, image: str = "elf") -> DesignGenerator:
