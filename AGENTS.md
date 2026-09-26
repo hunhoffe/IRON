@@ -100,10 +100,12 @@ black --check .
 black .
 ```
 
-### Python types (pyright)
+### Python lint and types (ruff, pyright)
 
 ```bash
-# Check the typed part of the tree (the set is [tool.pyright] in pyproject.toml)
+# Both are scoped by their config (ruff.toml, pyrightconfig.json) to the same
+# file set: iron/common and iron/tests/common today, after mlir-aie's setup.
+ruff check
 pyright
 ```
 

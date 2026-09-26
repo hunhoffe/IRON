@@ -44,7 +44,7 @@ black --check .
 black .
 ```
 
-**Type Checking:** `pyright` (its scope is `[tool.pyright]` in `pyproject.toml`).
+**Lint and Type Checking:** `ruff check` and `pyright` (scoped by `ruff.toml` and `pyrightconfig.json`).
 
 **Best Practices:**
 - Use type annotations for function parameters and return values
