@@ -290,7 +290,7 @@ today**.
 
 ## Progress
 
-- (this commit) Profiles. `Profile` (`declare/profile.py`, exported from
+- `8738ce5` Profiles. `Profile` (`declare/profile.py`, exported from
   `iron.common`) is data: `add(cls, **fields)` lines whose `param()`
   fields select operators by shape (one left out matches any value) and
   whose `auto()` fields are the knobs given. Applied in a `with` scope, the
