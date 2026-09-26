@@ -141,7 +141,7 @@ sets), pyright and ruff clean, and a Progress entry.
 
 ## Progress
 
-- `(this commit)` Step 4, GEMM and MHA bound their compute. Both stream
+- `af9cf27` Step 4, GEMM and MHA bound their compute. Both stream
   every row as before (their A and Q patterns use all four descriptor
   dimensions) and say so with `extent_unit() == 0`, so no word of tiles per
   lane is made for them. GEMM's `valid = Extent(M)` derives
