@@ -290,7 +290,7 @@ today**.
 
 ## Progress
 
-- (this commit) `explain()` (decision 3B's last item) and rank-3 Repeat.
+- `dcfe49c` `explain()` (decision 3B's last item) and rank-3 Repeat.
   `op.explain()` prints the array tier, the sequence tier and each value's
   route: written once per build (with its number once resolved), per call
   as a scratchpad word or a regenerated stream, or unused. `optional()`
@@ -302,7 +302,7 @@ today**.
   graph's), the profile's `transfer_size=D` line with them, since a row's
   last axis is the default. The real-shape equivalence check against the
   explicit graph stays identical. Both suites identical to baseline.
-- (this commit) Review of the open typing item (Step 7, "open, noted": a
+- `dcfe49c` Review of the open typing item (Step 7, "open, noted": a
   per-call value at a graph call site is not a parameter a checker knows).
   Probed with pyright. The constructor form can be typed: a `Value` that
   is a descriptor-typed dataclass field (`__set__` takes `T | Handle`,
