@@ -237,7 +237,7 @@ class Sequence(Transfers):
             if name not in values:
                 raise ValueError(
                     f"{type(self.ov).__name__}.{name} is a Resident but "
-                    f"{type(self.op).__name__}.residents() does not supply it"
+                    f"{type(self.op).__name__}.resident_values() does not supply it"
                 )
             if not res.targets:
                 raise ValueError(
@@ -252,7 +252,7 @@ class Sequence(Transfers):
                 buf[index] = words[index]
         # A core-read value on an image without a scratchpad: written from the
         # sequence's per-call scalar, after the residents, before the barriers.
-        for value in list(self.ov.values) + list(self.op.values):
+        for value in per_call_values(self.op):
             for buf, index in value.targets:
                 if value.ssa is None:
                     raise ValueError(
@@ -264,7 +264,7 @@ class Sequence(Transfers):
         unknown = set(values) - set(self.ov.residents)
         if unknown:
             raise ValueError(
-                f"{type(self.op).__name__}.residents() names {sorted(unknown)}, which "
+                f"{type(self.op).__name__}.resident_values() names {sorted(unknown)}, which "
                 f"{type(self.ov).__name__} does not declare"
             )
         for b in target.barriers:
@@ -302,6 +302,15 @@ def transfers(
             f"{stream.name!r}: {e}. Check {type(buffer._op).__name__}.compatible()"
         ) from None
     return [(stream[b.slot], encode(b, buffer.elements, buffer.dtype)) for b in blocks]
+
+
+def per_call_values(op: Operator) -> list:
+    """Every per-call value of ``op``: its own, and its overlay's core-read
+    ones when the overlay is a separate object.
+    """
+    if op.ov is op:
+        return list(op.values)
+    return list(op.ov.values) + list(op.values)
 
 
 def _plus(ssa, constant: int):

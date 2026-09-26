@@ -17,7 +17,7 @@ from ..declare import BoundValue, Operator
 from ..kernels import kernels_dir
 from ..tracing import maybe_enable_trace
 from .generator import DesignGenerator
-from .runtime import Sequence
+from .runtime import Sequence, per_call_values
 from .target import Target
 
 
@@ -62,7 +62,7 @@ def build_design(
     # no scratchpad (spike S2), every one is a dispatch-time scalar of the
     # sequence, handed in by the generator's keyword parameters (see
     # ``mlir_artifact_for``), and DispatchTime members are always that.
-    values = list(ov.values) + list(op.values)
+    values = per_call_values(op)
     for value in values:
         value.symbol = device_symbol(op, value)
         value.ssa = None
@@ -83,7 +83,7 @@ def build_design(
                 )
             value.param = dispatch[value.symbol]
 
-    workers = ov.array(target)
+    workers = ov.build_array(target)
     if workers is None:
         workers = []
 
@@ -138,9 +138,7 @@ def _design_code(op: Operator) -> str:
 
 def dispatch_parameters(op: Operator) -> list[tuple[str, Any]]:
     """The (symbol, dtype) of every per-call value, as dispatch-time scalars."""
-    return [
-        (device_symbol(op, v), v.dtype) for v in list(op.ov.values) + list(op.values)
-    ]
+    return [(device_symbol(op, v), v.dtype) for v in per_call_values(op)]
 
 
 def generator_for(op: Operator, image: str = "elf") -> DesignGenerator:

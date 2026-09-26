@@ -27,12 +27,51 @@ from aie.utils.verify import Tolerance
 from .bound import BoundResident, BoundStream, BoundValue
 from .creation import declare
 from .field import DeclarationError, Unresolvable, param
-from .member import DispatchTime, Resident, Xclbin, _Buffer, _Member, _Stream, _Value
+from .member import (
+    DispatchTime,
+    Resident,
+    Value,
+    Xclbin,
+    _Buffer,
+    _Member,
+    _Stream,
+    _Value,
+)
 from .naming import label_parts
 
 if TYPE_CHECKING:
     from ..design.target import Target
     from .operator import Operator
+
+
+def shim_columns(cls, dev, num_channels: int = 1) -> int:
+    """How many of ``dev``'s columns a class's streams leave within the shim budget.
+
+    One core per (column, channel) fills one fifo per input stream from the
+    shim and drains one per output, so a column costs
+    ``max(inputs, outputs) * num_channels`` channels in the busier
+    direction. A ``replicate`` stream is shared by every column of a
+    channel, so it is paid once per channel rather than per column.
+    """
+    streams = [m for m in cls._members if isinstance(m, _Stream)]
+    shared = [m for m in streams if m.replicate]
+    per_core = [m for m in streams if not m.replicate]
+    directions = [m.direction for m in per_core]
+    cost = max(directions.count("in"), directions.count("out")) * num_channels
+    fixed = len(shared) * num_channels
+    limit = get_shim_dma_limit(dev)
+    return max(1, min(dev.cols, (limit - fixed) // cost))
+
+
+def check_shim_columns(obj, dev, cols: int, num_channels: int = 1) -> None:
+    """Raise :class:`Unresolvable` if ``cols`` exceeds ``obj``'s shim budget."""
+    allowed = shim_columns(type(obj), dev, num_channels)
+    if cols > allowed:
+        raise Unresolvable(
+            f"{type(obj).__name__} with {cols} columns x {num_channels} "
+            f"channels exceeds this device's shim DMA budget; "
+            f"{allowed} columns fit"
+        )
 
 
 def get_shim_dma_limit(dev) -> int:
@@ -116,32 +155,12 @@ class Overlay:
 
     @classmethod
     def shim_columns(cls, dev, num_channels: int = 1) -> int:
-        """How many of ``dev``'s columns this overlay's shim budget allows.
-
-        One core per (column, channel) fills one fifo per input stream from
-        the shim and drains one per output, so a column costs
-        ``max(inputs, outputs) * num_channels`` channels in the busier
-        direction. A ``replicate`` stream is shared by every column of a
-        channel, so it is paid once per channel rather than per column.
-        """
-        streams = [m for m in cls._members if isinstance(m, _Stream)]
-        shared = [m for m in streams if m.replicate]
-        per_core = [m for m in streams if not m.replicate]
-        directions = [m.direction for m in per_core]
-        cost = max(directions.count("in"), directions.count("out")) * num_channels
-        fixed = len(shared) * num_channels
-        limit = get_shim_dma_limit(dev)
-        return max(1, min(dev.cols, (limit - fixed) // cost))
+        """How many of ``dev``'s columns this overlay's shim budget allows."""
+        return shim_columns(cls, dev, num_channels)
 
     def check_shim_columns(self, dev, cols: int, num_channels: int = 1) -> None:
         """Raise :class:`Unresolvable` if ``cols`` exceeds the shim budget."""
-        allowed = type(self).shim_columns(dev, num_channels)
-        if cols > allowed:
-            raise Unresolvable(
-                f"{type(self).__name__} with {cols} columns x {num_channels} "
-                f"channels exceeds this device's shim DMA budget; "
-                f"{allowed} columns fit"
-            )
+        check_shim_columns(self, dev, cols, num_channels)
 
     # -- an overlay IRON does not design() ---------------------------------
 
@@ -177,10 +196,16 @@ class Overlay:
 
     def resident_values(self, op: "Operator") -> dict[str, Any]:
         """The words for this overlay's residents, from ``op``. By default the
-        operator's own ``residents()``; an external overlay lays the operator's
-        values out into the block its image reads.
+        operator's own ``resident_values()`` and what a ``Value(derive=)``
+        derives; an external overlay lays the operator's values out into
+        the block its image reads.
         """
-        return op.residents()
+        derived = {
+            m.name: m.derive(op)
+            for m in self._members
+            if isinstance(m, Value) and m.derive is not None
+        }
+        return {**derived, **op.resident_values()}
 
     def __post_init__(self) -> None:
         self._resolved = False
@@ -296,17 +321,28 @@ class Overlay:
         }
 
     @property
-    def residents(self) -> dict[str, BoundResident]:
+    def residents(self) -> dict[str, Any]:
+        """What the preamble writes once per build: residents, and derived values."""
         return {
             m.name: self._bound[m.name]
             for m in self._members
             if isinstance(m, Resident)
+            or (isinstance(m, Value) and m.derive is not None)
         }
 
     @property
     def values(self) -> list[BoundValue]:
         """Core-read per-call values this overlay declares."""
-        return [self._bound[m.name] for m in self._members if isinstance(m, _Value)]
+        return [
+            self._bound[m.name]
+            for m in self._members
+            if isinstance(m, _Value)
+            and not (isinstance(m, Value) and m.derive is not None)
+        ]
+
+    def build_array(self, target) -> list:
+        """Run :meth:`array` for the build."""
+        return self.array(target)
 
     def _bind(self) -> None:
         bound: dict[str, Any] = {}

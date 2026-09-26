@@ -256,6 +256,11 @@ minimal. `pyright` and `ruff check` clean at every commit.
      flm (→ `iron/exports/flm`; `Shipped(GEMM, image=Xclbin(...))`). Rename
      collisions first: flm `epilogue` resident → `mode`, dequant `qw`/`out`,
      `config_name`.
+   - Open, noted: a per-call value given at a graph call site
+     (`MV(a, b, start=pos)`) is not a constructor parameter a checker
+     knows. Making a `Value` a field whose default is "unbound" would type
+     it, and give the call site the tier choice (a number binds once per
+     build, a handle per call); decide with the graph-layer rung.
    - Gates per rung: both suites identical to baseline; the C11 gate
      (GEMV's xfail turns strict-pass when `rows` becomes a `Value`); the
      design counts of step 3's test; llama's reference tests.
@@ -279,12 +284,27 @@ today**.
 
 ## Progress
 
+- (this commit) Step 7, rung 0: the mechanics of the one-class operator,
+  with every shipped operator still two-class and both suites identical to
+  baseline. `Operator` carries the array surface (`resolve`, `array`,
+  `build_array`, `streams`, `residents`, `tolerance`, `array_key`), and on
+  a class declared without an overlay `op.ov` is the operator itself.
+  `In(*shape, tile=, per=, depth=, via=, replicate=, broadcast=)`: an
+  operand with a tile is its own stream (`op.A.tile`, `op.A.lane(i)`,
+  `op.A.bind`, `op.A.count`). `Value(dtype, derive=, address=, lock=)`: a
+  resident when derived, per-call when a graph binds it. The array tier
+  is `_array_fields`: whatever a `tile=`/`per=` names plus
+  `param(..., array=True)`; `array(target)` runs on a view that raises on
+  any other field; `array_key()` is the class and those fields, so two
+  extents of one array share a build. `tests/common/merged.py` exercises
+  it on a GEMV-shaped operator: fields, lanes, a derived value, a per-call
+  value in a graph, the two keys, the guard, resolution errors, inference.
 - `d25f00a` Step 1: drop the pre-dataclass Field snapshot.
 - `fd3ba37` Step 1: the bases process their subclasses; `@operator` is gone
   (38 files, +390/−509). Failure set identical to baseline.
 - `610c926` Step 1: the bases are dataclasses to a checker; pyright in CI on
   the declare package. Members generic in their bound form; `Self` returns.
-- (this commit) Step 6: the C11 gate, `tests/toolchain/array_identity.py`:
+- `d782c44` Step 6: the C11 gate, `tests/toolchain/array_identity.py`:
   each operator built at two extents with the same knobs must leave
   byte-identical per-core ELFs (the real build; an insts-only lowering
   compiles no core). ReLU, ElementwiseAdd, Softmax, RoPE, RMSNorm and GEMM

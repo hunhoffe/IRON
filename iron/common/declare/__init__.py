@@ -81,6 +81,7 @@ from .member import (
     Shim,
     StreamIn,
     StreamOut,
+    Value,
     ValueSpec,
     Xclbin,
 )
@@ -106,6 +107,7 @@ __all__ = [
     "Overlay",
     "Resident",
     "Scratchpad",
+    "Value",
     "Shim",
     "StreamIn",
     "StreamOut",

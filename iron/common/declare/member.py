@@ -12,7 +12,7 @@ before the first DMA.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Generic, TypeVar, overload
 
 import numpy as np
 from ml_dtypes import bfloat16
@@ -96,7 +96,15 @@ class _Member(Generic[B]):
 
 
 class _Buffer(_Member["BoundBuffer"]):
-    """A host buffer: shape in extents, a dtype, and the stream it moves through."""
+    """A host buffer: shape in extents, a dtype, and the stream it moves through.
+
+    With ``tile=`` the buffer is its own stream into (or out of) the array:
+    ``tile`` is what one fifo element holds, in the units a core reads
+    (its dimensions may be knobs), ``per=`` the field the stream is
+    replicated over, ``depth`` the fifo depth, ``via=`` a pinned shim
+    endpoint. Without it, ``to=``/``from_=`` name a stream declared apart
+    (a two-class operator's overlay).
+    """
 
     direction: ClassVar[str] = ""
 
@@ -106,11 +114,43 @@ class _Buffer(_Member["BoundBuffer"]):
         dtype: Any = bfloat16,
         to: "StreamIn | None" = None,
         from_: "StreamOut | None" = None,
+        tile: Any = None,
+        per: _DimSpec | None = None,
+        depth: int = 2,
+        via: "Shim | list[Shim] | None" = None,
+        replicate: bool = False,
+        broadcast: bool = False,
     ) -> None:
         self.dims = tuple(dims)
         self.dtype = dtype
         self.to = to
         self.from_ = from_
+        self.stream: _Stream | None = None
+        if tile is not None:
+            if to is not None or from_ is not None:
+                raise DeclarationError(
+                    "a buffer with a tile= is its own stream; drop to=/from_="
+                )
+            tile = tuple(tile) if isinstance(tile, (tuple, list)) else (tile,)
+            kind = StreamIn if self.direction == "in" else StreamOut
+            self.stream = kind(
+                *tile,
+                dtype=dtype,
+                per=per,
+                depth=depth,
+                via=via,
+                replicate=replicate,
+                broadcast=broadcast,
+            )
+            if self.direction == "in":
+                self.to = self.stream
+            else:
+                self.from_ = self.stream
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        super().__set_name__(owner, name)
+        if self.stream is not None:
+            self.stream.__set_name__(owner, name)
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}({', '.join(_describe(d) for d in self.dims)})"
@@ -121,8 +161,8 @@ class In(_Buffer):
 
     direction = "in"
 
-    def __init__(self, *dims, dtype=bfloat16, to=None) -> None:
-        super().__init__(*dims, dtype=dtype, to=to)
+    def __init__(self, *dims, dtype=bfloat16, to=None, **stream) -> None:
+        super().__init__(*dims, dtype=dtype, to=to, **stream)
 
 
 class Out(_Buffer):
@@ -130,8 +170,8 @@ class Out(_Buffer):
 
     direction = "out"
 
-    def __init__(self, *dims, dtype=bfloat16, from_=None) -> None:
-        super().__init__(*dims, dtype=dtype, from_=from_)
+    def __init__(self, *dims, dtype=bfloat16, from_=None, **stream) -> None:
+        super().__init__(*dims, dtype=dtype, from_=from_, **stream)
 
 
 class InOut(_Buffer):
@@ -249,6 +289,41 @@ class DispatchTime(_Value):
     """
 
     kind = "dispatch"
+
+
+class Value(_Value):
+    """A value the array reads: a per-call one when a graph binds it, else
+    written once per build, before the first DMA.
+
+    ``derive`` gives the once-per-build value from the operator (a trip count
+    from the extents); a graph binding a handle to it makes it per-call
+    instead, lowered as a :class:`Scratchpad` value is. ``address``/``lock``
+    place it for an image IRON did not build.
+    """
+
+    kind = "scratchpad"
+
+    def __init__(
+        self,
+        dtype: Any = np.int32,
+        *,
+        derive: Callable[[Any], Any] | None = None,
+        address: int | None = None,
+        lock: int | None = None,
+        optional: bool = False,
+    ) -> None:
+        if np.dtype(dtype).kind == "f":
+            raise DeclarationError(
+                "a Value cannot be floating point (the scratchpad encoding)"
+            )
+        super().__init__(dtype)
+        self.derive = derive
+        self.address = address
+        self.lock = lock
+        self.optional = optional
+
+    def __repr__(self) -> str:
+        return f"Value({np.dtype(self.dtype).name})"
 
 
 class Resident(_Member["BoundResident"]):

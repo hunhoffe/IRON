@@ -19,7 +19,14 @@ from dataclasses import Field
 
 import numpy as np
 
-from .field import DeclarationError, DimRef, _Optional, _Select, _tier_of
+from .field import (
+    DeclarationError,
+    DimRef,
+    _declares_array,
+    _Optional,
+    _Select,
+    _tier_of,
+)
 from .member import _Buffer, _Member, _Stream
 
 
@@ -44,7 +51,12 @@ def members_of(cls: type) -> list[_Member]:
             # not its residents, whose block the image lays out differently.
             if isinstance(value, _Member):
                 ordered[name] = value
-    return list(ordered.values())
+    members = []
+    for m in ordered.values():
+        members.append(m)
+        if isinstance(m, _Buffer) and m.stream is not None:
+            members.append(m.stream)  # the buffer's own stream, right after it
+    return members
 
 
 def _rewrite_refs(specs: tuple, cls: type, fields_by_obj: dict[int, Field]) -> tuple:
@@ -170,3 +182,29 @@ def declare(cls: type, *, repr: bool) -> None:
     cls._members = tuple(members)  # type: ignore[attr-defined]
     cls._param_fields = tuple(f.name for f in fields.values() if _tier_of(f) == "param")  # type: ignore[attr-defined]
     cls._auto_fields = tuple(f.name for f in fields.values() if _tier_of(f) == "auto")  # type: ignore[attr-defined]
+    # The array tier: what a stream's tile, replication or depth names, and
+    # what declares itself array=True. On a two-class overlay every field
+    # configures the array; its operator's fields never do.
+    named: set[str] = set()
+    for m in members:
+        if isinstance(m, _Stream):
+            named.update(_named_fields(m.dims))
+            if m.per is not None:
+                named.update(_named_fields(m.per))
+    cls._array_fields = tuple(  # type: ignore[attr-defined]
+        f.name for f in fields.values() if f.name in named or _declares_array(f)
+    )
+
+
+def _named_fields(specs) -> set[str]:
+    """The field names a shape or a per= names, through optional()/select()."""
+    out: set[str] = set()
+    for spec in specs if isinstance(specs, tuple) else (specs,):
+        if isinstance(spec, DimRef):
+            out.add(spec.name)
+        elif isinstance(spec, _Optional):
+            out |= _named_fields((spec.ref,))
+        elif isinstance(spec, _Select):
+            out |= _named_fields((spec.flag,)) | _named_fields(spec.when_true)
+            out |= _named_fields(spec.when_false)
+    return out

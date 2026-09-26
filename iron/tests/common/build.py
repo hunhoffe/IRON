@@ -201,7 +201,7 @@ def test_preamble_writes_residents_and_rejects_missing_ones():
         n: int = param()
         A = In(n, to=Counted.s)
 
-        def residents(self):
+        def resident_values(self):
             return {"count": self.n // self.ov.tile}
 
     class FakeRTP(dict):
@@ -258,7 +258,7 @@ def test_mha_sequence_is_one_descriptor_set_per_kv_group(monkeypatch):
     op = op.resolved(Dev())
     ov = op.ov
     assert op.seq_pad == 1024 and ov.q_shims == 2 and ov.join_rows == 256
-    assert op.residents() == {
+    assert op.resident_values() == {
         "q_blocks_per_pipeline": 2,
         "kv_blocks": 16,
         "s_q": 1000,
@@ -435,7 +435,7 @@ def test_flm_gemm_keyword_construction_tunes_from_the_device(flm):
     assert b.shape == (1024 * 1024 // 8,) and b.dtype is v8bfp16ebs8
     assert b.host_shape == (flm.packed_b_size(1024, 1024, True),)
     assert b.host_dtype is np.uint8
-    assert op.residents() == {
+    assert op.resident_values() == {
         "n_val": 1024,
         "m_row_blocks": 2,
         "k_iters": 2,

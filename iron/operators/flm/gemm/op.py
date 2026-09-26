@@ -748,7 +748,7 @@ class GEMM(Operator[FLMGEMMOverlay]):
             self.ov.rows * M_TILE * self.N
         )
 
-    def residents(self) -> dict[str, int]:
+    def resident_values(self) -> dict[str, int]:
         lo, hi = _clamp_bits(self.clamp)
         return {
             "n_val": self.N,

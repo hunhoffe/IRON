@@ -230,7 +230,7 @@ class Softmax(Operator[SoftmaxOverlay]):
                 f"rows ({self.rows}) must be a multiple of the {total} cores"
             )
 
-    def residents(self) -> dict[str, int]:
+    def resident_values(self) -> dict[str, int]:
         ov = self.ov
         out = {"count": self.rows // (ov.num_aie_columns * ov.num_channels)}
         if not isinstance(ov.vector_size, BoundValue):

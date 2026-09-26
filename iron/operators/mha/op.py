@@ -667,7 +667,7 @@ class MHA(Operator[MHAOverlay]):
                 f"to a multiple of B_q * num_of_pipelines ({expected})"
             )
 
-    def residents(self) -> dict[str, int]:
+    def resident_values(self) -> dict[str, int]:
         ov = self.ov
         return {
             "q_blocks_per_pipeline": self.seq_pad // (ov.B_q * ov.num_of_pipelines),

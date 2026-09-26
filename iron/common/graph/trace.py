@@ -168,7 +168,7 @@ class TracedGraph:
     def overlays(self) -> list:
         seen = {}
         for op in self.operators:
-            seen.setdefault(op.ov.design_key(), op.ov)
+            seen.setdefault(op.array_key(), op.ov)
         return list(seen.values())
 
 
@@ -280,11 +280,11 @@ class Tracer:
             outputs=[h.shape for h in outputs],
             **infer_kwargs(cls, kwargs),
         )
-        # The class's own translation splits overlay fields from the
-        # operator's and fills what it derives (a transfer size, a dtype
-        # spelling), exactly as the keyword constructor does.
+        if cls._overlay_class is None:
+            return cls(**kwargs, **inferred)
+        # The two-class form: the overlay is split off and shared by key,
+        # one object per distinct array.
         ov, op_kwargs = cls._split_kwargs({**kwargs, **inferred})
-        # One build per distinct overlay: equal keys are one array.
         ov = self.overlays.setdefault(ov.design_key(), ov)
         return cls(ov, **op_kwargs)
 

@@ -139,7 +139,7 @@ class Dequant(Operator[DequantOverlay]):
                 f"elements, not a multiple of the {ov.line_size}-element tile"
             )
 
-    def residents(self) -> dict[str, int]:
+    def resident_values(self) -> dict[str, int]:
         ov = self.ov
         return {
             "count": self.size // (ov.num_aie_columns * ov.num_channels) // ov.line_size

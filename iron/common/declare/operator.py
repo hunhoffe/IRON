@@ -13,7 +13,16 @@ extents, and the instance's buffer attributes answer in elements.
 from __future__ import annotations
 
 import dataclasses
-from typing import Any, Callable, ClassVar, Generic, Self, TypeVar, dataclass_transform
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    ClassVar,
+    Generic,
+    Self,
+    TypeVar,
+    dataclass_transform,
+)
 
 import aie.utils as aie_utils
 from aie.utils.npukernel import NPUKernel
@@ -21,13 +30,13 @@ from aie.utils.verify import Tolerance
 
 from ..kernels import kernels_dir
 from ..testing import Testing
-from .bound import BoundBuffer, BoundValue
+from .bound import BoundBuffer, BoundResident, BoundStream, BoundValue
 from .creation import declare
-from .field import DeclarationError, DimRef, _Optional, param
+from .field import DeclarationError, DimRef, Unresolvable, _Optional, param
 from .infer import infer, infer_kwargs
-from .member import Resident, _Buffer, _Member, _Stream, _Value
+from .member import Resident, Value, _Buffer, _Member, _Stream, _Value
 from .naming import label_parts
-from .overlay import Overlay
+from .overlay import Overlay, check_shim_columns, shim_columns
 
 OV = TypeVar("OV", bound=Overlay)
 
@@ -60,38 +69,96 @@ def _overlay_class_of(cls: type) -> type | None:
     return None
 
 
+class _Itself:
+    """``op.ov`` on a one-class operator: the operator is its own array.
+
+    A non-data descriptor, so a two-class operator's ``ov`` field (set on
+    the instance) takes precedence.
+    """
+
+    def __get__(self, instance, owner=None):
+        return self if instance is None else instance
+
+
+class _ArrayView:
+    """What :meth:`Operator.array` sees of its operator: the array tier.
+
+    Reading a field no tile names and that does not declare ``array=True``
+    raises, so an array cannot come to depend on an extent by accident
+    (one array serves every extent).
+    """
+
+    __slots__ = ("_op",)
+
+    def __init__(self, op: "Operator") -> None:
+        object.__setattr__(self, "_op", op)
+
+    def __getattr__(self, name: str):
+        op = object.__getattribute__(self, "_op")
+        fields = op._param_fields + op._auto_fields
+        if name in fields and name not in op._array_fields:
+            raise TypeError(
+                f"{type(op).__name__}.array() reads {name}, which no tile names: "
+                f"an array serves every extent. Declare it param(..., array=True) "
+                f"if the array does read it, or move the dependence into the "
+                f"sequence or a Value"
+            )
+        return getattr(op, name)
+
+    def __setattr__(self, name: str, value) -> None:
+        setattr(object.__getattribute__(self, "_op"), name, value)
+
+
 @dataclass_transform(field_specifiers=(param,))  # auto unlisted: see Overlay
 @dataclasses.dataclass(eq=False, repr=True)
 class Operator(Generic[OV], metaclass=_OperatorMeta):
-    """A host ABI declared against an overlay. Subclass it.
+    """An operator. Subclass it.
 
-    Declare ``param()`` fields and buffers (``In``/``Out``/``InOut`` naming their
-    streams) in the class body. Implement :meth:`reference`; optionally
-    :meth:`compatible` and :meth:`design` (an override for a sequence the
-    library cannot derive). Every subclass is a dataclass and is checked as
-    its body finishes (:mod:`.creation`).
+    One class declares the whole thing: ``param()``/``auto()`` fields,
+    ``In``/``Out`` operands (with ``tile=`` an operand is its own stream),
+    ``Value`` members, :meth:`array` for the dataflow, :meth:`sequence` when
+    the derived one is not wanted, :meth:`resolve`/:meth:`compatible` and
+    :meth:`reference`. ``Operator[XOverlay]`` is the two-class form, its
+    array on a separate :class:`Overlay` reached as ``op.ov``; on a
+    one-class operator ``op.ov`` is the operator itself. Every subclass is
+    a dataclass and is checked as its body finishes (:mod:`.creation`).
     """
 
-    ov: OV
+    if TYPE_CHECKING:
+        # To a checker the operator is its own array; the two-class form's
+        # positional ``ov`` is a runtime arrangement on its way out.
+        @property
+        def ov(self) -> Any: ...
+
+    else:
+        ov = _Itself()
 
     _members: ClassVar[tuple[_Member, ...]] = ()
     _param_fields: ClassVar[tuple[str, ...]] = ()
     _auto_fields: ClassVar[tuple[str, ...]] = ()
+    _array_fields: ClassVar[tuple[str, ...]] = ()
     _overlay_class: ClassVar[type | None] = None
+    _external: ClassVar[Any] = None
     # The cases iron/operators/test.py runs this operator at; None for an
     # operator tested by its own test.py, or not on its own.
     test: ClassVar[Testing | None] = None
 
     def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)  # Generic's, first: it sets __parameters__
-        declare(cls, repr=False)
         overlay_cls = _overlay_class_of(cls)
         cls._overlay_class = overlay_cls
+        if overlay_cls is not None and not any(
+            "ov" in getattr(b, "__dataclass_fields__", {}) for b in cls.__mro__[1:]
+        ):
+            # The two-class form: the overlay is the first, positional field.
+            own = cls.__dict__.get("__annotations__", {})
+            cls.__annotations__ = {"ov": overlay_cls, **own}
+        declare(cls, repr=False)
         for m in cls._members:
-            if isinstance(m, (_Stream, Resident)):
+            if overlay_cls is not None and isinstance(m, (_Stream, Resident)):
                 raise DeclarationError(
-                    f"{cls.__name__}.{m.name}: an Operator declares buffers and per-call "
-                    f"values; streams and residents belong on the Overlay"
+                    f"{cls.__name__}.{m.name}: an Operator declared against an Overlay "
+                    f"leaves streams and residents to it"
                 )
             if not isinstance(m, _Buffer):
                 continue
@@ -160,6 +227,11 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
         self.validate()
         self._bind()
 
+    @property
+    def merged(self) -> bool:
+        """One class: the operator is its own array."""
+        return self._overlay_class is None
+
     # -- declared surface --------------------------------------------------
 
     def validate(self) -> None:
@@ -169,23 +241,68 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
         """Check the extents against the resolved overlay; raise :class:`Incompatible`."""
 
     def resolve(self, dev) -> Self:
-        """Return a copy resolved for ``dev``: its overlay's knobs filled, from
-        the device and from this operator's extents.
+        """Return a copy resolved for ``dev``: every ``auto()`` filled, from
+        the device and from this operator's extents; raise :class:`Unresolvable`.
 
-        The one hook that sees both. The default resolves the overlay from
-        the device alone; an operator whose extents decide a knob (a copy's
-        transfer size from its sizes) fills it first, when it was not given::
+        The one hook that sees both. The default fills nothing (a two-class
+        operator's default resolves its overlay from the device alone). A
+        knob left ``None`` is an error once this returns::
 
             def resolve(self, dev):
-                ov = self.ov
-                if ov.transfer_size is None:
-                    ov = dataclasses.replace(ov, transfer_size=...)
-                return dataclasses.replace(self, ov=ov.resolved(dev).copy())
+                cols = self.columns or self.shim_columns(dev)
+                return dataclasses.replace(self, columns=cols)
 
         Identity for sharing a build is taken after this runs, so two ways
         of spelling one array resolve to one design.
         """
+        if self.merged:
+            return dataclasses.replace(self)
         return dataclasses.replace(self, ov=self.ov.resolved(dev).copy())
+
+    def array(self, target) -> list:
+        """Build the array for ``target`` and return its workers.
+
+        ``target`` (:class:`iron.common.design.Target`) carries the device,
+        the kernel tree, and ``kernel()``/``rtp()``/``barrier()``. Bind the
+        shim end of a fifo to every operand's lane (``self.A.lane(i).bind(
+        fifo.prod())``) and every ``Value`` to the buffer a core reads it
+        from. Sees the array tier alone: a field no tile names raises.
+        """
+        raise NotImplementedError(f"{type(self).__name__}.array() is not implemented")
+
+    def build_array(self, target) -> list:
+        """Run :meth:`array` for the build, through the array-tier view."""
+        return type(self).array(_ArrayView(self), target)  # type: ignore[arg-type]
+
+    def tolerance(self, target) -> Tolerance | None:
+        """The contract of the kernel this array runs; ``None`` when the
+        operator states its own (see :attr:`test`).
+        """
+        return None
+
+    def device(self, target):
+        """The device the Program is built for; the current device by default."""
+        return target.dev
+
+    @classmethod
+    def has_sequence(cls) -> bool:
+        return False
+
+    @property
+    def external(self):
+        """The downloaded image this operator runs on, if IRON did not build it."""
+        return type(self)._external
+
+    @classmethod
+    def shim_columns(cls, dev, num_channels: int = 1) -> int:
+        """How many of ``dev``'s columns this operator's shim budget allows."""
+        return shim_columns(cls, dev, num_channels)
+
+    def check_shim_columns(self, dev, cols: int, num_channels: int = 1) -> None:
+        check_shim_columns(self, dev, cols, num_channels)
+
+    def name_parts(self) -> list[str]:
+        return label_parts(self)
 
     def reference(self, *inputs):
         raise NotImplementedError(
@@ -201,8 +318,17 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
         """
         raise NotImplementedError
 
-    def residents(self) -> dict[str, int]:
-        """Values for the overlay's residents (trip counts, RTPs), from the extents."""
+    def resident_values(self, op=None) -> dict[str, Any]:
+        """What the preamble writes once per build, beyond what each
+        ``Value(derive=)`` derives: a two-class operator's words for its
+        overlay's residents (trip counts, RTPs), from the extents.
+        """
+        if self.merged:
+            return {
+                m.name: m.derive(self)
+                for m in self._members
+                if isinstance(m, Value) and m.derive is not None
+            }
         return {}
 
     @classmethod
@@ -225,19 +351,26 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
         return None
 
     def design_key(self):
-        """Identity for sharing a build: the class, the overlay's key, every compared field.
+        """Identity for sharing a build: the class, the array's key, every compared field.
 
         Two operators with equal keys generate byte-identical MLIR, so a
         sequence builds, prefixes and configures the design once.
         """
-        return (
-            type(self).__qualname__,
-            self.ov.design_key(),
-            tuple(
-                (f.name, getattr(self, f.name))
-                for f in dataclasses.fields(self)
-                if f.compare and f.name != "ov"
-            ),
+        own = tuple(
+            (f.name, getattr(self, f.name))
+            for f in dataclasses.fields(self)
+            if f.compare and f.name != "ov"
+        )
+        if self.merged:
+            return (type(self).__qualname__, own)
+        return (type(self).__qualname__, self.ov.design_key(), own)
+
+    def array_key(self):
+        """Identity for sharing an array: the class and its array-tier fields."""
+        if not self.merged:
+            return self.ov.design_key()
+        return (type(self).__qualname__,) + tuple(
+            (name, getattr(self, name)) for name in self._array_fields
         )
 
     def resolved(self, dev) -> Self:
@@ -248,11 +381,20 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
         if self._resolved:
             return self
         new = self.resolve(dev)
-        if not isinstance(new, type(self)) or not new.ov._resolved:
+        if not isinstance(new, type(self)) or (
+            not self.merged and not new.ov._resolved
+        ):
             raise TypeError(
                 f"{type(self).__name__}.resolve() must return a {type(self).__name__} "
                 f"on a resolved overlay"
             )
+        if self.merged:
+            missing = [n for n in self._auto_fields if getattr(new, n) is None]
+            if missing:
+                raise Unresolvable(
+                    f"{type(self).__name__}.resolve() left {missing} unset for {dev}"
+                )
+            new.validate()
         # What a graph bound on this instance is part of it, not of a field:
         # the build works on the copy, and a copy that forgot would silently
         # drop the per-call value from the sequence.
@@ -267,7 +409,11 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
         streams a design binds are this build's alone; resolution state and
         the per-call values a graph bound are kept.
         """
-        new = dataclasses.replace(self, ov=self.ov.copy())
+        new = (
+            dataclasses.replace(self)
+            if self.merged
+            else dataclasses.replace(self, ov=self.ov.copy())
+        )
         if self.used_values:
             vars(new)["_used_values"] = set(self.used_values)
         new._resolved = self._resolved
@@ -299,14 +445,47 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
             if isinstance(m, _Value) and self.uses_value(m.name)
         ]
 
+    @property
+    def streams(self) -> dict[str, BoundStream]:
+        """Every stream of a one-class operator: its operands' own, and any
+        declared apart.
+        """
+        out: dict[str, BoundStream] = {}
+        for m in self._members:
+            if isinstance(m, _Buffer) and m.stream is not None:
+                out[m.name] = self._bound[m.name].lanes
+            elif isinstance(m, _Stream) and m.name not in out:
+                out[m.name] = self._bound[m.name]
+        return out
+
+    @property
+    def residents(self) -> dict[str, Any]:
+        """What the preamble writes once per build: residents, and every
+        ``Value(derive=)`` no graph bound per call.
+        """
+        return {
+            m.name: self._bound[m.name]
+            for m in self._members
+            if isinstance(m, Resident)
+            or (
+                isinstance(m, Value)
+                and m.derive is not None
+                and not self.uses_value(m.name)
+            )
+        }
+
     def uses_value(self, name: str) -> bool:
         """Whether this instance drives the declared per-call value ``name``.
 
         A value an instance does not use gets no device parameter and no
-        sync. The default is every declared value; an operator whose values
-        are optional (a strided copy with or without a patched offset)
-        overrides this, and a graph binding one calls :meth:`use_value`.
+        sync. The default is every declared value, except a ``Value`` with a
+        derivation, which is per-call only when a graph binds it
+        (:meth:`use_value`); an operator whose values are optional (a copy
+        with or without a patched offset) overrides this.
         """
+        member = next((m for m in self._members if m.name == name), None)
+        if isinstance(member, Value) and member.derive is not None:
+            return name in self.used_values
         return True
 
     def use_value(self, name: str) -> None:
@@ -349,6 +528,11 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
         for m in self._members:
             if isinstance(m, _Buffer):
                 bound[m.name] = BoundBuffer(m, self)
+            elif isinstance(m, _Stream):
+                if m.name not in bound:  # an operand's own stream is bound with it
+                    bound[m.name] = BoundStream(m, self)
+            elif isinstance(m, Resident):
+                bound[m.name] = BoundResident(m, self)
             elif isinstance(m, _Value):
                 bound[m.name] = BoundValue(m, self)
         self._bound = bound
@@ -403,7 +587,9 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
         assert dev is not None, f"{type(self).__name__}.name needs a bound device"
         resolved = self.resolved(dev)
         own = label_parts(resolved, skip=("ov",))
-        base = type(self).__name__ + "_" + "_".join(own + resolved.ov.name_parts())
+        if not self.merged:
+            own += resolved.ov.name_parts()
+        base = type(self).__name__ + "_" + "_".join(own)
         # Upstream annotates Device.resolve() -> None; it returns the AIEDevice.
         return f"{base}_{dev.resolve().name}"  # pyright: ignore[reportAttributeAccessIssue]
 

@@ -155,12 +155,12 @@ def write_residents(op: Operator, ov: Overlay, core_tiles, emit) -> None:
         if res.name not in values:
             raise ValueError(
                 f"{type(ov).__name__}.{res.name} is a Resident but "
-                f"{type(op).__name__}.residents() does not supply it"
+                f"{type(op).__name__}.resident_values() does not supply it"
             )
     unknown = set(values) - {r.name for r in residents}
     if unknown:
         raise ValueError(
-            f"{type(op).__name__}.residents() names {sorted(unknown)}, which "
+            f"{type(op).__name__}.resident_values() names {sorted(unknown)}, which "
             f"{type(ov).__name__} does not declare"
         )
     for col, row in core_tiles:

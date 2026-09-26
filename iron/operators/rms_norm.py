@@ -241,7 +241,7 @@ class RMSNorm(Operator[RMSNormOverlay]):
                 f"num_aie_columns * num_channels * tile_size ({unit})"
             )
 
-    def residents(self) -> dict[str, int]:
+    def resident_values(self) -> dict[str, int]:
         ov = self.ov
         return {
             "count": self.size // (ov.num_aie_columns * ov.num_channels) // ov.line_size

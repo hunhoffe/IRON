@@ -32,9 +32,9 @@ class BoundStream:
     that is ``None`` until :meth:`Overlay.resolved` fills it.
     """
 
-    def __init__(self, member: _Stream, overlay: "Overlay") -> None:
+    def __init__(self, member: _Stream, overlay: Any) -> None:
         self.member = member
-        self.overlay = overlay
+        self.overlay = overlay  # an Overlay, or the one-class operator itself
         self.name = member.name
         self.direction = member.direction
         self.broadcast = member.broadcast
@@ -165,6 +165,11 @@ class BoundBuffer:
         self.direction = member.direction
         self.to = member.to
         self.from_ = member.from_
+        # The buffer's own stream (In(..., tile=)), bound on the same
+        # instance: what its tile, lanes and handles answer for.
+        self.lanes: BoundStream | None = (
+            BoundStream(member.stream, op) if member.stream is not None else None
+        )
 
     # Resolved on use, not at construction: a shape or dtype may follow a
     # tunable the device fills (flm/gemm's B layout), and an operator on an
@@ -212,11 +217,49 @@ class BoundBuffer:
         return np.ndarray[(self.elements,), np.dtype[self.dtype]]  # type: ignore[misc]
 
     def stream(self, overlay: "Overlay") -> BoundStream | None:
-        """The bound stream this buffer feeds or drains on ``overlay``."""
+        """The bound stream this buffer feeds or drains: its own, or the one
+        it names on ``overlay``.
+        """
+        if self.lanes is not None:
+            return self.lanes
         member = self.to if self.direction == "in" else self.from_
         if member is None:
             return None
         return getattr(overlay, member.name)
+
+    # -- the stream side of a buffer that is its own stream ----------------
+
+    def _own(self) -> BoundStream:
+        if self.lanes is None:
+            raise TypeError(
+                f"{self.name} names a stream elsewhere (to=/from_=); it has no tile"
+            )
+        return self.lanes
+
+    @property
+    def tile(self):
+        """The fifo element type of this buffer's stream."""
+        return self._own().tile
+
+    @property
+    def count(self) -> int:
+        """How many lanes (fifos) the stream is replicated over."""
+        return self._own().count
+
+    def lane(self, index: int = 0) -> "_StreamSlot":
+        """One lane of the stream, to bind a fifo's shim end to or fill/drain."""
+        return self._own()[index]
+
+    def bind(self, handle, index: int = 0) -> None:
+        self._own().bind(handle, index)
+
+    @property
+    def handle(self):
+        return self._own().handle
+
+    @property
+    def handles(self) -> list[Any]:
+        return self._own().handles
 
     @property
     def batch_axes(self) -> int:
@@ -300,6 +343,11 @@ class BoundValue:
         self.symbol: str | None = None
         self.ssa = None  # the sequence's scalar, when lowered at dispatch time
         self.targets: list[tuple[Any, int]] = []
+        # A Value written once per build has a resident's placement.
+        self.address = getattr(member, "address", None)
+        self.lock = getattr(member, "lock", None)
+        self.optional = getattr(member, "optional", False)
+        self.derive = getattr(member, "derive", None)
 
     def bind(self, buffers, index: int = 0) -> None:
         """Bind to one runtime-parameter buffer, or one per worker; the preamble
@@ -316,7 +364,7 @@ class BoundValue:
 class BoundResident:
     """A resident on an overlay instance; ``bind()`` names what the preamble writes."""
 
-    def __init__(self, member: Resident, overlay: "Overlay") -> None:
+    def __init__(self, member: Resident, overlay: Any) -> None:
         self.member = member
         self.name = member.name
         self.dtype = member.dtype

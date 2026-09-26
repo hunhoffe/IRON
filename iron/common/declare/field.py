@@ -36,19 +36,24 @@ class DeclarationError(TypeError):
 _TIER = "iron.tier"  # dataclass Field.metadata key: "param" | "auto"
 _CHOICES = "iron.choices"
 _LEGAL = "iron.legal"
+_ARRAY = "iron.array"  # the field is array-tier though no tile names it
 
 
-def param(*, default: Any = MISSING, repr: bool = True, init: bool = True) -> Any:
+def param(
+    *, default: Any = MISSING, array: bool = False, repr: bool = True, init: bool = True
+) -> Any:
     """Declare a compile-time parameter: given by the caller or inferred from
     the operands, and fixed from then on.
 
-    A ``param()`` may appear in a shape. On an overlay it is array-tier
-    (changing it rebuilds the array); on an operator it is sequence-tier
-    (changing it rebuilds the instruction stream only). ``default`` is
-    keyword-only so a checker reads it: a ``param()`` without one is a
-    required constructor argument.
+    A ``param()`` may appear in a shape. Which tier it is follows from use: a
+    field named in an operand's ``tile=``/``per=``/``depth=`` configures the
+    array (changing it rebuilds the array); any other rebuilds the
+    instruction stream only, unless it says ``array=True``, which is how a
+    field the array reads but no tile names (a kernel's epilogue) declares
+    itself. ``default`` is keyword-only so a checker reads it: a ``param()``
+    without one is a required constructor argument.
     """
-    return _specifier("param", default, repr, init)
+    return _specifier("param", default, repr, init, array=array)
 
 
 def auto(
@@ -57,6 +62,7 @@ def auto(
     *,
     choices: tuple | None = None,
     legal: Callable[..., bool] | None = None,
+    array: bool = False,
     repr: bool = True,
     init: bool = True,
 ) -> Any:
@@ -70,7 +76,9 @@ def auto(
     ``init=False`` fixes a subclass's value of an inherited knob (a kernel
     that only works with one channel per column).
     """
-    return _specifier("auto", default, repr, init, choices=choices, legal=legal)
+    return _specifier(
+        "auto", default, repr, init, choices=choices, legal=legal, array=array
+    )
 
 
 def _specifier(
@@ -81,6 +89,8 @@ def _specifier(
         metadata[_CHOICES] = tuple(extra["choices"])
     if extra.get("legal") is not None:
         metadata[_LEGAL] = extra["legal"]
+    if extra.get("array"):
+        metadata[_ARRAY] = True
     kwargs: dict[str, Any] = {"metadata": metadata, "repr": repr_, "init": init}
     if default is not MISSING:
         kwargs["default"] = default
@@ -95,6 +105,10 @@ def _specifier(
 
 def _tier_of(f: Field) -> str | None:
     return f.metadata.get(_TIER) if f.metadata else None
+
+
+def _declares_array(f: Field) -> bool:
+    return bool(f.metadata and f.metadata.get(_ARRAY))
 
 
 # --------------------------------------------------------------------------

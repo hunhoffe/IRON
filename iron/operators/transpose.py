@@ -254,7 +254,7 @@ class Transpose(Operator[TransposeOverlay]):
                 f"of m={ov.m}"
             )
 
-    def residents(self) -> dict[str, int]:
+    def resident_values(self) -> dict[str, int]:
         ov = self.ov
         return {
             "batches": self.num_batches,

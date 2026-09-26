@@ -502,7 +502,7 @@ class GEMM(Operator[GEMMOverlay]):
             if value % unit != 0:
                 raise ValueError(f"{name} ({value}) must be a multiple of {unit}")
 
-    def residents(self) -> dict[str, int]:
+    def resident_values(self) -> dict[str, int]:
         ov = self.ov
         return {
             "k_div_k": self.K // ov.tile_k,

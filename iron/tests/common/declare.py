@@ -10,6 +10,11 @@ tuning and specialisation behave. The design-generating half is
 ``iron/common/design/`` and needs the toolchain.
 """
 
+# pyright: reportCallIssue=false
+# The two-class form passes its overlay positionally, which a checker reads
+# as the first field; the form, and this file with it, is on its way out.
+
+
 import dataclasses
 
 import numpy as np
@@ -193,7 +198,7 @@ def test_buffers_on_an_overlay_are_rejected():
 
 
 def test_streams_on_an_operator_are_rejected():
-    with pytest.raises(DeclarationError, match="streams and residents belong"):
+    with pytest.raises(DeclarationError, match="leaves streams and residents"):
 
         class Bad(Operator[MVOverlay]):
             n: int = param()

@@ -196,7 +196,7 @@ class RoPE(Operator[RoPEOverlay]):
         if not (self.angle_rows >= n and self.angle_rows % n == 0):
             raise Incompatible("angle_rows must be divisible by num_aie_columns")
 
-    def residents(self) -> dict[str, int]:
+    def resident_values(self) -> dict[str, int]:
         return {
             "lut_rows": self.angle_rows // self.ov.num_aie_columns,
             "rows_per_lut": self.rows // self.angle_rows,

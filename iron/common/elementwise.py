@@ -232,7 +232,7 @@ class ElementwiseOperator(Operator[EO]):
                 f"{ov.line_size}-element line"
             )
 
-    def residents(self) -> dict[str, int]:
+    def resident_values(self) -> dict[str, int]:
         ov = self.ov
         assert ov.line_size is not None, "residents() sees a tuned overlay"
         return {"count": self.size // ov.cores // ov.line_size}
