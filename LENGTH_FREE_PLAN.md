@@ -141,7 +141,7 @@ sets), pyright and ruff clean, and a Progress entry.
 
 ## Progress
 
-- `(this commit)` Step 3, the hand-written sequences. A `Walk` carries the
+- `9869c85` Step 3, the hand-written sequences. A `Walk` carries the
   axis a graph bounds; a copy's view operands put a bound on their walk
   and bind `src_valid`/`dst_valid`, and `Copy._taps` keeps a bounded walk
   as one exact descriptor per channel with that axis in its own slot,
