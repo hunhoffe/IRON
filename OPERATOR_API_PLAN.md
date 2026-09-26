@@ -290,7 +290,7 @@ today**.
 
 ## Progress
 
-- (this commit) Audit, batch B: the newcomer bugs. One
+- `dd395e4` Audit, batch B: the newcomer bugs. One
   `Operator.resolve_columns(dev, given, num_channels, fits=)` is the
   column-budget rule everywhere: the count given, checked against the
   shim budget, or the most the budget allows that leaves whole tiles by
