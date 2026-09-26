@@ -63,6 +63,7 @@ PAIRS = [
 def _core_elfs(op) -> dict[str, bytes]:
     """The per-core ELFs of an operator's build, by core."""
     entry = op.compile().artifacts.entry
+    assert entry is not None
     elfs = {
         p.parent.name: p.read_bytes()
         for p in sorted(entry.directory.glob("elfs_*_core_*/*.elf"))
@@ -76,7 +77,14 @@ def _core_elfs(op) -> dict[str, bytes]:
     PAIRS,
     ids=lambda v: v if isinstance(v, str) else "",
 )
-def test_the_array_is_the_same_at_two_extents(device, module, cls_name, knobs, extent):
+def test_the_array_is_the_same_at_two_extents(
+    device, module, cls_name, knobs, extent, tmp_path, monkeypatch
+):
+    # A cache of its own: an entry another test left for the same design,
+    # an insts-only lowering's say, holds no core ELF.
+    from aie.utils.compile.jit import compilabledesign
+
+    monkeypatch.setattr(compilabledesign, "NPU_CACHE_HOME", tmp_path)
     cls = getattr(importlib.import_module(f"iron.operators.{module}"), cls_name)
     name, n = extent
     elfs = []
