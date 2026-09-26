@@ -290,7 +290,7 @@ today**.
 
 ## Progress
 
-- `4b12cca` Step 8: exports. `iron.common.declare` exports the sixteen
+- `a50cbc7` Step 8: exports. `iron.common.declare` exports the sixteen
   names an operator is written with (`Operator`, `In`, `Out`, `Value`,
   `Scratchpad`, `DispatchTime`, `Shim`, `Xclbin`, `param`, `auto`,
   `optional`, `select`, `from_spec` and the three errors), down from 25 (32
