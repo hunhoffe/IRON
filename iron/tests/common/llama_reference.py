@@ -49,16 +49,8 @@ def _embed(config, tokens):
 
 
 def llama_graph(config):
-    """The graph at the test's context length, four columns wide and with
-    small prompt tiles so they divide the scaled model.
-    """
-    return LlamaGraph(
-        config,
-        config.context_length,
-        num_aie_columns=4,
-        num_of_pipelines=1,
-        tile_m=16,
-    )
+    """The graph at the test's context length; its profile fits the scaled model."""
+    return LlamaGraph(config, config.context_length)
 
 
 def graph_prefill(config, graph, prompt):

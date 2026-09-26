@@ -38,6 +38,7 @@ from .field import DeclarationError, Unresolvable, param
 from .infer import infer, infer_kwargs
 from .member import Value, _Buffer, _Member, _Stream, _Value
 from .naming import label_parts
+from .profile import current as current_profile
 from .shim import check_shim_columns, shim_columns
 
 if TYPE_CHECKING:
@@ -72,6 +73,10 @@ class _OperatorMeta(type):
         tracer = _graph.current()
         if tracer is not None and args and all(_graph.is_operand(a) for a in args):
             return tracer.call(cls, args, kwargs)
+        profile = current_profile()
+        if profile is not None:
+            # The knobs this call leaves open, where the profile names them.
+            kwargs = {**profile.knobs_for(cls, kwargs), **kwargs}
         return super().__call__(*args, **kwargs)
 
 

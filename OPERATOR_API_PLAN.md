@@ -290,6 +290,34 @@ today**.
 
 ## Progress
 
+- (this commit) Profiles. `Profile` (`declare/profile.py`, exported from
+  `iron.common`) is data: `add(cls, **fields)` lines whose `param()`
+  fields select operators by shape (one left out matches any value) and
+  whose `auto()` fields are the knobs given. Applied in a `with` scope, the
+  operator metaclass fills the knobs a call leaves open before
+  construction, so the precedence the plan asked for holds by
+  construction: explicit call-site value, then the most specific matching
+  entry per knob (equal specificity that disagrees is an error at the
+  call), then the declared default or what `resolve(dev)` proposes.
+  Nothing in an operator class knows a profile exists. The llama graph's
+  knobs are `graphs.py::profile(config, max_seq_len)`: every tile decode
+  and prefill were tuned with, keyed by shape, plus the GEMMs' width and
+  row tile and MHA's pipelines, now derived from the model's shape and
+  `max_seq_len` (the three `LlamaGraph` parameters are gone; the
+  scaled-down test shape needs nothing said). The graph function carries
+  it, `iron.graph(profile=)`, so a trace, a compile and a host reference
+  run all see it. What the call sites still spell, each load-bearing: the
+  projections' half-head output tile (q's shape is o's when H·D = E) and
+  the score row's tile (its size is the FFN's when H·L = F), the prefill
+  cache copies' transfer size, and the layout flags and dimensions that
+  are not knobs. Knob keywords at the graph's call sites 37 → 6. **Unverified on
+  hardware:** a device-free check traces the graph at the real shape on
+  NPU2 and NPU1 (decode) and at 512 and 2048 prompt rows (NPU2) with the
+  profile against the explicit graph at `9c546fa`, and every resolved
+  operator is identical; at the scaled-down test shape the prompt norms
+  now span the device's eight columns where they inherited GEMM's four.
+  The bit-identical-logits run on a device (`applications/llama_3_2_1b/
+  test.py`) has not been done. Both suites identical to baseline.
 - `6a4f30e` Step 8, last: `iron.common.image`, `.design` and `.graph`
   re-export what something imports through them and nothing else (image 29
   → 6, design 9 → 7, graph 12 → 10); everything else is imported from its

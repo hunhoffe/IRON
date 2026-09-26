@@ -14,6 +14,7 @@ arena its other versions already use.
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 from collections.abc import Callable
 
@@ -79,9 +80,10 @@ def _store(
 class GraphFunction:
     """A function decorated with :func:`graph`."""
 
-    def __init__(self, fn, names_from=None):
+    def __init__(self, fn, names_from=None, profile=None):
         self.fn = fn
         self.names_from = names_from
+        self.profile = profile
         self.__name__ = fn.__name__
         self.__doc__ = fn.__doc__
         sig = inspect.signature(fn)
@@ -140,7 +142,7 @@ class GraphFunction:
         values = [
             Value(n, spec.kind, spec.dtype) for n, spec in self.value_params.items()
         ]
-        with Tracer(self.__name__, self.names_from) as tracer:
+        with self._scope(), Tracer(self.__name__, self.names_from) as tracer:
             result = self.fn(*inputs, **{v.name: v for v in values})
         outputs = self._outputs(result, tracer)
         return tracer.finish(inputs, outputs, values)
@@ -242,8 +244,12 @@ class GraphFunction:
 
     def reference(self, *tensors, **values):
         """The same function, each operator run through its ``reference()``."""
-        with _ReferenceTracer(self.__name__):
+        with self._scope(), _ReferenceTracer(self.__name__):
             return self.fn(*tensors, **{k: values.get(k) for k in self.value_params})
+
+    def _scope(self):
+        """The profile applied while the function's body runs, if it has one."""
+        return self.profile if self.profile is not None else contextlib.nullcontext()
 
 
 class CompiledGraph:
@@ -411,8 +417,12 @@ class CompiledGraph:
         )
 
 
-def graph(fn=None, *, names_from=None):
-    """Declare a graph function; see the module docstring."""
+def graph(fn=None, *, names_from=None, profile=None):
+    """Declare a graph function; see the module docstring.
+
+    ``profile`` is a :class:`~iron.common.declare.Profile` applied whenever
+    the function's body runs: traced, compiled or run as a reference.
+    """
     if fn is None:
-        return lambda f: GraphFunction(f, names_from)
-    return GraphFunction(fn, names_from)
+        return lambda f: GraphFunction(f, names_from, profile)
+    return GraphFunction(fn, names_from, profile)

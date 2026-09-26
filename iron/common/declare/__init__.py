@@ -31,7 +31,9 @@ integer literal, nothing else. Not a knob, not a per-call value, not an
 expression. That is what makes inference a lookup (:mod:`.infer`) and what
 lets the checks in :mod:`.creation` run once, as a class body finishes. A
 tile's dimension may also be a knob: choosing the tile is what resolution
-is for, and inference never reads a tile.
+is for, and inference never reads a tile. A :class:`Profile` applied in a
+scope gives the knobs a call site leaves open, by operator shape, before
+resolution sees them.
 
 Generating MLIR is :mod:`iron.common.design`'s job, not this package's; it
 reads the declarations made here. What little mlir-aie reaches this far --
@@ -57,6 +59,7 @@ from .field import (
 )
 from .member import DispatchTime, In, Out, Scratchpad, Shim, Value, Xclbin
 from .operator import Operator
+from .profile import Profile
 from .spec import from_spec
 
 __all__ = [
@@ -66,6 +69,7 @@ __all__ = [
     "Incompatible",
     "Operator",
     "Out",
+    "Profile",
     "Scratchpad",
     "Shim",
     "Unresolvable",

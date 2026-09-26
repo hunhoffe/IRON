@@ -43,7 +43,7 @@ def test_prefill_graph_operators_lower_with_their_value(tmp_path):
 
     cfg = _Config()
     L = cfg.context_length
-    graph = LlamaGraph(cfg, L, num_aie_columns=4, num_of_pipelines=1, tile_m=16)
+    graph = LlamaGraph(cfg, L)
     traced = graph.trace(cfg, L)
     assert [b.value.name for b in traced.bindings] == ["last"]
     _lower_all(traced, tmp_path)

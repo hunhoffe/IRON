@@ -19,6 +19,13 @@ closed over from ``config.weights`` -- sit at one offset in every image and
 are uploaded once, so the caches a prompt writes are the ones the next
 decode step reads, and there is nothing to hand over.
 
+The knobs the operators run with are a :class:`Profile`
+(:func:`profile`), the graph function's own, applied whenever its body runs: the tile choices decode
+and prefill were tuned with, keyed by operator shape, and the GEMMs' width
+and row tile and MHA's pipeline count, which follow the model's shape and
+``max_seq_len``. A call site spells a knob only where a shape does not
+determine it.
+
 ``config`` is the model's shape (``n_heads``, ``n_kv_groups``, ``head_dim``,
 ``emb_dim``, ``hidden_dim``) with the parameters as ``config.weights``
 (:class:`.weights.LlamaWeights`); the depth is the number of layers it
@@ -34,7 +41,7 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 import iron
-from iron.common import Scratchpad
+from iron.common import Profile, Scratchpad
 from iron.operators.copy import Copy
 from iron.operators.elementwise_add import ElementwiseAdd
 from iron.operators.elementwise_mul import ElementwiseMul
@@ -49,6 +56,58 @@ from iron.operators.softmax import Softmax
 from iron.operators.transpose import Transpose
 
 
+def _device_columns() -> int:
+    """The bound device's width: eight on NPU2, four on NPU1; eight unbound."""
+    dev = aie_utils.get_current_device()
+    return dev.cols if dev is not None else 8
+
+
+def profile(config, max_seq_len) -> Profile:
+    """The knobs the graph's operators run with, keyed by their shapes.
+
+    Decode's tiles are the ones it was tuned with: the per-column share of a
+    row on the bound device's width, four input rows per GEMV tile (one for
+    the down projection), thirty-two rows of logits. A prompt spans the
+    device's columns for its norms and elementwise ops, one row per tile,
+    and its GEMMs take the widest column count their narrowest projection
+    fills at 64-wide tiles; MHA's pipelines and the GEMMs' row tile fit
+    ``max_seq_len``.
+
+    Every value is one the graph ran with before it was a profile; none has
+    been re-measured. A tuner writing this profile replaces these lines.
+    """
+    H, G, D = config.n_heads, config.n_kv_groups, config.head_dim
+    E, F, V = config.emb_dim, config.hidden_dim, config.vocab_size
+    L, cols = max_seq_len, _device_columns()
+    p = Profile()
+    # -- decode: one row --------------------------------------------------
+    p.add(GEMV, tile_size_input=4)
+    p.add(GEMV, M=E, K=H * D, tile_size_output=E // cols)  # o
+    p.add(GEMV, M=F, K=E, tile_size_output=F // cols)  # gate, up
+    p.add(GEMV, M=E, K=F, tile_size_input=1, tile_size_output=E // cols)  # down
+    p.add(GEMV, M=L, K=D, num_batches=H, tile_size_output=L // cols)  # scores
+    p.add(GEMV, M=V, K=E, tile_size_output=32)  # the head
+    p.add(Repeat, transfer_size=D)
+    p.add(Transpose, M=L, N=D, num_batches=H, num_aie_columns=2, m=256, n=32)
+    p.add(ElementwiseAdd, size=E, tile_size=E // cols)
+    p.add(ElementwiseMul, size=F, tile_size=F // cols)
+    p.add(SiLU, size=F, tile_size=F // cols)
+    # -- a prompt: many rows ----------------------------------------------
+    p.add(RMSNorm, tile_size=E, num_aie_columns=cols)
+    p.add(RMSNorm, rows=1, tile_size=E, num_aie_columns=1)  # decode: one core
+    p.add(ElementwiseAdd, tile_size=E)
+    p.add(ElementwiseMul, tile_size=F)
+    p.add(SiLU, tile_size=F)
+    narrowest = min(H * D, G * D, E, F)
+    p.add(
+        GEMM,
+        num_aie_columns=max(c for c in range(1, cols + 1) if narrowest % (64 * c) == 0),
+        tile_m=min(64, L // 4),
+    )
+    p.add(MHA, num_of_pipelines=min(8, L // 64))
+    return p
+
+
 class LlamaGraph:
     """The graph function and the state it closes over.
 
@@ -57,34 +116,19 @@ class LlamaGraph:
     and decode's repeat reads. ``scale`` is the attention scale as a tensor,
     since the elementwise multiply takes one.
 
-    A prompt of ``rows`` rows needs ``rows`` a multiple of 64 times
-    ``num_of_pipelines`` (MHA's) and of four times ``tile_m`` (the GEMMs'
-    row tile), and at most ``max_seq_len``.
+    A prompt of ``rows`` rows needs ``rows`` a multiple of 512 (MHA's eight
+    pipelines of 64 rows, four GEMM row tiles of 64) and at most
+    ``max_seq_len``; a ``max_seq_len`` under 512 lowers both to fit it.
     """
 
-    def __init__(
-        self,
-        config,
-        max_seq_len,
-        *,
-        num_aie_columns=None,
-        num_of_pipelines=8,
-        tile_m=64,
-    ):
+    def __init__(self, config, max_seq_len):
         W = config.weights
         H, G, D = config.n_heads, config.n_kv_groups, config.head_dim
-        E, F = config.emb_dim, config.hidden_dim
-        if num_aie_columns is None:
-            # The device's width: eight on NPU2, four on NPU1. The GEMMs and
-            # the prompt norms span it and decode's tiles divide by it, so it
-            # is fixed when the graph is written; every other operator spans
-            # the device on its own, which agrees unless the model is too
-            # small to fill it (the test configuration).
-            dev = aie_utils.get_current_device()
-            num_aie_columns = dev.cols if dev is not None else 8
-        L, cols = max_seq_len, num_aie_columns
+        E = config.emb_dim
+        L = max_seq_len
         self.max_seq_len = L
-        self.num_aie_columns = cols
+        self.profile = profile(config, max_seq_len)
+        cols = _device_columns()
         self.keys = [
             iron.state((G, L, D), name=f"keys_cache_{i}") for i in range(len(W.layers))
         ]
@@ -98,70 +142,50 @@ class LlamaGraph:
 
         # -- one row: a decode step ------------------------------------------
 
-        # Matrices are read as the checkpoint ships them, (out, in): GEMV's
-        # (M, K). Tile choices are the ones decode ran with before.
-        def gemv(weight, x, *, tile_in=4, tile_out):
-            return GEMV(
-                weight,
-                x,
-                tile_size_input=tile_in,
-                tile_size_output=tile_out,
-            )
-
         def decode_block(i, lw, x, angles, cache_offset, vector_size):
             h = RMSNorm(x, lw.norm1)
             # <grouped query attention>
-            q = gemv(lw.q, h, tile_out=D // 2)
-            k = gemv(lw.k, h, tile_out=D // 2)
-            v = gemv(lw.v, h, tile_out=D // 2)
+            # Matrices are read as the checkpoint ships them, (out, in):
+            # GEMV's (M, K). The projections into heads write half a head
+            # per tile; q's shape is o's when H * D == E, so it is said here.
+            q, k, v = (GEMV(w, h, tile_size_output=D // 2) for w in (lw.q, lw.k, lw.v))
             q = RoPE(q.reshape(H, D), angles)
             k = RoPE(k.reshape(G, D), angles)
             Copy(k, keys[i][:, cache_offset])
             Copy(v.reshape(G, D), values[i][:, cache_offset])
             # Every head sees its group's keys and values.
-            k_all = Repeat(keys[i].reshape(G, L * D), repeat=H // G, transfer_size=D)
-            v_all = Repeat(values[i].reshape(G, L * D), repeat=H // G, transfer_size=D)
-            scores = gemv(k_all.reshape(H, L, D), q, tile_out=L // cols)
+            k_all = Repeat(keys[i].reshape(G, L * D), repeat=H // G)
+            v_all = Repeat(values[i].reshape(G, L * D), repeat=H // G)
+            scores = GEMV(k_all.reshape(H, L, D), q)
+            # One row of scores per column; its size is the FFN's when
+            # H * L == F, so the tile is said here.
             scores = ElementwiseMul(scores, scale, tile_size=L // cols)
             # The valid row length is the context length: the kernel masks
             # every column from there on, so the cache's unwritten tail
             # contributes nothing.
             weights = Softmax(scores, vector_size=vector_size)
-            v_t = Transpose(v_all.reshape(H, L, D), num_aie_columns=2, m=256, n=32)
-            ctx = GEMV(v_t, weights, tile_size_input=4)  # the output tile follows
-            o = gemv(lw.o, ctx.reshape(H * D), tile_out=E // cols)
+            v_t = Transpose(v_all.reshape(H, L, D))
+            ctx = GEMV(v_t, weights)
+            o = GEMV(lw.o, ctx.reshape(H * D))
             # </grouped query attention>
-            x = ElementwiseAdd(x, o, tile_size=E // cols)
+            x = ElementwiseAdd(x, o)
             h = RMSNorm(x, lw.norm2)
-            gate = gemv(lw.gate, h, tile_out=F // cols)
-            up = gemv(lw.up, h, tile_out=F // cols)
-            act = ElementwiseMul(
-                SiLU(gate, tile_size=F // cols),
-                up,
-                tile_size=F // cols,
-            )
-            down = gemv(lw.down, act, tile_in=1, tile_out=E // cols)
-            return ElementwiseAdd(x, down, tile_size=E // cols)
+            gate = GEMV(lw.gate, h)
+            up = GEMV(lw.up, h)
+            act = ElementwiseMul(SiLU(gate), up)
+            down = GEMV(lw.down, act)
+            return ElementwiseAdd(x, down)
 
         # -- many rows: a prompt ---------------------------------------------
 
         def gemm(x, weight):
             # Every projection is read as the checkpoint ships it, (out, in):
             # GEMM's column-major B, the layout the GEMVs read too.
-            return GEMM(
-                x,
-                weight,
-                b_col_maj=True,
-                num_aie_columns=cols,
-                tile_m=tile_m,
-            )
-
-        def norm(x, weight):
-            return RMSNorm(x, weight, num_aie_columns=cols)
+            return GEMM(x, weight, b_col_maj=True)
 
         def prefill_block(i, lw, x, angles):
             n = x.shape[0]
-            h = norm(x, lw.norm1)
+            h = RMSNorm(x, lw.norm1)
             # <grouped query attention>
             q = gemm(h, lw.q)  # (n, H*D)
             k = gemm(h, lw.k)  # (n, G*D)
@@ -186,23 +210,18 @@ class LlamaGraph:
                 k.reshape(n, G, D),
                 v.reshape(n, G, D),
                 heads_interleaved=True,
-                num_of_pipelines=num_of_pipelines,
             )
             o = gemm(o.reshape(n, H * D), lw.o)
             # </grouped query attention>
-            x = ElementwiseAdd(x, o, tile_size=E)
-            h = norm(x, lw.norm2)
+            x = ElementwiseAdd(x, o)
+            h = RMSNorm(x, lw.norm2)
             gate = gemm(h, lw.gate)
             up = gemm(h, lw.up)
-            act = ElementwiseMul(
-                SiLU(gate, tile_size=F),
-                up,
-                tile_size=F,
-            )
+            act = ElementwiseMul(SiLU(gate), up)
             down = gemm(act, lw.down)
-            return ElementwiseAdd(x, down, tile_size=E)
+            return ElementwiseAdd(x, down)
 
-        @iron.graph(names_from=W)
+        @iron.graph(names_from=W, profile=self.profile)
         def forward(
             x,
             angles,
@@ -221,7 +240,7 @@ class LlamaGraph:
                 # The last prompt row alone: its logits are all the host reads.
                 x = Copy(x[last]).reshape(1, E)
             x = RMSNorm(x, W.norm)
-            return gemv(W.out_head, x, tile_out=32)
+            return GEMV(W.out_head, x)
 
         self.graph = forward
 

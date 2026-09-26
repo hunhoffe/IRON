@@ -24,6 +24,7 @@ from iron.common import (
     Incompatible,
     Operator,
     Out,
+    Profile,
     Scratchpad,
     Shim,
     Unresolvable,
@@ -438,6 +439,38 @@ def test_resolution_fills_every_knob_or_says_which_it_left():
     r = ok.resolved(FakeDev(cols=8))
     assert r._resolved and r.resolved(FakeDev()) is r and (r.columns, r.vec) == (2, 64)
     assert ok.columns == 2 and ok.vec is None  # the original is untouched
+
+
+def test_a_profile_fills_the_knobs_a_call_leaves_open():
+    p = Profile()
+    p.add(MV, columns=4, tile_out=32)  # any MV: a declared default (64) counts as open
+    p.add(MV, K=256, tile_out=16)  # more specific: its shape names K
+    with p:
+        assert (MV(M=1024, K=128).columns, MV(M=1024, K=128).tile_out) == (4, 32)
+        assert MV(M=1024, K=256).tile_out == 16 and MV(M=1024, K=256).columns == 4
+        assert MV(M=1024, K=256, tile_out=8).tile_out == 8  # what the call gives wins
+        r = MV(M=1024, K=128).resolved(FakeDev(cols=8))
+        assert (r.columns, r.tile_out, r.vec) == (4, 32, 64)  # resolve fills the rest
+    assert MV(M=1024, K=128).columns is None and MV(M=1024, K=128).tile_out == 64
+    assert p.lookup(MV(M=1024, K=256)) == {"columns": 4, "tile_out": 16}
+    assert len(p) == 2
+
+
+def test_a_profile_is_checked_as_it_is_written_and_as_it_is_read():
+    p = Profile()
+    with pytest.raises(TypeError, match="declares no field"):
+        p.add(MV, rows=4, columns=2)
+    with pytest.raises(TypeError, match="must give a knob"):
+        p.add(MV, M=1024)
+    p.add(MV, M=1024, columns=2)
+    p.add(MV, K=128, columns=8)  # as specific as the first: a clash for (1024, 128)
+    with p:
+        assert MV(M=512, K=128).columns == 8
+        with pytest.raises(ValueError, match="ambiguous"):
+            MV(M=1024, K=128)
+        with Profile():  # an inner scope stands alone; the outer is back after
+            assert MV(M=512, K=128).columns is None
+        assert MV(M=512, K=128).columns == 8
 
 
 def test_inference_binds_the_fields_from_the_operands():

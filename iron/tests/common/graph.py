@@ -18,7 +18,7 @@ import pytest
 from ml_dtypes import bfloat16
 
 import iron
-from iron.common import DispatchTime, Scratchpad
+from iron.common import DispatchTime, Profile, Scratchpad
 from iron.common.graph import Handle, TracedGraph, Tracer
 from iron.operators.copy import Copy
 from iron.operators.elementwise_add import ElementwiseAdd
@@ -26,6 +26,7 @@ from iron.operators.elementwise_mul import ElementwiseMul
 from iron.operators.gemv.op import GEMV
 from iron.operators.rms_norm import RMSNorm, WeightedRMSNorm
 from iron.operators.silu import SiLU
+from iron.operators.transpose import Transpose
 
 E, H = 2048, 8192
 
@@ -183,6 +184,26 @@ def test_binding_two_handles_to_one_instance_is_an_error():
 
     with pytest.raises(ValueError, match="bound to Value\\('a'"):
         two.trace(x=(64,))
+
+
+def test_a_graph_function_carries_its_profile():
+    """A profile given to ``iron.graph`` reaches every run of the body: the
+    trace and the host reference alike, with a call's own keyword kept.
+    """
+    profile = Profile()
+    profile.add(GEMV, tile_size_input=4, tile_size_output=16)
+    profile.add(GEMV, M=E, tile_size_output=E // 8)
+    w_a, w_b = z(256, E), z(E, 256)
+
+    @iron.graph(profile=profile)
+    def two(x):
+        return GEMV(w_b, GEMV(w_a, x, tile_size_output=32))
+
+    a, b = (s.op for s in two.trace(x=(E,)).steps)
+    assert (a.tile_size_input, a.tile_size_output) == (4, 32)  # the call's own
+    assert (b.tile_size_input, b.tile_size_output) == (4, E // 8)  # the profile's
+    assert two.reference(z(E)).shape == (E,)  # constructs under the profile too
+    assert GEMV(M=E, K=256).tile_size_output is None  # nothing outside it
 
 
 def test_an_explicit_instance_is_applied_like_the_class():
@@ -383,6 +404,24 @@ def test_llama_decode_traces_and_tunes():
     # Every operator tunes and is compatible on an 8-column device.
     for op in t.operators:
         op.resolved(aie_utils.get_current_device())
+    # The profile gave the tiles decode was tuned with: half a head per
+    # projection tile, a column's share of the row for the output
+    # projection, two columns for the transpose, one core for the norm.
+    E, D = cfg.emb_dim, cfg.head_dim
+    gemvs = [s.op for s in t.steps if type(s.op) is GEMV]
+    q, k, v, scores, ctx, o, gate, up, down = gemvs[:9]
+    assert (q.tile_size_output, k.tile_size_output, o.tile_size_output) == (
+        D // 2,
+        D // 2,
+        E // 8,
+    )
+    assert (down.tile_size_input, gate.tile_size_output) == (1, cfg.hidden_dim // 8)
+    transpose = next(s.op for s in t.steps if type(s.op) is Transpose)
+    assert (transpose.num_aie_columns, transpose.m, transpose.n) == (2, 256, 32)
+    assert (
+        next(s.op for s in t.steps if type(s.op) is WeightedRMSNorm).num_aie_columns
+        == 1
+    )
 
 
 def test_llama_prompt_traces_over_the_same_caches():
@@ -391,7 +430,7 @@ def test_llama_prompt_traces_over_the_same_caches():
 
     cfg = _Config()
     L = cfg.context_length
-    g = LlamaGraph(cfg, L, num_aie_columns=4, num_of_pipelines=1, tile_m=16)
+    g = LlamaGraph(cfg, L)
     t = g.trace(cfg, L)
     kinds = [type(op).__name__ for op, *_ in t.runlist]
     per_block = [
@@ -516,9 +555,7 @@ def test_llama_names_only_the_knobs_that_matter(monkeypatch):
         (npu2, lambda: LlamaGraph(real, 512).trace(real, 512)),
         (
             npu2,
-            lambda: LlamaGraph(
-                small, L, num_aie_columns=4, num_of_pipelines=1, tile_m=16
-            ).trace(small, L),
+            lambda: LlamaGraph(small, L).trace(small, L),
         ),
     ]
     _every_keyword_is_load_bearing(monkeypatch, settings)

@@ -395,6 +395,14 @@ net = decode.compile(dev, x=(1, emb), angles=(1, head_dim))
 logits = net(x_tok, ang_tok, pos=n)
 ```
 
+The knobs a graph's operators run with can be a `Profile` rather than
+keywords at every call: entries keyed by operator class and shape, given to
+`iron.graph(profile=...)` (or applied in a `with profile:` scope), so a call
+that leaves a knob open takes the most specific entry's value and a call that gives one keeps
+it (`iron/applications/llama_3_2_1b/graphs.py::profile` is the worked
+example, and `test_llama_names_only_the_knobs_that_matter` proves each
+keyword the graph still spells is one the profile could not have given).
+
 Operators with equal `array_key()` share one array; with equal
 `design_key()` they are one build. `compile(dev, boundaries=, image=)` derives the image (a
 fused ELF on NPU2, per-step xclbins with `boundaries=iron.each_step`) and
