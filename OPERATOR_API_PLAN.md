@@ -290,7 +290,7 @@ today**.
 
 ## Progress
 
-- (this commit) Audit, batch D, second half: names and tests. One name
+- `f14f212` Audit, batch D, second half: names and tests. One name
   per concept: Copy's `num_aie_channels` is `num_channels`, Copy's and
   Repeat's `transfer_size` is `tile_size` (it is the tile), MHA's
   `num_of_pipelines` is `num_pipelines`. A `Testing` sweep is a callable
