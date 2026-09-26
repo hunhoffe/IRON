@@ -7,6 +7,8 @@ from typing import Any
 
 import ml_dtypes
 import numpy as np
+from aie.iron import ObjectFifo, Worker
+from aie.iron.controlflow import range_
 from aie.iron.kernels import activation
 from aie.utils.verify import Tolerance
 
@@ -29,7 +31,7 @@ def _columns_channels(total_cores):
     return {1: (1, 1), 2: (1, 2)}.get(total_cores, (2, 2))
 
 
-def _cases():
+def _cases(cls):
     out = []
     for size, cols in [(32768, 1024), (32768, 512), (32768, 2048)]:
         columns, channels = _columns_channels(size // cols)
@@ -110,8 +112,6 @@ class Softmax(Operator):
         return softmax_k, mask_k
 
     def array(self, target) -> list:
-        from aie.iron import ObjectFifo, Worker
-        from aie.iron.controlflow import range_
 
         tile_ty = self.x.tile
         cols, chans = self.num_aie_columns, self.num_channels

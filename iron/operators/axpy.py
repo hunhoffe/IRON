@@ -5,32 +5,7 @@ import numpy as np
 from aie.iron.kernels import datamovement
 
 from iron.common import BinaryElementwise, param
-from iron.common.testing import Case, Testing, device_columns
-
-
-def _cases():
-    """Every column count that divides each size, at two scalars; the 2048
-    shape at the default scalar is the default suite.
-    """
-    out = []
-    for size in [1024, 2048, 4096, 8192]:
-        for cols in range(1, device_columns() + 1):
-            tile_size = size // cols
-            if tile_size * cols != size:
-                continue
-            for scalar in (3.0, 10.0):
-                out.append(
-                    Case(
-                        dict(
-                            size=size,
-                            num_aie_columns=cols,
-                            tile_size=tile_size,
-                            scalar_factor=scalar,
-                        ),
-                        extensive=not (size == 2048 and scalar == 3.0),
-                    )
-                )
-    return out
+from iron.common.testing import Testing, binary_elementwise_cases
 
 
 class AXPY(BinaryElementwise):
@@ -38,7 +13,12 @@ class AXPY(BinaryElementwise):
     scalar as a kernel argument.
     """
 
-    test = Testing(_cases)
+    # Every split at the default scalar (the 2048 shape in the default
+    # suite), then every split at a second scalar, all extensive.
+    test = Testing(
+        lambda cls: binary_elementwise_cases(scalar_factor=3.0)(cls)
+        + binary_elementwise_cases(scalar_factor=10.0, regular=None)(cls)
+    )
 
     scalar_factor: float = param(default=3.0, array=True)
 

@@ -6,6 +6,8 @@ import math
 from typing import Any, ClassVar
 
 import numpy as np
+from aie.iron import ObjectFifo, Worker
+from aie.iron.controlflow import range_
 from aie.iron.kernels import activation, linalg
 from ml_dtypes import bfloat16
 
@@ -192,8 +194,6 @@ class GEMV(Operator):
     def array(self, target):
         import aie.dialects.index as index
         from aie.dialects.aie import T
-        from aie.iron import ObjectFifo, Worker
-        from aie.iron.controlflow import range_
 
         K, cols = self.K, self.num_aie_columns
         tile_size_input, tile_size_output = self.tile_size_input, self.tile_size_output

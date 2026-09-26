@@ -213,7 +213,7 @@ def test_mha_sequence_is_one_descriptor_set_per_kv_group(monkeypatch):
         def drain(self, data, tap, wait, group, offset_parameter):
             self.log.append(("drain", self.name, data, tap, wait))
 
-    op = MHA(num_heads=2, seq_len=1000, d=64, num_KV_heads=1, num_of_pipelines=8)
+    op = MHA(num_heads=2, seq_len=1000, d=64, num_KV_heads=1, num_pipelines=8)
     op = op.resolved(Dev())
     assert op.seq_pad == 1024 and op.q_shims == 2 and op.join_rows == 256
     assert op.resident_values() == {
@@ -275,7 +275,7 @@ def test_mha_sequence_over_interleaved_heads_is_strided_the_same_way(monkeypatch
         seq_len=1024,
         d=64,
         num_KV_heads=2,
-        num_of_pipelines=8,
+        num_pipelines=8,
         heads_interleaved=True,
     ).resolved(Dev())
     log = []

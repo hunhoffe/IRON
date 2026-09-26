@@ -65,8 +65,8 @@ class Testing:
     """How an operator is checked against its reference on a device.
 
     ``cases`` is what to construct: :class:`Case` objects or plain keyword
-    dicts, or a callable returning them, which is what an operator whose
-    shapes follow the device's width declares. ``draw`` is extra
+    dicts, or a callable of the operator class returning them, which is
+    what an operator whose shapes follow the device's width declares. ``draw`` is extra
     :func:`iron.common.harness.vectors` arguments, or a callable of the
     operator returning them (an input that must satisfy the kernel's
     preconditions: a packed quantization, an angle table).
@@ -78,37 +78,51 @@ class Testing:
     other tolerance there also accepts a wrong permutation.
     """
 
-    cases: Iterable[Case | dict] | Callable[[], Iterable[Case | dict]]
+    cases: Iterable[Case | dict] | Callable[[type], Iterable[Case | dict]]
     tolerance: Tolerance | None = None
     draw: dict[str, Any] | Callable[[Any], dict[str, Any]] | None = None
 
-    def resolve(self) -> list[Case]:
-        """The cases, with the callable form called and dicts wrapped."""
-        cases = self.cases() if callable(self.cases) else self.cases
+    def resolve(self, cls: type) -> list[Case]:
+        """The cases for ``cls``: the callable form is called with the class,
+        so a sweep inherited from a base reads the subclass's caps and shim
+        budget; dicts are wrapped.
+        """
+        cases = self.cases(cls) if callable(self.cases) else self.cases
         return [c if isinstance(c, Case) else Case(dict(c)) for c in cases]
 
 
+LENGTHS = (1024, 2048, 4096, 8192)
+
+
 def channeled_unary_cases(
-    input_lengths, tile_cap, channels=(1, 2), regular=2048, tile_floor=1, **extra
+    input_lengths=LENGTHS,
+    tile_cap=None,
+    channels=(1, 2),
+    regular: int | None = 2048,
+    tile_floor=1,
+    **extra,
 ):
     """Cases for a channeled unary operator, resolved against the device.
 
-    Every column count the device has by every channel count, at each
-    length, with the tile capped at what one core holds; only the
-    ``regular`` length is in the default suite. ``tile_floor`` drops the
-    splits that leave a core a shorter line than its kernel takes.
-    ``channels=None`` leaves the channel count out, for an operator without
-    one. Returned as a callable: the sweep needs the device, which is not
-    bound when a class body runs.
+    Every column count the class's shim budget allows by every channel
+    count, at each length, with the tile capped at what one core holds
+    (the class's ``tile_cap`` unless given); only the ``regular`` length is
+    in the default suite, every one when it is ``None``. ``tile_floor``
+    drops the splits that leave a core a shorter line than its kernel
+    takes. ``channels=None`` leaves the channel count out, for an operator
+    without one. Returned as a callable of the class: the sweep needs the
+    device, which is not bound when a class body runs.
     """
 
-    def cases():
+    def cases(cls):
+        dev = bound_device()
+        cap = cls.tile_cap if tile_cap is None else tile_cap
         out = []
         for length in input_lengths:
-            for cols in range(1, device_columns() + 1):
-                for chans in [1] if channels is None else channels:
+            for chans in [1] if channels is None else channels:
+                for cols in range(1, cls.shim_columns(dev, chans) + 1):
                     cores = cols * chans
-                    tile = min(length // cores, tile_cap)
+                    tile = min(length // cores, cap)
                     if tile * cores != length or tile < tile_floor:
                         continue
                     kwargs = dict(size=length, num_aie_columns=cols)
@@ -121,16 +135,18 @@ def channeled_unary_cases(
     return cases
 
 
-def binary_elementwise_cases(input_lengths, tile_cap=None, regular=2048, **extra):
+def binary_elementwise_cases(
+    input_lengths=LENGTHS, tile_cap=None, regular: int | None = 2048, **extra
+):
     """Cases for a binary elementwise operator, as :func:`channeled_unary_cases`."""
 
-    def cases():
+    def cases(cls):
+        dev = bound_device()
+        cap = cls.tile_cap if tile_cap is None else tile_cap
         out = []
         for length in input_lengths:
-            for cols in range(1, device_columns() + 1):
-                tile = length // cols
-                if tile_cap is not None:
-                    tile = min(tile, tile_cap)
+            for cols in range(1, cls.shim_columns(dev) + 1):
+                tile = min(length // cols, cap)
                 if tile * cols != length:
                     continue
                 out.append(

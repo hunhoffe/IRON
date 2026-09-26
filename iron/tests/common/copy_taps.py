@@ -25,7 +25,7 @@ ROW_INTO_CACHE = dict(
     dst=Walk.slice((G, L, D), (slice(None), 0)),
     input_buffer_size=G * D,
     output_buffer_size=G * L * D,
-    num_aie_channels=1,
+    num_channels=1,
 )
 # N tokens' (N, G, D) keys, heads interleaved per token, into the first N
 # rows: Copy(k.reshape(N, G, D).transpose(1, 0, 2), keys[:, :N]).
@@ -34,8 +34,8 @@ ROWS_INTO_CACHE = dict(
     dst=Walk.slice((G, L, D), (slice(None), slice(0, N))),
     input_buffer_size=N * G * D,
     output_buffer_size=G * L * D,
-    transfer_size=1024,
-    num_aie_channels=1,
+    tile_size=1024,
+    num_channels=1,
 )
 # The last prompt row of (4, E), selected by the per-call index `last`:
 # Copy(x[last]).
@@ -43,7 +43,7 @@ LAST_ROW = dict(
     src=Walk.slice((4, E), (0,)),
     input_buffer_size=4 * E,
     output_buffer_size=E,
-    num_aie_channels=1,
+    num_channels=1,
 )
 
 PINNED: dict[str, tuple[dict[str, Any], list, list]] = {
@@ -68,7 +68,7 @@ PINNED: dict[str, tuple[dict[str, Any], list, list]] = {
         [[(320, (1, 1, 8, 64), (0, 0, 8192, 1))]],
     ),
     "kv_slot5_two_channels": (
-        _kv_slot(128, 5, num_aie_channels=2),
+        _kv_slot(128, 5, num_channels=2),
         [[(0, (1, 1, 8, 32), (0, 0, 64, 1))], [(32, (1, 1, 8, 32), (0, 0, 64, 1))]],
         [
             [(320, (1, 1, 8, 32), (0, 0, 8192, 1))],

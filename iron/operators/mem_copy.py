@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from typing import List
 
 import numpy as np
+from aie.iron import ObjectFifo, Worker
+from aie.iron.controlflow import range_
 from aie.iron.kernels import eltwise
 from aie.utils.verify import Tolerance
 
@@ -123,7 +125,7 @@ def create_partial_workload_config(
     return config
 
 
-def _cases():
+def _cases(cls):
     """Every core and channel split that divides each size, with and without
     the memtile bypass; the 2048 shape through the memtile is the default.
     """
@@ -186,8 +188,6 @@ class MemCopy(Operator):
         )
 
     def array(self, target) -> list:
-        from aie.iron import ObjectFifo, Worker
-        from aie.iron.controlflow import range_
 
         line_type = self.x.tile
         line_size, num_cores = self.line_size, self.num_cores

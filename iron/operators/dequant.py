@@ -10,30 +10,7 @@ from aie.iron.kernels.datamovement import expand_ref
 from ml_dtypes import bfloat16
 
 from iron.common import In, UnaryElementwise, Unresolvable, auto, param
-from iron.common.testing import Case, Testing, device_columns
-
-
-def _cases():
-    out = []
-    for size in [1024, 2048, 4096, 8192]:
-        for cols in range(1, device_columns() + 1):
-            for channels in (1, 2):
-                tile_size = min(size // (cols * channels), 16384)
-                if tile_size * cols * channels != size:
-                    continue
-                out.append(
-                    Case(
-                        dict(
-                            size=size,
-                            num_aie_columns=cols,
-                            num_channels=channels,
-                            tile_size=tile_size,
-                            group_size=32,
-                        ),
-                        extensive=size != 2048,
-                    )
-                )
-    return out
+from iron.common.testing import Testing, channeled_unary_cases
 
 
 def _packed(op):
@@ -58,7 +35,7 @@ class Dequant(UnaryElementwise):
     tiles.
     """
 
-    test = Testing(_cases, draw=_packed)
+    test = Testing(channeled_unary_cases(group_size=32), draw=_packed)
 
     group_size: int = param(default=32, repr=False, array=True)
     # The packed input's length: two 4-bit values per byte plus a bf16 scale

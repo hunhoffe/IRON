@@ -18,7 +18,7 @@ class Tanh(UnaryElementwise):
     """AIE-accelerated Tanh activation function."""
 
     test = Testing(
-        channeled_unary_cases([1024, 2048, 4096, 8192], 4096, tile_floor=_LUT_LINE),
+        channeled_unary_cases(tile_floor=_LUT_LINE),
         tolerance=Tolerance.relative(0.04, 1e-6),
     )
 

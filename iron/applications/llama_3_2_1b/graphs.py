@@ -96,7 +96,7 @@ def profile(config, max_seq_len) -> Profile:
     p.add(ElementwiseMul, tile_size=min(F, ElementwiseMul.tile_cap))  # the FFN row
     p.add(SiLU, tile_size=min(F, SiLU.tile_cap))  # exceeds one core's line
     p.add(GEMM, tile_m=min(64, L // 4))
-    p.add(MHA, num_of_pipelines=min(8, L // 64))
+    p.add(MHA, num_pipelines=min(8, L // 64))
     return p
 
 
@@ -190,12 +190,12 @@ class LlamaGraph:
             Copy(
                 k.reshape(n, G, D).transpose(1, 0, 2),
                 keys[i][:, :n],
-                transfer_size=1024,
+                tile_size=1024,
             )
             Copy(
                 v.reshape(n, G, D).transpose(1, 0, 2),
                 values[i][:, :n],
-                transfer_size=1024,
+                tile_size=1024,
             )
             o = MHA(
                 q.reshape(n, H, D),

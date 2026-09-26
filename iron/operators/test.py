@@ -50,7 +50,7 @@ def _declared():
         declaration = cls.test
         if declaration is None:
             continue
-        for case in declaration.resolve():
+        for case in declaration.resolve(cls):
             params.append(
                 pytest.param(
                     cls,

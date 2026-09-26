@@ -175,7 +175,7 @@ CASES = [
                 dst=Walk.slice((4, 128, 64), (slice(None), slice(0, 128))),
                 input_buffer_size=4 * 128 * 64,
                 output_buffer_size=4 * 128 * 64,
-                transfer_size=1024,
+                tile_size=1024,
             ),
         ],
     ),

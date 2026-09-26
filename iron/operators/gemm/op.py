@@ -6,7 +6,8 @@ from dataclasses import field
 from typing import Any
 
 import numpy as np
-from aie.iron import kernels
+from aie.iron import Buffer, ObjectFifo, Worker, kernels
+from aie.iron.controlflow import range_
 from aie.iron.dataflow.objectfifo import StreamDims
 from ml_dtypes import bfloat16
 
@@ -224,8 +225,6 @@ class GEMM(Operator):
     # -- the array ----------------------------------------------------------
 
     def array(self, target) -> list:
-        from aie.iron import Buffer, ObjectFifo, Worker
-        from aie.iron.controlflow import range_
         from aie.iron.device import Tile
 
         m, k, n = self.tile_m, self.tile_k, self.tile_n

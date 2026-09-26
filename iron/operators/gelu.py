@@ -14,10 +14,7 @@ from iron.common.testing import Testing, channeled_unary_cases
 class GELU(UnaryElementwise):
     """AIE-accelerated GELU activation function."""
 
-    test = Testing(
-        channeled_unary_cases([1024, 2048, 4096, 8192], 8192),
-        tolerance=Tolerance.relative(0.04, 1e-6),
-    )
+    test = Testing(channeled_unary_cases(), tolerance=Tolerance.relative(0.04, 1e-6))
 
     tile_cap: ClassVar[int] = 8192
 

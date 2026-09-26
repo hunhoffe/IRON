@@ -53,6 +53,7 @@ from aie.iron.kernel import ExternalFunction
 from aie.utils.verify import Tolerance
 
 from .declare import In, Incompatible, Operator, Out, Unresolvable, Value, auto, param
+from .testing import Testing, binary_elementwise_cases, channeled_unary_cases
 from .tiling import fifo_depth
 
 if TYPE_CHECKING:
@@ -217,6 +218,7 @@ class Elementwise(Operator):
 class UnaryElementwise(Elementwise):
     """A flat buffer in, a flat buffer of the same size out."""
 
+    test = Testing(channeled_unary_cases())
     size: int = param()
 
     x = In(
@@ -237,6 +239,7 @@ class BinaryElementwise(Elementwise):
     stays at one.
     """
 
+    test = Testing(binary_elementwise_cases())
     size: int = param()
 
     a = In(

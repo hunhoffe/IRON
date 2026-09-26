@@ -3,7 +3,7 @@
 
 """Fused multi-head attention, in the declared form.
 
-The array is ``num_of_pipelines`` three-stage pipelines (QK matmul, partial
+The array is ``num_pipelines`` three-stage pipelines (QK matmul, partial
 softmax, PV matmul), one per column, fed by a Q stream split across the
 pipelines on a memtile and by K and V streams every pipeline consumes. The
 block sizes, the head dimension and the pipeline count configure it; the
@@ -12,7 +12,7 @@ read their trip counts from four values the sequence writes.
 
 The host ABI is Q and O as ``(num_heads, seq_pad, d)``, K and V as
 ``(num_KV_heads, seq_pad, d)`` with the sequence padded to a multiple of
-``B_q * num_of_pipelines``. The sequence is an override: one task group per
+``B_q * num_pipelines``. The sequence is an override: one task group per
 KV group that fills Q for every shim, fills that group's K and V, and
 drains O.
 """
@@ -20,6 +20,8 @@ drains O.
 import dataclasses
 
 import numpy as np
+from aie.iron import Buffer, ObjectFifo, Worker, kernels
+from aie.iron.controlflow import range_
 from ml_dtypes import bfloat16
 
 from iron.common import (
@@ -55,7 +57,7 @@ class MHA(Operator):
     # The K/V head count: fewer than num_heads is grouped-query attention;
     # left out, plain MHA.
     num_KV_heads: int = param(default=lambda op: op.num_heads)
-    # seq_pad is seq_len rounded up to a multiple of B_q * num_of_pipelines;
+    # seq_pad is seq_len rounded up to a multiple of B_q * num_pipelines;
     # a shape gives seq_pad, from which seq_len follows when it is not given.
     seq_len: int = param(default=lambda op: op.seq_pad)
     seq_pad: int = param(default=lambda op: op.seq_padding(op.seq_len), repr=False)
@@ -67,7 +69,7 @@ class MHA(Operator):
     d: int = param(default=64)
     B_q: int = auto(64, array=True)
     B_kv: int = auto(64)
-    num_of_pipelines: int = auto(1, array=True)
+    num_pipelines: int = auto(1, array=True)
     emulate_bf16_mmul_with_bfp16: bool = param(default=True, repr=False)
     # Filled by resolve: how the pipelines are split across shims.
     q_shims: int = auto(repr=False)
@@ -101,7 +103,7 @@ class MHA(Operator):
     )
     # The cores' trip counts, and the unpadded lengths for masking.
     q_blocks_per_pipeline = Value(
-        np.int32, derive=lambda op: op.seq_pad // (op.B_q * op.num_of_pipelines)
+        np.int32, derive=lambda op: op.seq_pad // (op.B_q * op.num_pipelines)
     )
     kv_blocks = Value(np.int32, derive=lambda op: op.seq_pad // op.B_kv)
     s_q = Value(np.int32, derive=lambda op: op.seq_len)
@@ -114,11 +116,11 @@ class MHA(Operator):
             raise ValueError(f"Only d=64 is supported in this version, got d={self.d}")
         if not self.emulate_bf16_mmul_with_bfp16:
             raise ValueError("Only emulate_bf16_mmul_with_bfp16=True is supported")
-        if self.num_of_pipelines < 1:
-            raise ValueError("num_of_pipelines must be at least 1")
-        if self.num_of_pipelines > 6 and self.num_of_pipelines % 2:
+        if self.num_pipelines < 1:
+            raise ValueError("num_pipelines must be at least 1")
+        if self.num_pipelines > 6 and self.num_pipelines % 2:
             raise ValueError(
-                f"num_of_pipelines ({self.num_of_pipelines}) above 6 must be even: "
+                f"num_pipelines ({self.num_pipelines}) above 6 must be even: "
                 f"the pipelines are split over two shims"
             )
         r, s, t = MAC_DIMS
@@ -151,11 +153,11 @@ class MHA(Operator):
                 f"MHA is pinned to the NPU2 array (memtiles at columns 3-7); "
                 f"got {dev.resolve().name}"
             )
-        q_shims = 2 if self.num_of_pipelines > 6 else 1
+        q_shims = 2 if self.num_pipelines > 6 else 1
         return dataclasses.replace(
             self,
             q_shims=q_shims,
-            join_rows=self.B_q * (self.num_of_pipelines // q_shims),
+            join_rows=self.B_q * (self.num_pipelines // q_shims),
         )
 
     # -- derived geometry ------------------------------------------------------
@@ -167,11 +169,11 @@ class MHA(Operator):
 
     @property
     def pipelines_per_shim(self) -> int:
-        return self.num_of_pipelines // (2 if self.num_of_pipelines > 6 else 1)
+        return self.num_pipelines // (2 if self.num_pipelines > 6 else 1)
 
     def seq_padding(self, seq_len: int) -> int:
-        """``seq_len`` rounded up to a multiple of ``B_q * num_of_pipelines``."""
-        unit = self.B_q * self.num_of_pipelines
+        """``seq_len`` rounded up to a multiple of ``B_q * num_pipelines``."""
+        unit = self.B_q * self.num_pipelines
         return ((seq_len + unit - 1) // unit) * unit
 
     # -- the array -------------------------------------------------------------
@@ -180,15 +182,13 @@ class MHA(Operator):
         import sys
 
         from aie.helpers.dialects.scf import else_, if_
-        from aie.iron import Buffer, ObjectFifo, Worker, kernels
-        from aie.iron.controlflow import range_
         from aie.iron.dataflow.objectfifo import StreamDims
         from aie.iron.device import Tile
 
         of_depth = 2
         dtype = bfloat16
         B_q, B_kv, d = self.B_q, self.B_kv, self.d
-        num_of_pipelines = self.num_of_pipelines
+        num_pipelines = self.num_pipelines
         n_join = self.pipelines_per_shim
         r, s, t = MAC_DIMS
 
@@ -299,7 +299,7 @@ class MHA(Operator):
 
         # Per-pipeline fifos between the three stages.
         memA, outA, memP, outP, scaleOF = [], [], [], [], []
-        for i in range(num_of_pipelines):
+        for i in range(num_pipelines):
             memA.append(ObjectFifo(qk_ty, depth=of_depth, name=f"memA{i}"))
             outA.append(
                 memA[i]
@@ -348,7 +348,7 @@ class MHA(Operator):
 
                         idx_buffer[0] += 1
                     idx_buffer[0] = 0
-                    idx_buffer[1] += num_of_pipelines
+                    idx_buffer[1] += num_pipelines
 
                     of_q.release(1)
 
@@ -405,7 +405,7 @@ class MHA(Operator):
 
                         idx_buffer[0] += 1
                     idx_buffer[0] = 0
-                    idx_buffer[1] += num_of_pipelines
+                    idx_buffer[1] += num_pipelines
 
         def batched_matmul_pv(
             of_p,
@@ -502,7 +502,7 @@ class MHA(Operator):
                         idx_buffer[0] += 1
 
                     idx_buffer[0] = 0
-                    idx_buffer[1] += num_of_pipelines
+                    idx_buffer[1] += num_pipelines
 
                     of_o_out.release(1)
 
@@ -512,16 +512,16 @@ class MHA(Operator):
         mha_rtps_list = [
             [
                 target.rtp(_I32x4, name=f"mha_rtpss_{i}_stage{j}")
-                for i in range(num_of_pipelines)
+                for i in range(num_pipelines)
             ]
             for j in range(3)
         ]
         worker_barrier_list = [
-            [target.barrier() for _ in range(num_of_pipelines)] for _ in range(3)
+            [target.barrier() for _ in range(num_pipelines)] for _ in range(3)
         ]
 
         matmul_workers, softmax_workers, matmul_pv_workers = [], [], []
-        for i in range(num_of_pipelines):
+        for i in range(num_pipelines):
             idx_buffer_qk = Buffer(
                 initial_value=np.zeros(shape=(2,), dtype=np.int32),
                 name=f"idx_buffer_qk_{i}",

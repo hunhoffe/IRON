@@ -6,6 +6,7 @@ from dataclasses import field
 from typing import Any
 
 import numpy as np
+from aie.iron import ObjectFifo
 from aie.utils.verify import Tolerance
 from ml_dtypes import bfloat16
 
@@ -16,7 +17,7 @@ from iron.common.tiling import DMA_BD_MAX_WRAP, Access, granule_elements
 
 class Repeat(Operator):
     """AIE-accelerated repeat-interleave operator: a memtile pass-through of
-    ``transfer_size`` elements, no cores.
+    ``tile_size`` elements, no cores.
 
     The repeat is entirely in the runtime sequence's descriptors: the input
     is re-read ``repeat`` times and the output interleaved. The input is
@@ -24,7 +25,7 @@ class Repeat(Operator):
     first axis either way; a row is ``seq * cols`` elements.
     """
 
-    # rows, cols, repeat, transfer_size. The sequence splits cols into chunks
+    # rows, cols, repeat, tile_size. The sequence splits cols into chunks
     # <= 1023 by the smallest divisor that gets under the hardware limit, so
     # cols on either side of 1023 take different paths and both need
     # covering. The llama arm is the shape the only caller dispatches:
@@ -37,12 +38,12 @@ class Repeat(Operator):
     # plausible.
     test = Testing(
         [
-            Case(dict(rows=8, cols=64, repeat=4, transfer_size=None)),
-            Case(dict(rows=8, cols=512, repeat=4, transfer_size=64)),
-            Case(dict(rows=4, cols=1024, repeat=2, transfer_size=None)),
-            Case(dict(rows=4, cols=2048, repeat=2, transfer_size=None), extensive=True),
+            Case(dict(rows=8, cols=64, repeat=4, tile_size=None)),
+            Case(dict(rows=8, cols=512, repeat=4, tile_size=64)),
+            Case(dict(rows=4, cols=1024, repeat=2, tile_size=None)),
+            Case(dict(rows=4, cols=2048, repeat=2, tile_size=None), extensive=True),
             Case(
-                dict(rows=8, cols=2048 * 64, repeat=4, transfer_size=64),
+                dict(rows=8, cols=2048 * 64, repeat=4, tile_size=64),
                 extensive=True,
             ),
         ],
@@ -54,18 +55,18 @@ class Repeat(Operator):
     repeat: int = param()
     seq: int = param(default=1)  # the stack's middle axis; absent when one
     out_rows: int = param(default=lambda op: op.rows * op.repeat, repr=False)
-    transfer_size: int = auto(repr=False)  # None: cols
+    tile_size: int = auto(repr=False)  # None: cols
     dtype: Any = field(default=bfloat16, repr=False)
 
-    x = In(rows, optional(seq), cols, dtype=dtype, tile=(transfer_size,))
-    y = Out(out_rows, optional(seq), cols, dtype=dtype, tile=(transfer_size,))
+    x = In(rows, optional(seq), cols, dtype=dtype, tile=(tile_size,))
+    y = Out(out_rows, optional(seq), cols, dtype=dtype, tile=(tile_size,))
 
     def validate(self) -> None:
         self.check_derived("out_rows")
         self._cols_split()  # reject an unsplittable cols at construction
 
     def resolve(self, dev):
-        return dataclasses.replace(self, transfer_size=self.transfer_size or self.cols)
+        return dataclasses.replace(self, tile_size=self.tile_size or self.cols)
 
     @property
     def row(self) -> int:
@@ -101,7 +102,6 @@ class Repeat(Operator):
         )
 
     def array(self, target) -> list:
-        from aie.iron import ObjectFifo
 
         fifo_in = ObjectFifo(self.x.tile, name="fifo_in", depth=2)
         fifo_out = fifo_in.cons().forward(name="fifo_out", depth=2)

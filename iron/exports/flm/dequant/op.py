@@ -6,6 +6,7 @@ import dataclasses
 import numpy as np
 from aie.dialects._aie_enum_gen import AIEArch
 from aie.helpers.util import v8bfp16ebs8
+from aie.iron import ObjectFifo, Worker
 from aie.iron.kernels import quant
 
 from iron.common import (
@@ -168,7 +169,6 @@ class DequantBFP(Operator):
     # -- the array -------------------------------------------------------------
 
     def array(self, target) -> list:
-        from aie.iron import ObjectFifo, Worker
 
         cols = self.cols
         qw_col_ty, out_half_ty = self.qw.tile, self.out.tile

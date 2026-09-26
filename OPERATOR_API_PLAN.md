@@ -290,6 +290,23 @@ today**.
 
 ## Progress
 
+- (this commit) Audit, batch D, second half: names and tests. One name
+  per concept: Copy's `num_aie_channels` is `num_channels`, Copy's and
+  Repeat's `transfer_size` is `tile_size` (it is the tile), MHA's
+  `num_of_pipelines` is `num_pipelines`. A `Testing` sweep is a callable
+  of the operator class, so the shared sweeps read the class's `tile_cap`
+  and shim budget and the elementwise templates carry the default sweep:
+  ReLU, GELU, LayerNorm, ElementwiseAdd and ElementwiseMul declare no
+  test of their own (a hello-world operator inherits one), Dequant's and
+  AXPY's byte-identical copies of the shared sweeps are the shared sweeps,
+  and the length list is written once. `WeightedRMSNorm.tile_cap = 4096`
+  says what its sweep hardcoded. The `aie.iron` imports inside eleven
+  `array()` bodies are module imports, as the template's are. Both suites
+  identical to baseline; the case sets on NPU2 are unchanged. Left, and
+  measured: `WeightedRMSNorm.array` and `MemCopy.array` restate the
+  template's array, Copy spells its channel split three times, MHA's
+  `via=` pins are inert on a built image, and nine spellings of an int32
+  RTP word type.
 - `04c3b6a` Audit, batch D, first half: structure. A `param()` may
   have a callable default, computed from the operator when neither the
   caller nor an operand's shape gives it (`out_rows = rows * repeat`), and

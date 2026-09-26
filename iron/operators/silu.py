@@ -13,8 +13,7 @@ class SiLU(UnaryElementwise):
     """AIE-accelerated SiLU activation function."""
 
     test = Testing(
-        channeled_unary_cases([1024, 2048, 4096, 8192], 4096, channels=None),
-        tolerance=Tolerance.relative(0.04, 1e-6),
+        channeled_unary_cases(channels=None), tolerance=Tolerance.relative(0.04, 1e-6)
     )
 
     # One channel per column: the LUT-based kernel is sized for it.

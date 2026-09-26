@@ -5,6 +5,8 @@
 from typing import ClassVar
 
 import numpy as np
+from aie.iron import ObjectFifo, Worker
+from aie.iron.controlflow import range_
 from aie.iron.kernels import eltwise, norm
 from aie.utils.verify import Tolerance
 
@@ -16,38 +18,30 @@ from iron.common.tiling import fifo_depth
 _I32 = np.ndarray[(1,), np.dtype[np.int32]]  # type: ignore[misc]
 
 
-def _cases(weighted):
+def _cases(cls):
     """Every column and channel split that divides each size within the
-    class's shim budget; the 2048 shape is the default suite. A weighted norm
-    also streams the weight row, one fifo per channel shared by its columns,
-    and its line cap is half.
+    class's shim budget and line cap; the 2048 shape is the default suite.
     """
-
-    def cases():
-        cls = WeightedRMSNorm if weighted else RMSNorm
-        dev = bound_device()
-        tile_cap = 4096 if weighted else 8192
-        out = []
-        for size in [1024, 2048, 4096, 8192]:
-            for channels in (1, 2):
-                for cols in range(1, cls.shim_columns(dev, channels) + 1):
-                    tile_size = min(size // (cols * channels), tile_cap)
-                    if tile_size * cols * channels != size:
-                        continue
-                    out.append(
-                        Case(
-                            dict(
-                                rows=size // tile_size,
-                                num_aie_columns=cols,
-                                num_channels=channels,
-                                tile_size=tile_size,
-                            ),
-                            extensive=size != 2048,
-                        )
+    dev = bound_device()
+    out = []
+    for size in [1024, 2048, 4096, 8192]:
+        for channels in (1, 2):
+            for cols in range(1, cls.shim_columns(dev, channels) + 1):
+                tile_size = min(size // (cols * channels), cls.tile_cap)
+                if tile_size * cols * channels != size:
+                    continue
+                out.append(
+                    Case(
+                        dict(
+                            rows=size // tile_size,
+                            num_aie_columns=cols,
+                            num_channels=channels,
+                            tile_size=tile_size,
+                        ),
+                        extensive=size != 2048,
                     )
-        return out
-
-    return cases
+                )
+    return out
 
 
 class RMSNorm(Elementwise):
@@ -60,7 +54,7 @@ class RMSNorm(Elementwise):
     knob the template declares.
     """
 
-    test = Testing(_cases(weighted=False), tolerance=Tolerance.relative(0.04, 1e-6))
+    test = Testing(_cases, tolerance=Tolerance.relative(0.04, 1e-6))
 
     rows: int = param()
     # Required here, though the base defaults it: every field is keyword-only.
@@ -113,10 +107,11 @@ class WeightedRMSNorm(RMSNorm):
 
     Two cores per (column, channel), pipelined: one normalizes, the next
     multiplies by the weight. The weight fifo is one per channel, shared by
-    every column in that channel, and each receives the whole weight row.
+    every column in that channel, and each receives the whole weight row,
+    which halves the line a core holds.
     """
 
-    test = Testing(_cases(weighted=True), tolerance=Tolerance.relative(0.04, 1e-6))
+    tile_cap: ClassVar[int] = 4096
 
     x = In(
         RMSNorm.rows,
@@ -144,8 +139,6 @@ class WeightedRMSNorm(RMSNorm):
         return True
 
     def array(self, target) -> list:
-        from aie.iron import ObjectFifo, Worker
-        from aie.iron.controlflow import range_
 
         tile_ty = self.x.tile
         weights_ty = self.w.tile

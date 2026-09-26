@@ -17,8 +17,8 @@ class LeakyReLU(UnaryElementwise):
         # The shape sweep at the default alpha, then two more alphas on one
         # small shape in the default suite, so alpha is seen to reach the
         # kernel.
-        lambda: (
-            channeled_unary_cases([1024, 2048, 4096, 8192], 4096, alpha=0.01)()
+        lambda cls: (
+            channeled_unary_cases(alpha=0.01)(cls)
             + [
                 Case(
                     dict(

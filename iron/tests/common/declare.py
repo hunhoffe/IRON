@@ -274,7 +274,7 @@ def test_a_stack_and_its_flat_spelling_move_the_same_descriptors():
     """
     from iron.operators.repeat import Repeat
 
-    flat = Repeat(rows=8, cols=2048 * 64, repeat=4, transfer_size=64)
+    flat = Repeat(rows=8, cols=2048 * 64, repeat=4, tile_size=64)
     stack = Repeat(rows=8, seq=2048, cols=64, repeat=4)
     assert stack.x.shape == (8, 2048, 64) and stack.y.shape == (32, 2048, 64)
     taps = []
@@ -283,7 +283,7 @@ def test_a_stack_and_its_flat_spelling_move_the_same_descriptors():
         op.resolved(FakeDev(cols=8)).sequence(rt)
         taps.append(rt.calls)
     assert taps[0] == taps[1]
-    assert stack.resolved(FakeDev(cols=8)).transfer_size == 64  # the row's last axis
+    assert stack.resolved(FakeDev(cols=8)).tile_size == 64  # the row's last axis
 
 
 def test_explain_says_what_a_build_compiles_in_and_what_it_takes_per_call():

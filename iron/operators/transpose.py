@@ -6,6 +6,8 @@ import dataclasses
 from collections.abc import Sequence
 
 import numpy as np
+from aie.iron import ObjectFifo, Worker
+from aie.iron.controlflow import range_
 from aie.iron.kernels import datamovement
 from aie.utils.verify import Tolerance
 from ml_dtypes import bfloat16
@@ -31,7 +33,7 @@ def _transformation_dims(sizes, strides) -> list[Sequence[int]]:
     return list(TensorAccessPattern((1, 1), 0, sizes, strides).transformation_dims)
 
 
-def _cases():
+def _cases(cls):
     m = n = 64
     out = []
     for M in (64, 2048):
@@ -181,8 +183,6 @@ class Transpose(Operator):
             )
 
     def array(self, target) -> list:
-        from aie.iron import ObjectFifo, Worker
-        from aie.iron.controlflow import range_
 
         m, n, s = self.m, self.n, self.s
         cols, chans = self.num_aie_columns, self.num_channels

@@ -5,7 +5,8 @@
 import dataclasses
 
 import numpy as np
-from aie.iron import kernels
+from aie.iron import ObjectFifo, Worker, kernels
+from aie.iron.controlflow import range_
 from aie.utils.verify import Tolerance
 from ml_dtypes import bfloat16
 
@@ -21,7 +22,7 @@ from iron.common import (
 from iron.common.testing import Case, Testing, device_columns
 
 
-def _cases():
+def _cases(cls):
     out = []
     for cols in [c for c in (1, 2, 4, 8) if c <= device_columns()]:
         for rows in (32, 64):
@@ -114,8 +115,6 @@ class RoPE(Operator):
             raise Incompatible("angle_rows must be divisible by num_aie_columns")
 
     def array(self, target) -> list:
-        from aie.iron import ObjectFifo, Worker
-        from aie.iron.controlflow import range_
 
         tile = self.x.tile
         n = self.num_aie_columns

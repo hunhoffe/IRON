@@ -48,7 +48,7 @@ def test_transfer_size_not_dividing_the_per_channel_share_is_rejected():
     no diagnostic.
     """
     with pytest.raises(Incompatible, match="must divide the per-channel transfer"):
-        Copy(**_flat(1024, num_aie_channels=4, transfer_size=512))  # every knob given
+        Copy(**_flat(1024, num_channels=4, tile_size=512))  # every knob given
 
 
 # Shapes whose M*N is divisible by every factor while one per-dimension quotient is not

@@ -39,7 +39,7 @@ def test_mha(seq_len, dim, num_heads, num_pipelines, num_kv_heads, npu_runtime):
         seq_len=seq_len,
         d=dim,
         num_KV_heads=num_kv_heads,
-        num_of_pipelines=num_pipelines,
+        num_pipelines=num_pipelines,
     )
 
     data = vectors(operator)
@@ -81,7 +81,7 @@ def test_arg_spec_matches_design_shapes(
         seq_len=seq_len,
         d=dim,
         num_KV_heads=num_kv_heads,
-        num_of_pipelines=num_pipelines,
+        num_pipelines=num_pipelines,
     )
     q, k, v, o = (math.prod(b.shape) for b in op.buffers)
 

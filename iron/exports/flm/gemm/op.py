@@ -26,6 +26,8 @@ from aie.dialects.aie import (
     get_target_model,  # pyright: ignore[reportAttributeAccessIssue]  # not in _aie.pyi
 )
 from aie.helpers.util import v8bfp16ebs8
+from aie.iron import Buffer, ObjectFifo, Worker
+from aie.iron.controlflow import range_
 from ml_dtypes import bfloat16
 
 from iron.common import (
@@ -412,8 +414,6 @@ class GEMM(Operator):
 
     def array(self, target) -> list:
         from aie.helpers.util import v8bfp16ebs8  # noqa: F401  (the array type)
-        from aie.iron import Buffer, ObjectFifo, Worker
-        from aie.iron.controlflow import range_
         from aie.iron.dataflow.objectfifo import StreamDims
 
         COLS, ROWS = self.cols, self.rows

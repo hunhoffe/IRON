@@ -14,6 +14,7 @@ from dataclasses import field
 from typing import Any
 
 import numpy as np
+from aie.iron import ObjectFifo
 from aie.utils.verify import Tolerance
 from ml_dtypes import bfloat16
 
@@ -28,24 +29,24 @@ from iron.common.tiling import Walk, legalize
 _N_KV, _HEAD_DIM, _SEQ = 8, 64, 128
 
 
-def _kv_slot(seq, slot, num_aie_channels=1) -> dict[str, Any]:
+def _kv_slot(seq, slot, num_channels=1) -> dict[str, Any]:
     """Kwargs writing one (N_KV, HEAD_DIM) token into cache slot ``slot``."""
     return dict(
         src=Walk.of((_N_KV, _HEAD_DIM)),
         dst=Walk.slice((_N_KV, seq, _HEAD_DIM), (slice(None), slot)),
         input_buffer_size=_N_KV * _HEAD_DIM,
         output_buffer_size=_N_KV * seq * _HEAD_DIM,
-        num_aie_channels=num_aie_channels,
+        num_channels=num_channels,
     )
 
 
-def _flat(size, num_aie_channels=1, transfer_size=None) -> dict[str, Any]:
+def _flat(size, num_channels=1, tile_size=None) -> dict[str, Any]:
     """Kwargs for a contiguous copy of ``size`` elements."""
     return dict(
         input_buffer_size=size,
         output_buffer_size=size,
-        num_aie_channels=num_aie_channels,
-        transfer_size=transfer_size,
+        num_channels=num_channels,
+        tile_size=tile_size,
     )
 
 
@@ -59,14 +60,14 @@ class Copy(Operator):
     """AIE-accelerated copy between two views of two buffers.
 
     Gathers by ``src`` and scatters by ``dst``, split across
-    ``num_aie_channels`` memtile pass-throughs (no cores) on the highest
+    ``num_channels`` memtile pass-throughs (no cores) on the highest
     non-unit axis. In a graph the walks come from the operands: ``Copy(k,
     keys[i][:, pos])``, ``Copy(x.transpose(1, 0, 2), y[:, :n])``; a per-call
     index on a view binds ``in_offset`` or ``out_offset``. Standalone,
     ``src``/``dst`` are given, or default to the whole of each buffer.
 
-    Each channel's descriptor carries 1/num_aie_channels of the walk, so the
-    fifo object is sized against the per-channel share (``transfer_size``). A
+    Each channel's descriptor carries 1/num_channels of the walk, so the
+    fifo object is sized against the per-channel share (``tile_size``). A
     descriptor shorter than the object starves the memtile's S2MM: it never
     completes an object, never releases the lock, and the drain never returns
     (ERT_CMD_STATE_TIMEOUT). An integer multiple is fine; it cycles the buffer.
@@ -80,21 +81,21 @@ class Copy(Operator):
     test = Testing(
         [
             Case(_flat(1024), id="contiguous"),
-            Case(_flat(1024, num_aie_channels=2), id="two_channels"),
-            Case(_flat(1024, num_aie_channels=4), id="four_channels"),
+            Case(_flat(1024, num_channels=2), id="two_channels"),
+            Case(_flat(1024, num_channels=4), id="four_channels"),
             Case(
-                _flat(1024, num_aie_channels=2, transfer_size=256),
+                _flat(1024, num_channels=2, tile_size=256),
                 id="two_channels_chunked",
             ),
-            Case(_flat(1024, transfer_size=256), id="chunked_transfer"),
+            Case(_flat(1024, tile_size=256), id="chunked_transfer"),
             Case(_kv_slot(_SEQ, 0), id="kv_slot0"),
             Case(_kv_slot(_SEQ, 5), id="kv_slot5"),
             Case(_kv_slot(_SEQ, _SEQ - 1), id="kv_slot_last"),
-            # The KV-cache write is what num_aie_channels exists to widen, so
+            # The KV-cache write is what num_channels exists to widen, so
             # it carries the strided arms too: the flat cases split a
             # stride-1 run, these split head_dim.
-            Case(_kv_slot(_SEQ, 5, num_aie_channels=2), id="kv_slot5_two_channels"),
-            Case(_kv_slot(_SEQ, 5, num_aie_channels=4), id="kv_slot5_four_channels"),
+            Case(_kv_slot(_SEQ, 5, num_channels=2), id="kv_slot5_two_channels"),
+            Case(_kv_slot(_SEQ, 5, num_channels=4), id="kv_slot5_four_channels"),
             Case(_kv_slot(2048, 1000), id="kv_llama_full", extensive=True),
         ],
         tolerance=Tolerance.exact(),
@@ -104,22 +105,22 @@ class Copy(Operator):
     src: Walk = param(default=lambda op: Walk.of((op.input_buffer_size,)))
     output_buffer_size: int = param(default=lambda op: op.src.elements, repr=False)
     dst: Walk = param(default=lambda op: Walk.of((op.output_buffer_size,)))
-    transfer_size: int = auto()  # None: the per-channel share of the walk
-    num_aie_channels: int = auto(1)
+    tile_size: int = auto()  # None: the per-channel share of the walk
+    num_channels: int = auto(1)
     dtype: Any = field(default=bfloat16, repr=False)
 
     x = In(
         input_buffer_size,
         dtype=dtype,
-        tile=(transfer_size,),
-        per=(num_aie_channels,),
+        tile=(tile_size,),
+        per=(num_channels,),
         depth=1,
     )
     y = Out(
         output_buffer_size,
         dtype=dtype,
-        tile=(transfer_size,),
-        per=(num_aie_channels,),
+        tile=(tile_size,),
+        per=(num_channels,),
         depth=1,
     )
     # Per-call addends on the two base addresses, in elements.
@@ -137,17 +138,16 @@ class Copy(Operator):
     def resolve(self, dev):
         """The transfer size is the per-channel share of the copy unless given."""
         assert self.src is not None  # validate() filled it
-        transfer_size = self.transfer_size or self.src.elements // self.num_aie_channels
-        return dataclasses.replace(self, transfer_size=transfer_size)
+        tile_size = self.tile_size or self.src.elements // self.num_channels
+        return dataclasses.replace(self, tile_size=tile_size)
 
     def uses_value(self, name: str) -> bool:
         # An offset is patched only when a graph binds a handle to it.
         return name in self.used_values
 
     def array(self, target) -> list:
-        from aie.iron import ObjectFifo
 
-        for c in range(self.num_aie_channels):
+        for c in range(self.num_channels):
             fifo_in = ObjectFifo(self.x.tile, name=f"fifo_in_{c}", depth=1)
             fifo_out = fifo_in.cons().forward(name=f"fifo_out_{c}", depth=1)
             self.x.lane(c).bind(fifo_in.prod())
@@ -155,7 +155,7 @@ class Copy(Operator):
         return []
 
     def compatible(self) -> None:
-        channels = self.num_aie_channels
+        channels = self.num_channels
         src, dst = self.src, self.dst
         for label, walk in (("src", src), ("dst", dst)):
             sizes, _ = _pad4(walk.sizes, walk.strides)
@@ -163,12 +163,12 @@ class Copy(Operator):
             if sizes[highest] % channels:
                 raise Incompatible(
                     f"the highest axis of {label} {walk} must be divisible by "
-                    f"num_aie_channels ({channels})"
+                    f"num_channels ({channels})"
                 )
         per_channel = src.elements // channels
-        if per_channel % self.transfer_size:
+        if per_channel % self.tile_size:
             raise Incompatible(
-                f"transfer_size {self.transfer_size} must divide the per-channel "
+                f"tile_size {self.tile_size} must divide the per-channel "
                 f"transfer {per_channel} (= {src.elements} / {channels} channels)"
             )
 
@@ -182,7 +182,7 @@ class Copy(Operator):
         """
         sizes, strides = _pad4(walk.sizes, walk.strides)
         highest = max(i for i, sz in enumerate(sizes) if sz >= 1)
-        channels = self.num_aie_channels
+        channels = self.num_channels
         share = sizes[highest] // channels
         split = sizes[:highest] + [share] + sizes[highest + 1 :]
         return [
@@ -211,7 +211,7 @@ class Copy(Operator):
             src,
             self.output_buffer_size,
             dst,
-            self.num_aie_channels,
+            self.num_channels,
             input_offset_addend=int(in_offset),
             output_offset_addend=int(out_offset),
             into=None if y is None else y.reshape(-1),
@@ -225,7 +225,7 @@ class Copy(Operator):
         in_off = self.in_offset if self.uses_value("in_offset") else None
         out_off = self.out_offset if self.uses_value("out_offset") else None
         with rt.group() as tg:
-            for c in range(self.num_aie_channels):
+            for c in range(self.num_channels):
                 for acc in ins[c]:
                     rt.fill(self.x.lane(c), acc, group=tg, offset_by=in_off)
                 for acc in outs[c]:
@@ -252,17 +252,17 @@ def _walk_offsets(sizes, strides, offset):
     return flat.reshape(-1)
 
 
-def _channel_offsets(walk: Walk, addend: int, num_aie_channels: int):
+def _channel_offsets(walk: Walk, addend: int, num_channels: int):
     """Per channel, the flat offsets of its share: design's split, exactly."""
     sizes, strides = _pad4(walk.sizes, walk.strides)
     highest = max(idx for idx, sz in enumerate(sizes) if sz >= 1)
-    per_channel = sizes[highest] // num_aie_channels
+    per_channel = sizes[highest] // num_channels
     split = sizes[:highest] + [per_channel] + sizes[highest + 1 :]
     return [
         _walk_offsets(
             split, strides, walk.offset + addend + c * per_channel * strides[highest]
         )
-        for c in range(num_aie_channels)
+        for c in range(num_channels)
     ]
 
 
@@ -271,7 +271,7 @@ def reference(
     src: Walk,
     output_buffer_size,
     dst: Walk,
-    num_aie_channels=1,
+    num_channels=1,
     input_offset_addend=0,
     output_offset_addend=0,
     into=None,
@@ -284,8 +284,8 @@ def reference(
     flat output buffer to scatter into in place; without it the output
     starts zeroed.
     """
-    gather = _channel_offsets(src, input_offset_addend, num_aie_channels)
-    scatter = _channel_offsets(dst, output_offset_addend, num_aie_channels)
+    gather = _channel_offsets(src, input_offset_addend, num_channels)
+    scatter = _channel_offsets(dst, output_offset_addend, num_channels)
     out = (
         np.zeros(int(output_buffer_size), dtype=input_flat.dtype)
         if into is None
