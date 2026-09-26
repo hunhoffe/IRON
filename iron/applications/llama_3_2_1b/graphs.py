@@ -100,6 +100,16 @@ def profile(config, max_seq_len) -> Profile:
     return p
 
 
+def prompt_rows(n: int, max_seq_len: int) -> int:
+    """The rows a prompt of ``n`` tokens runs at: ``n`` rounded up to what
+    MHA's pipelines take at once (64 rows each, eight of them at full
+    length), which the GEMMs' row block divides, at most the context
+    length. What the graph's ``rows`` takes.
+    """
+    unit = 64 * min(8, max_seq_len // 64)
+    return min(-(-n // unit) * unit, max_seq_len)
+
+
 class LlamaGraph:
     """The graph function and the state it closes over.
 
@@ -108,9 +118,13 @@ class LlamaGraph:
     decode's repeat reads. ``scale`` is the attention scale as a tensor,
     since the elementwise multiply takes one.
 
-    A prompt of ``rows`` rows needs ``rows`` a multiple of 512 (MHA's eight
-    pipelines of 64 rows, four GEMM row tiles of 64) and at most
-    ``max_seq_len``; a ``max_seq_len`` under 512 lowers both to fit it.
+    The prompt version is traced at ``max_seq_len`` rows and bounded per
+    call: ``rows`` (:func:`prompt_rows`) is how many of them a call runs,
+    so the work follows the prompt; ``vector_size`` is the true length,
+    which MHA masks to. A decode step reads the caches in full: the context
+    GEMV's reduction is the cache length and array-tier, so the value side
+    cannot shorten, and the key side alone would leave the CPU reference
+    nothing faithful to compute.
     """
 
     def __init__(self, config, max_seq_len):
@@ -175,7 +189,7 @@ class LlamaGraph:
             # GEMM's column-major B, the layout the GEMVs read too.
             return GEMM(x, weight, b_col_maj=True)
 
-        def prefill_block(i, lw, x, angles):
+        def prefill_block(i, lw, x, angles, rows, vector_size):
             n = x.shape[0]
             h = RMSNorm(x, lw.norm1)
             # <grouped query attention>
@@ -189,19 +203,22 @@ class LlamaGraph:
             # wrote them, into the first n rows of the cache's (G, L, D).
             Copy(
                 k.reshape(n, G, D).transpose(1, 0, 2),
-                keys[i][:, :n],
+                keys[i][:, :rows],
                 tile_size=1024,
             )
             Copy(
                 v.reshape(n, G, D).transpose(1, 0, 2),
-                values[i][:, :n],
+                values[i][:, :rows],
                 tile_size=1024,
             )
+            # Attention over the rows the call runs, masked to its true length.
             o = MHA(
                 q.reshape(n, H, D),
                 k.reshape(n, G, D),
                 v.reshape(n, G, D),
                 heads_interleaved=True,
+                s_q=vector_size,
+                s_kv=vector_size,
             )
             o = gemm(o.reshape(n, H * D), lw.o)
             # </grouped query attention>
@@ -218,14 +235,19 @@ class LlamaGraph:
             x,
             angles,
             *,
+            rows: Scratchpad[np.int32],
             cache_offset: Scratchpad[np.int32],
             vector_size: Scratchpad[np.int32],
             last: Scratchpad[np.int32],
         ):
             prompt = x.shape[0] > 1
+            if prompt:
+                # The first rows of the padded prompt are the ones this call
+                # runs; every operator below is bounded by them.
+                x, angles = x[:rows], angles[:rows]
             for i, lw in enumerate(W.layers):
                 if prompt:
-                    x = prefill_block(i, lw, x, angles)
+                    x = prefill_block(i, lw, x, angles, rows, vector_size)
                 else:
                     x = decode_block(i, lw, x, angles, cache_offset, vector_size)
             if prompt:

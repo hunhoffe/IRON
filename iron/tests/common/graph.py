@@ -401,7 +401,7 @@ def test_llama_decode_traces_and_tunes():
     assert kinds == per_block * cfg.n_layers + ["WeightedRMSNorm", "GEMV"]
     assert t.input_args == ["x", "angles"] and t.output_args == ["out"]
     # One function, so every version takes every value; one token binds two.
-    assert [v.name for v in t.values] == ["cache_offset", "vector_size", "last"]
+    assert [v.name for v in t.values] == ["rows", "cache_offset", "vector_size", "last"]
     assert {b.value.name for b in t.bindings} == {"cache_offset", "vector_size"}
     # The weights are named from the model; the caches are pinned state.
     assert "layers.1.attn.q.weight" in t.pinned and "keys_cache_0" in t.pinned
@@ -479,7 +479,18 @@ def test_llama_prompt_traces_over_the_same_caches():
     tail = ["Copy", "WeightedRMSNorm", "GEMV"]
     assert kinds == per_block * cfg.n_layers + tail
     assert t.input_args == ["x", "angles"] and t.output_args == ["out"]
-    assert [v.name for v in t.values] == ["cache_offset", "vector_size", "last"]
+    assert [v.name for v in t.values] == ["rows", "cache_offset", "vector_size", "last"]
+    # One slice at the top bounds every operator of every block by the rows
+    # the call runs; the tail (the last row's copy, the norm and the head)
+    # runs one row and is not.
+    by_rows = [op for op, *_ in t.runlist if "rows" in op.bound_values.values()]
+    assert len(by_rows) == len(per_block) * cfg.n_layers
+    mha = next(op for op, *_ in t.runlist if type(op).__name__ == "MHA")
+    assert mha.bound_values == {
+        "valid": "rows",
+        "s_q": "vector_size",
+        "s_kv": "vector_size",
+    }
     # The caches are the states a token's version reads: the same objects,
     # so one arena holds them once for both.
     token = g.trace(cfg, 1)
@@ -493,9 +504,12 @@ def test_llama_prompt_traces_over_the_same_caches():
     K = {op.K for op in gemms}
     assert K == {cfg.emb_dim, cfg.hidden_dim, cfg.n_heads * cfg.head_dim}
     # The last-row copy is the one operator bound to the per-call offset.
-    assert [(type(b.op).__name__, b.member.name) for b in t.bindings] == [
-        ("Copy", "in_offset")
+    offsets = [
+        (type(b.op).__name__, b.member.name)
+        for b in t.bindings
+        if b.member.name.endswith("_offset")
     ]
+    assert offsets == [("Copy", "in_offset")]
     for op in t.operators:
         op.resolved(aie_utils.get_current_device())
 
@@ -615,8 +629,9 @@ def test_a_bound_travels_through_reshape_and_transpose():
     assert b.transpose(1, 0, 2).bounds == {1: (n, 1)}
     with pytest.raises(ValueError, match="does not divide"):
         b.reshape(32, 16, 4)  # a leading axis no run of the others makes
-    with pytest.raises(TypeError, match="bounded per call; slice what it bounds"):
-        b[0]
+    assert b[0].bounds == {} and b[0].shape == (8, 4)  # one row: no bound
+    with pytest.raises(TypeError, match="bounded per call on axis 0"):
+        b[0:2]
     with pytest.raises(ValueError, match="from its start"):
         x[2:n]
 

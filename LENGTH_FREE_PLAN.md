@@ -108,17 +108,23 @@ follows the prompt.
 ```python
 @iron.graph(names_from=W, profile=self.profile)
 def forward(x, angles, *, rows: Scratchpad[np.int32], cache_offset: ..., vector_size: ..., last: ...):
-    x = x[:rows]                       # bounds every operator below
+    if prompt:
+        x, angles = x[:rows], angles[:rows]   # bounds every operator below
     ...
 ```
 
-`npu.py` passes `rows=n` for a prompt and `rows=1` for a decode step; the
-prompt version is traced at `max_seq_len` rows as today. Decode's cache
-reads become `keys[i][:, :context]` with a fourth per-call value.
+`npu.py` passes `rows=prompt_rows(n)` for a prompt, `n` rounded up to what
+MHA's pipelines take at once (512 rows at full length), and `rows=1` for a
+decode step; the prompt version is traced at `max_seq_len` rows as today,
+and `vector_size` stays the true length, which MHA masks to.
 
-Out of reach on this branch: the context GEMV's `K` is the cache length and
-array-tier (the kernel's reduction), so Transpose and that GEMV keep reading
-the full cache; only the key side and the scores follow the context.
+Decode reads the caches in full. The context GEMV's `K` is the cache length
+and array-tier (the kernel's reduction), so the value side cannot shorten;
+the key side alone could, but a chain shortened on one side and full on the
+other has no faithful CPU mirror, since the reference computes on the
+sliced arrays. So the per-token cost stays proportional to `max_seq_len`;
+a context-proportional decode needs the reduction length made a per-call
+word inside the GEMV kernel, which is a kernel change.
 
 ## Steps
 
@@ -135,12 +141,28 @@ sets), pyright and ruff clean, and a Progress entry.
 3. **GEMV, Copy, Repeat.** Hand-written sequences take `size_by`.
 4. **GEMM and MHA.** Compute bounds read by the cores; arrays drain past
    the bound.
-5. **llama.** `x[:rows]` at the top of `forward`; `npu.py` passes the
-   length; decode's cache prefix. The host-parity test checks the bounded
-   trace against the CPU reference at several prompt lengths.
+5. **llama.** `x[:rows]` at the top of `forward`'s prompt branch; `npu.py`
+   passes the length. The host-parity test checks a prompt shorter than
+   the context against the CPU reference.
 
 ## Progress
 
+- `(this commit)` Step 5, the llama graph. `forward` takes `rows`; a
+  prompt is `x[:rows]` and `angles[:rows]` at the top of its branch, and
+  that one slice bounds every operator of every block (the last row's
+  copy, the final norm and the head run one row and are not); the cache
+  writes take `keys[i][:, :rows]`, and MHA takes `s_q`/`s_kv` from
+  `vector_size`, the true length, so the padding rows a call runs are
+  masked as before. `npu.py` passes `rows=prompt_rows(n)`, `n` rounded up
+  to MHA's pipeline rows, and `rows=1` for a decode step. A per-call index
+  on a bounded axis (`x[last]`) drops the bound; a slice of it is refused.
+  A value the graph binds itself is not also derived. The CPU reference
+  runs the prompt at its rows, and a prompt of eight tokens in a context
+  of 1024 matches the oracle at 512 rows, then decodes from the caches it
+  wrote. Decode's cache prefix was tried and dropped: see The graph. The
+  toolchain conftest turns the missing size kind into a skip for any
+  build that reaches it, so the llama prompt's lowering and full-ELF
+  tests skip there rather than fail. Both suites identical to baseline.
 - `af9cf27` Step 4, GEMM and MHA bound their compute. Both stream
   every row as before (their A and Q patterns use all four descriptor
   dimensions) and say so with `extent_unit() == 0`, so no word of tiles per

@@ -113,8 +113,4 @@ def test_a_bounded_operator_lowers_or_waits_for_the_size_kind(
     except (ValueError, Unresolvable, Incompatible) as e:
         pytest.skip(f"not for {device.resolve().name}: {e}")
     op.use_value(bound, "n")  # what x[:n] in a graph does
-    try:
-        lower(op, tmp_path)
-    except NotImplementedError as e:
-        assert "size-kind scratchpad parameter" in str(e)
-        pytest.skip(str(e))
+    lower(op, tmp_path)  # or the conftest's skip, naming the missing kind

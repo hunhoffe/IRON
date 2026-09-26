@@ -4,10 +4,11 @@
 """Llama 3.2 1B on the NPU: one graph function, one image per input shape.
 
 The prompt and each decode step are calls of the one ``forward``
-(:class:`.graphs.LlamaGraph`) at two shapes: a prompt runs padded to
-``max_seq_len`` rows, a decode step at one row. Every version shares the function's scratch arena, so
-the weights are uploaded once and the caches a prompt writes are the caches
-decode reads.
+(:class:`.graphs.LlamaGraph`) at two shapes: a prompt in the
+``max_seq_len``-row version, bounded per call to the rows it needs, a
+decode step at one row. Every version shares the function's scratch arena,
+so the weights are uploaded once and the caches a prompt writes are the
+caches decode reads.
 
 No torch: the weights are the mapped checkpoint, the embedding a numpy
 gather, the logits numpy. The accuracy check, which needs the torch CPU
@@ -21,7 +22,7 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 from . import harness
-from .graphs import LlamaGraph
+from .graphs import LlamaGraph, prompt_rows
 
 MAX_SEQ_LEN = 2048
 
@@ -86,11 +87,13 @@ class AIELlama:
         x = np.zeros((rows, config.emb_dim), dtype=bfloat16)
         x[:n] = config.weights.embed(token_ids)
         # Every call passes every per-call value; a version reads the ones
-        # its operators bind. Here: the last prompt row's logits only,
-        # selected by its row.
+        # its operators bind. Here: the rows the prompt runs at, its true
+        # length for the masks, and the last prompt row's logits, selected
+        # by its row.
         return self.forward_graph(
             x,
             self.angles[:rows],
+            rows=prompt_rows(n, rows),
             cache_offset=0,
             vector_size=n,
             last=n - 1,
@@ -107,6 +110,7 @@ class AIELlama:
         return self.forward_graph(
             config.weights.embed([token_id]).reshape(1, config.emb_dim),
             self.angles[position : position + 1],
+            rows=1,
             cache_offset=position,
             vector_size=position + 1,
             last=0,

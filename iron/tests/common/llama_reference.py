@@ -26,7 +26,7 @@ import pytest
 from ml_dtypes import bfloat16
 
 from iron.applications.llama_3_2_1b import harness
-from iron.applications.llama_3_2_1b.graphs import LlamaGraph
+from iron.applications.llama_3_2_1b.graphs import LlamaGraph, prompt_rows
 from iron.applications.llama_3_2_1b.harness import LlamaModelState
 from iron.applications.llama_3_2_1b.npu import AIELlama
 from iron.tests.common.llama_model import Config as _Config
@@ -65,7 +65,12 @@ def graph_prefill(config, graph, prompt):
     x = np.zeros((rows, E), dtype=bfloat16)
     x[:n] = _embed(config, prompt)
     logits = graph.graph.reference(
-        x, config.angles[:rows], cache_offset=0, vector_size=n, last=n - 1
+        x,
+        config.angles[:rows],
+        rows=prompt_rows(n, rows),
+        cache_offset=0,
+        vector_size=n,
+        last=n - 1,
     )
     return torch.from_numpy(logits.reshape(-1).astype(np.float32))
 
@@ -80,7 +85,12 @@ def graph_decode(config, graph, tokens, pos, *, vector_size=None):
         angles = config.angles[pos : pos + 1]
         n = pos + 1 if vector_size is None else vector_size(step, pos)
         logits = graph.graph.reference(
-            x, angles, cache_offset=pos, vector_size=n, last=0
+            x,
+            angles,
+            rows=1,
+            cache_offset=pos,
+            vector_size=n,
+            last=0,
         )
         out.append(torch.from_numpy(logits.reshape(-1).astype(np.float32)))
         pos += 1
@@ -256,3 +266,25 @@ def test_the_determinism_check_finds_the_references_deterministic(cpu):
     npu = application(config)
     prompts = [prompt.numpy().reshape(1, -1), prompt.numpy()[::-1].reshape(1, -1)]
     assert harness.check_determinism(config, prompts, npu.forward, 3, 3) == 0
+
+
+def test_a_short_prompt_runs_at_its_own_rows():
+    """A context longer than a prompt's row block: the prompt runs at its
+    rows (``prompt_rows``), not the context, and its logits are the oracle's;
+    decode continues from the caches it wrote.
+    """
+
+    class Longer(_Config):
+        context_length = 1024
+
+    torch.manual_seed(2)
+    config = Longer()
+    prompt = torch.randint(0, config.vocab_size, (8,))
+    assert prompt_rows(8, config.context_length) == 512 < config.context_length
+    graph = llama_graph(config)
+    first = oracle(config, prompt)[-1]
+    got_first = graph_prefill(config, graph, prompt)
+    _assert_close([got_first], [first])
+    token = first.argmax().reshape(1)
+    (got_next,) = graph_decode(config, graph, token, 8)
+    _assert_close([got_next], [oracle(config, torch.cat([prompt, token]))[-1]])

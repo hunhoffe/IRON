@@ -715,13 +715,17 @@ class MHA(Operator):
 
         return matmul_workers + softmax_workers + matmul_pv_workers
 
-    def reference(self, Q, K, V):
+    def reference(self, Q, K, V, s_q=None, s_kv=None):
         """CPU reference: causal attention per head, K and V repeated over each
         query group. Rows past ``seq_len`` (the padding) come out as zeros;
         the real rows never attend to them, causality masks them. In the
         interleaved layout the operands are ``(seq, heads, d)`` and so is O.
+        ``s_q``/``s_kv`` are the per-call lengths when a graph binds them.
         """
         kv_heads, seq_len, seq_pad = self._lengths
+        if s_q is not None:
+            seq_len = int(s_q)
+        keys = int(s_kv) if s_kv is not None else None
         if self.heads_interleaved:
             Q, K, V = (np.swapaxes(t, 0, 1) for t in (Q, K, V))
         groups = self.num_heads // kv_heads
@@ -734,9 +738,11 @@ class MHA(Operator):
         scores = np.matmul(q, np.swapaxes(k, -2, -1)) / np.sqrt(np.float32(self.d))
         seq = scores.shape[-1]
         scores += np.triu(np.full((seq, seq), -np.inf, dtype=np.float32), 1)
+        if keys is not None and keys < seq:
+            scores[..., keys:] = -np.inf  # keys past the call's length
         e = np.exp(scores - scores.max(axis=-1, keepdims=True))
         out = np.matmul(e / e.sum(axis=-1, keepdims=True), v).astype(Q.dtype)
-        if seq_len < seq_pad:
+        if seq_len < out.shape[1]:
             out = out.copy()
             out[:, seq_len:] = 0
         if self.heads_interleaved:

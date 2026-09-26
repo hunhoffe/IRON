@@ -131,8 +131,14 @@ class Handle:
         if len(entries) > rank:
             raise IndexError(f"too many indices for shape {self.shape}")
         entries += [slice(None)] * (rank - len(entries))
-        if self.bounds:
-            raise TypeError(f"{self!r} is bounded per call; slice what it bounds")
+        # A bounded axis may be indexed (one row of it, ``x[last]``), which
+        # drops the bound; it may not be sliced again.
+        for axis in self.bounds:
+            if isinstance(entries[axis], slice):
+                raise TypeError(
+                    f"{self!r} is bounded per call on axis {axis}; index it or "
+                    f"slice what it bounds"
+                )
         index_by = None
         static, shape, bounds = [], [], {}
         for axis, (entry, n) in enumerate(zip(entries, self.shape)):
@@ -253,27 +259,16 @@ def _rescale_bounds(h: Handle, shape) -> dict[int, tuple["Value", int]]:
     old, new = h.shape[0], int(shape[0])
     if new == old:
         return {0: (value, scale)}
-    if new % old == 0 and _leading_product(h.shape, new // old):
+    if new % old == 0:
+        # Each row becomes new // old rows: as many more of them are valid.
         return {0: (value, scale * (new // old))}
-    factor = old // new if old % new == 0 else 0
-    if factor and _leading_product(tuple(shape), factor) and scale % factor == 0:
-        return {0: (value, scale // factor)}
+    if old % new == 0 and scale % (old // new) == 0:
+        # Rows are grouped old // new to a row: as many fewer are valid.
+        return {0: (value, scale // (old // new))}
     raise ValueError(
         f"cannot reshape {h!r} to {list(shape)}: the bound on its leading axis "
         f"({value.name} x {scale}) does not divide into the new leading axis"
     )
-
-
-def _leading_product(shape, factor: int) -> bool:
-    """Whether some run of axes after the first multiplies to ``factor``."""
-    p = 1
-    for n in shape[1:]:
-        p *= n
-        if p == factor:
-            return True
-        if p > factor:
-            break
-    return factor == 1
 
 
 class Value:

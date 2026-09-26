@@ -45,7 +45,9 @@ def test_prefill_graph_operators_lower_with_their_value(tmp_path):
     L = cfg.context_length
     graph = LlamaGraph(cfg, L)
     traced = graph.trace(cfg, L)
-    assert [b.value.name for b in traced.bindings] == ["last"]
+    # Every block is bound by the rows the call runs; the last row once.
+    assert {b.value.name for b in traced.bindings} == {"rows", "vector_size", "last"}
+    assert [b.value.name for b in traced.bindings].count("last") == 1
     _lower_all(traced, tmp_path)
 
 

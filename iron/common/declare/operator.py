@@ -869,7 +869,11 @@ class Operator(metaclass=_OperatorMeta):
                     if m.name in self.bound_extents
                     else f"{m.field.name}, unbounded"
                 )
-            elif isinstance(m, Value) and m.name in per_call_derived:
+            elif (
+                isinstance(m, Value)
+                and m.name in per_call_derived
+                and m.name not in self.bound_values
+            ):
                 how = "per call, derived from a bounded extent"
             elif (
                 isinstance(m, Value)

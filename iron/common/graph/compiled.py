@@ -442,8 +442,8 @@ def _words(traced: TracedGraph) -> list[tuple[str, Any, Callable[[Mapping], Any]
         def at(v, extents=extents):
             return {name: v[graph_name] * scale for name, graph_name, scale in extents}
 
-        for name in sorted(op._per_call_derived()):
-            word = op.value(name)
+        for name in sorted(op._per_call_derived() - op.bound_values.keys()):
+            word = op.value(name)  # a value the graph binds itself is above
             symbol = device_symbol(op, word)
             words.append(
                 (
