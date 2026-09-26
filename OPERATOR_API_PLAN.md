@@ -290,7 +290,7 @@ today**.
 
 ## Progress
 
-- (this commit) Audit, batch C: the rest of the verified items. A
+- `aec8ed7` Audit, batch C: the rest of the verified items. A
   profile's scope token lives in the context, not on the profile, so one
   profile entered from several threads is safe. The top-level `iron`
   module is typed (`TYPE_CHECKING` imports beside the lazy table, a
