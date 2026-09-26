@@ -9,8 +9,7 @@ from aie.iron.kernels import datamovement
 from aie.iron.kernels.datamovement import expand_ref
 from ml_dtypes import bfloat16
 
-from iron.common import UnaryElementwise
-from iron.common.declare import In, auto, param
+from iron.common import In, UnaryElementwise, auto, param
 from iron.common.testing import Case, Testing, device_columns
 
 

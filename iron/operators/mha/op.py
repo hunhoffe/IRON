@@ -22,7 +22,7 @@ import dataclasses
 import numpy as np
 from ml_dtypes import bfloat16
 
-from iron.common.declare import (
+from iron.common import (
     In,
     Incompatible,
     Operator,

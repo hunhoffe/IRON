@@ -46,10 +46,8 @@ declaration's dimension fields, :mod:`.operator` the class itself, and
 :mod:`.naming` is how an instance spells its own label.
 """
 
-from .bound import BoundBuffer, BoundStream, BoundValue, BufferView
 from .field import (
     DeclarationError,
-    DimRef,
     Incompatible,
     Unresolvable,
     auto,
@@ -57,36 +55,25 @@ from .field import (
     param,
     select,
 )
-from .infer import infer, infer_kwargs
-from .member import DispatchTime, In, Out, Scratchpad, Shim, Value, ValueSpec, Xclbin
+from .member import DispatchTime, In, Out, Scratchpad, Shim, Value, Xclbin
 from .operator import Operator
-from .shim import get_shim_dma_limit
 from .spec import from_spec
 
 __all__ = [
-    "BoundBuffer",
-    "BoundStream",
-    "BoundValue",
-    "BufferView",
     "DeclarationError",
-    "DimRef",
     "DispatchTime",
     "In",
     "Incompatible",
     "Operator",
     "Out",
     "Scratchpad",
-    "Value",
     "Shim",
     "Unresolvable",
-    "ValueSpec",
+    "Value",
     "Xclbin",
-    "param",
-    "from_spec",
-    "get_shim_dma_limit",
-    "infer",
-    "infer_kwargs",
-    "optional",
-    "select",
     "auto",
+    "from_spec",
+    "optional",
+    "param",
+    "select",
 ]

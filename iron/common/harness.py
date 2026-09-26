@@ -20,7 +20,7 @@ from aie.utils.benchmark import run_iters
 from aie.utils.verify import Tolerance, compare, nearly_equal
 from ml_dtypes import bfloat16
 
-from iron.common.declare import Operator
+from .declare import Operator
 
 
 @dataclasses.dataclass

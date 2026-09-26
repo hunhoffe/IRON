@@ -8,7 +8,7 @@ from aie.dialects._aie_enum_gen import AIEArch
 from aie.helpers.util import v8bfp16ebs8
 from aie.iron.kernels import quant
 
-from iron.common.declare import (
+from iron.common import (
     In,
     Incompatible,
     Operator,

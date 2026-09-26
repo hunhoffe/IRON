@@ -59,18 +59,24 @@ run in CI with mlir-aie's configuration.
 Hello world (rung 1: the template owns array and sequence):
 
 ```python
-from iron import BinaryElementwise, inline
+import numpy as np
+from iron.common import BinaryElementwise
+
+VADD = """
+extern "C" void vadd(bfloat16 *a, bfloat16 *b, bfloat16 *y, int n) {
+    for (int i = 0; i < n; i++) y[i] = a[i] + b[i];
+}"""
 
 class VectorAdd(BinaryElementwise):
     """y = a + b."""
-    kernel = inline("vadd", """
-        extern "C" void vadd(bfloat16 *a, bfloat16 *b, bfloat16 *y, int n) {
-            for (int i = 0; i < n; i++) y[i] = a[i] + b[i];
-        }""")                                   # arg_types from the operands
+
+    def kernel(self, target):
+        tiles = [self.a.tile, self.b.tile, self.y.tile, np.int32]
+        return target.kernel("vadd", tiles, source_text=VADD)
 
     def reference(self, a, b):
         return a + b
-# onto a shipped factory: kernel = eltwise.add_sized
+# onto a shipped factory: return eltwise.add_sized(self.line_size)
 ```
 
 Rung 2 overrides `array(target)`; rung 3 overrides `sequence(rt)`. Each rung
@@ -284,7 +290,26 @@ today**.
 
 ## Progress
 
-- (this commit) Step 7, last: ruff and pyright cover the whole `iron`
+- `4b12cca` Step 8: exports. `iron.common.declare` exports the sixteen
+  names an operator is written with (`Operator`, `In`, `Out`, `Value`,
+  `Scratchpad`, `DispatchTime`, `Shim`, `Xclbin`, `param`, `auto`,
+  `optional`, `select`, `from_spec` and the three errors), down from 25 (32
+  before the merge); the bound members, `BufferView`, `DimRef`,
+  `ValueSpec`, `infer`/`infer_kwargs` and `get_shim_dma_limit` are the
+  library's and are imported from their modules. `iron.common` is the one
+  doorway for an author: those sixteen plus the elementwise templates and
+  `DesignGenerator`; `Artifacts`/`Design`/`Step` re-exports with no user
+  are gone, and with them the import-order workaround they existed for
+  (`image/fusion.py` now imports `DesignGenerator` from its module, which
+  is where the design-image cycle actually closed). Every file outside
+  `iron/common` imports from `iron.common`, none from `.declare`.
+  RMSNorm's device sweep asks its class for the shim budget instead of
+  re-deriving it. pyright: 0 errors, 0 warnings. Both suites identical to
+  baseline. Measured and left: `iron.common.image/design/graph` each
+  re-export names nothing outside the package imports (image: 25 of 29);
+  they are library-internal doorways, pruned in a step of their own if
+  wanted.
+- `7f8575b` Step 7, last: ruff and pyright cover the whole `iron`
   package (operators, exports, applications, every test), not only
   `iron/common`; both are clean (pyright: 0 errors). What it took: a
   metaclass `__call__` typed under `TYPE_CHECKING` so a positional operand

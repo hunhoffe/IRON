@@ -9,7 +9,7 @@ import numpy as np
 from aie.iron.kernels import activation, linalg
 from ml_dtypes import bfloat16
 
-from iron.common.declare import (
+from iron.common import (
     In,
     Incompatible,
     Operator,

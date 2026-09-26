@@ -13,7 +13,8 @@ from aie.iron import Program, Runtime, ScratchpadParameter
 from aie.iron.device import AnyShimTile
 from aie.iron.runtime.endpoint import RuntimeEndpoint
 
-from ..declare import BoundValue, Operator
+from ..declare import Operator
+from ..declare.bound import BoundValue
 from ..kernels import kernels_dir
 from ..tracing import maybe_enable_trace
 from .generator import DesignGenerator

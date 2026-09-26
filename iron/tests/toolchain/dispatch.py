@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 
 import iron
-from iron.common.declare import Scratchpad
+from iron.common import Scratchpad
 from iron.common.image.jit_compile import DispatchStream
 from iron.tests.toolchain.tools import requires
 

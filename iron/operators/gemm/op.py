@@ -10,7 +10,7 @@ from aie.iron import kernels
 from aie.iron.dataflow.objectfifo import StreamDims
 from ml_dtypes import bfloat16
 
-from iron.common.declare import (
+from iron.common import (
     In,
     Incompatible,
     Operator,

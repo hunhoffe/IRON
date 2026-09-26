@@ -22,8 +22,7 @@ import numpy as np
 from aie.utils import bfp
 from ml_dtypes import bfloat16
 
-from ..declare import ValueSpec
-from ..declare.member import _Value
+from ..declare.member import ValueSpec, _Value
 from ..image.allocator import ArenaPlan
 from ..image.callable import ScratchArena
 from ..image.packaging import Plan, plan

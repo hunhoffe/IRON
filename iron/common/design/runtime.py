@@ -17,8 +17,14 @@ from aie.extras.dialects import arith
 from aie.ir import IntegerType
 from aie.iron import TaskGroup, sync_parameters
 
-from ..declare import BoundBuffer, BoundStream, BoundValue, BufferView, Operator
-from ..declare.bound import _StreamSlot
+from ..declare import Operator
+from ..declare.bound import (
+    BoundBuffer,
+    BoundStream,
+    BoundValue,
+    BufferView,
+    _StreamSlot,
+)
 from ..tiling import Access, encode, legalize, split, whole
 from .target import Target
 

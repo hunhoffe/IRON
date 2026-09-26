@@ -17,7 +17,7 @@ import numpy as np
 from aie.utils.verify import Tolerance
 from ml_dtypes import bfloat16
 
-from iron.common.declare import In, Incompatible, Operator, Out, Scratchpad, auto, param
+from iron.common import In, Incompatible, Operator, Out, Scratchpad, auto, param
 from iron.common.testing import Case, Testing
 from iron.common.tiling import Walk, legalize
 

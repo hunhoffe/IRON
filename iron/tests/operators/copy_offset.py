@@ -19,7 +19,7 @@ from aie.iron.device import from_name
 from ml_dtypes import bfloat16
 
 import iron
-from iron.common.declare import Scratchpad
+from iron.common import Scratchpad
 from iron.operators.copy import Copy
 
 # Llama's KV-cache write, shrunk: (n_kv_groups, seq, head_dim), one token's

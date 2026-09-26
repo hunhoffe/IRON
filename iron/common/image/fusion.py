@@ -13,7 +13,7 @@ from aie import ir
 from aie.dialects import aie, aiex, memref
 from aie.extras.context import mlir_mod_ctx
 
-from ..design import DesignGenerator
+from ..design.generator import DesignGenerator
 
 RESET_DEVICE = "reset_device"
 

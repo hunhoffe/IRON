@@ -12,7 +12,7 @@ construction. Host-only: what is checked is the refusal, not a dispatch.
 import pytest
 from aie.iron.device import from_name
 
-from iron.common.declare import Incompatible
+from iron.common import Incompatible
 from iron.operators.copy import Copy, _flat
 from iron.operators.repeat import Repeat
 from iron.operators.transpose import Transpose

@@ -19,7 +19,7 @@ _LAZY = {
     "XCLBIN": "iron.common.image.packaging",
 }
 
-__all__ = sorted(_LAZY)
+__all__ = sorted(_LAZY)  # pyright: ignore[reportUnsupportedDunderAll]
 
 
 def __getattr__(name):

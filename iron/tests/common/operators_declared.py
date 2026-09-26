@@ -12,7 +12,7 @@ import importlib
 import pytest
 
 import iron.operators as ops
-from iron.common.declare import Operator
+from iron.common import Operator
 
 FACTORIES = {"SwiGLUDecode", "SwiGLUPrefill"}
 

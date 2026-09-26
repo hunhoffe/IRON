@@ -13,7 +13,9 @@ import numpy as np
 from aie.utils import bfp
 from ml_dtypes import bfloat16
 
-from ..declare import BoundValue, Operator, infer, infer_kwargs
+from ..declare import Operator
+from ..declare.bound import BoundValue
+from ..declare.infer import infer, infer_kwargs
 from ..declare.member import _Buffer as _Buffer_
 from ..declare.member import _Value
 from ..design import device_symbol

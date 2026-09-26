@@ -8,8 +8,7 @@ import numpy as np
 from aie.iron.kernels import eltwise, norm
 from aie.utils.verify import Tolerance
 
-from iron.common import Elementwise
-from iron.common.declare import In, Out, auto, get_shim_dma_limit, param
+from iron.common import Elementwise, In, Out, auto, param
 from iron.common.device import bound_device
 from iron.common.testing import Case, Testing
 from iron.common.tiling import bank_elements
@@ -19,23 +18,19 @@ _I32 = np.ndarray[(1,), np.dtype[np.int32]]  # type: ignore[misc]
 
 def _cases(weighted):
     """Every column and channel split that divides each size within the
-    ShimDMA budget; the 2048 shape is the default suite. A weighted norm
-    also streams the weight row, one fifo per channel across the columns,
-    so its budget is channels * (columns + 1) and its line cap is half.
+    class's shim budget; the 2048 shape is the default suite. A weighted norm
+    also streams the weight row, one fifo per channel shared by its columns,
+    and its line cap is half.
     """
 
     def cases():
+        cls = WeightedRMSNorm if weighted else RMSNorm
         dev = bound_device()
-        limit = get_shim_dma_limit(dev)
         tile_cap = 4096 if weighted else 8192
         out = []
         for size in [1024, 2048, 4096, 8192]:
-            for cols in range(1, dev.cols + 1):
-                for channels in (1, 2):
-                    if cols * channels > limit:
-                        continue
-                    if weighted and channels * (cols + 1) > limit:
-                        continue
+            for channels in (1, 2):
+                for cols in range(1, cls.shim_columns(dev, channels) + 1):
                     tile_size = min(size // (cols * channels), tile_cap)
                     if tile_size * cols * channels != size:
                         continue

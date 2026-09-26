@@ -21,7 +21,7 @@ import subprocess
 
 import pytest
 
-from iron.common.declare import Incompatible, Unresolvable
+from iron.common import Incompatible, Unresolvable
 from iron.tests.common.cases import CASES
 from iron.tests.toolchain.tools import AIECC, requires
 

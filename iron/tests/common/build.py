@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 from aie.helpers.util import v8bfp16ebs8
 
-from iron.common.declare import In, Operator, Out, Shim, Value, auto, optional, param
+from iron.common import In, Operator, Out, Shim, Value, auto, optional, param
 from iron.common.design import Sequence, transfers
 from iron.common.tiling import Access
 
@@ -511,7 +511,7 @@ class _ForeignRecorder:
 
 
 def test_a_shipped_image_declares_its_pins_and_parameter_block():
-    from iron.common.declare import DeclarationError, Value, Xclbin
+    from iron.common import DeclarationError, Value, Xclbin
     from iron.exports.flm.gemm.shipped import Shipped
 
     op = Shipped(M=256, K=1024, N=1152)

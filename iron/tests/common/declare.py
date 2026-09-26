@@ -17,9 +17,8 @@ import pytest
 from ml_dtypes import bfloat16
 
 import iron
-from iron.common.declare import (
+from iron.common import (
     DeclarationError,
-    DimRef,
     DispatchTime,
     In,
     Incompatible,
@@ -31,10 +30,11 @@ from iron.common.declare import (
     Value,
     auto,
     from_spec,
-    infer,
     optional,
     param,
 )
+from iron.common.declare.field import DimRef
+from iron.common.declare.infer import infer
 
 
 class FakeDev:

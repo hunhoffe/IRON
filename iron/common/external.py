@@ -37,8 +37,8 @@ from aie.ir import BF16Type, F32Type, IntegerType, MemRefType
 from aie.utils.compile import NPU_CACHE_HOME
 from ml_dtypes import bfloat16
 
-from .declare import BoundBuffer, BoundStream, Operator
-from .declare.bound import _StreamSlot
+from .declare import Operator
+from .declare.bound import BoundBuffer, BoundStream, _StreamSlot
 from .design import Transfers
 from .tiling import Access
 

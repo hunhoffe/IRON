@@ -25,7 +25,7 @@ import numpy as np
 from aie.iron.kernels import eltwise
 from aie.utils.verify import Tolerance
 
-from iron.common.declare import In, Operator, Out, Unresolvable, auto, param
+from iron.common import In, Operator, Out, Unresolvable, auto, param
 from iron.common.testing import Case, Testing, device_columns
 from iron.common.tiling import Access, bank_elements
 

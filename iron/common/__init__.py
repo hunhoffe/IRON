@@ -1,11 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Common utilities and base classes for IRON operators."""
+"""What an operator is written with.
 
-# First: image.artifacts before design, or design's import of image completes
-# a cycle back into design before DesignGenerator exists.
-from .image.artifacts import Artifacts, Design, Step  # isort: skip
+The declaration vocabulary (:mod:`.declare`): :class:`Operator` and the
+fields, operands and values a class body declares. The elementwise templates
+(:mod:`.elementwise`), which own the array and the sequence of an operator
+that names only its kernel. :class:`DesignGenerator` and :func:`from_spec`,
+for an operator whose design is written by hand.
+"""
 
 from .declare import (
     DeclarationError,
@@ -29,10 +32,8 @@ from .design import DesignGenerator
 from .elementwise import BinaryElementwise, Elementwise, UnaryElementwise
 
 __all__ = [
-    "Artifacts",
     "BinaryElementwise",
     "DeclarationError",
-    "Design",
     "DesignGenerator",
     "DispatchTime",
     "Elementwise",
@@ -41,15 +42,14 @@ __all__ = [
     "Operator",
     "Out",
     "Scratchpad",
-    "UnaryElementwise",
-    "Value",
     "Shim",
-    "Step",
+    "UnaryElementwise",
     "Unresolvable",
+    "Value",
     "Xclbin",
-    "param",
+    "auto",
     "from_spec",
     "optional",
+    "param",
     "select",
-    "auto",
 ]

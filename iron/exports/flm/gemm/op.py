@@ -28,7 +28,7 @@ from aie.dialects.aie import (
 from aie.helpers.util import v8bfp16ebs8
 from ml_dtypes import bfloat16
 
-from iron.common.declare import (
+from iron.common import (
     In,
     Incompatible,
     Operator,

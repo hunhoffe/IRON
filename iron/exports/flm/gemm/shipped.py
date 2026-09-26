@@ -35,7 +35,7 @@ from typing import ClassVar
 import numpy as np
 from ml_dtypes import bfloat16
 
-from iron.common.declare import In, Out, Shim, Unresolvable, Value, Xclbin, auto, select
+from iron.common import In, Out, Shim, Unresolvable, Value, Xclbin, auto, select
 from iron.common.tiling import Access
 from iron.exports.flm.gemm.design import K_TILE, M_TILE, Epilogue
 from iron.exports.flm.gemm.op import GEMM, _device_name

@@ -9,7 +9,7 @@ import numpy as np
 from aie.utils.verify import Tolerance
 from ml_dtypes import bfloat16
 
-from iron.common.declare import In, Operator, Out, auto, param
+from iron.common import In, Operator, Out, auto, param
 from iron.common.testing import Case, Testing
 from iron.common.tiling import DMA_BD_MAX_WRAP, Access, granule_elements
 

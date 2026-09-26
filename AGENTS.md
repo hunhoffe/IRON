@@ -380,7 +380,7 @@ state it closes over, and keyword-only parameters annotated
 
 ```python
 import iron
-from iron.common.declare import Scratchpad
+from iron.common import Scratchpad
 
 kv = iron.state((n_kv_groups, max_len, head_dim))
 

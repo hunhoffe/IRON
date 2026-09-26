@@ -34,7 +34,7 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 import iron
-from iron.common.declare import Scratchpad
+from iron.common import Scratchpad
 from iron.operators.copy import Copy
 from iron.operators.elementwise_add import ElementwiseAdd
 from iron.operators.elementwise_mul import ElementwiseMul

@@ -21,7 +21,7 @@ import aie.utils as aie_utils
 import pytest
 
 import iron.operators as catalog
-from iron.common.declare import Operator
+from iron.common import Operator
 from iron.common.harness import run_test, vectors
 from iron.common.testing import Case, Testing
 

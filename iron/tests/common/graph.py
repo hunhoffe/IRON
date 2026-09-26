@@ -17,7 +17,7 @@ import pytest
 from ml_dtypes import bfloat16
 
 import iron
-from iron.common.declare import DispatchTime, Scratchpad
+from iron.common import DispatchTime, Scratchpad
 from iron.common.graph import Handle, TracedGraph
 from iron.operators.copy import Copy
 from iron.operators.elementwise_add import ElementwiseAdd

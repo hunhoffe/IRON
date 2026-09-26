@@ -10,7 +10,7 @@ import numpy as np
 from aie.iron.kernels import activation
 from aie.utils.verify import Tolerance
 
-from iron.common.declare import (
+from iron.common import (
     In,
     Incompatible,
     Operator,
