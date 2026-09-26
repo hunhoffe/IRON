@@ -34,7 +34,7 @@ _OPERATOR_MODULES = {
     "SiLU": "silu",
     "Softmax": "softmax",
     "DynamicSoftmax": "softmax",
-    "StridedCopy": "strided_copy",
+    "Copy": "copy",
     "SwiGLUDecode": "swiglu_decode.op",
     "SwiGLUPrefill": "swiglu_prefill.op",
     "Tanh": "tanh",

@@ -87,13 +87,13 @@ class AIELlama:
         x[:n] = config.weights.embed(token_ids)
         # Every call passes every per-call value; a version reads the ones
         # its operators bind. Here: the last prompt row's logits only,
-        # selected by its element offset.
+        # selected by its row.
         return self.forward_graph(
             x,
             self.angles[:rows],
             cache_offset=0,
             vector_size=n,
-            last=(n - 1) * config.emb_dim,
+            last=n - 1,
         ).numpy()
 
     def _decode(self, token_id, position):
@@ -107,7 +107,7 @@ class AIELlama:
         return self.forward_graph(
             config.weights.embed([token_id]).reshape(1, config.emb_dim),
             self.angles[position : position + 1],
-            cache_offset=position * config.head_dim,
+            cache_offset=position,
             vector_size=position + 1,
             last=0,
         ).numpy()

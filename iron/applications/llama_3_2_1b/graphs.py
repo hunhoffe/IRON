@@ -46,7 +46,7 @@ from iron.operators.rms_norm import RMSNorm
 from iron.operators.rope.op import RoPE
 from iron.operators.silu import SiLU
 from iron.operators.softmax import Softmax
-from iron.operators.strided_copy import StridedCopy
+from iron.operators.copy import Copy
 from iron.operators.transpose import Transpose
 
 
@@ -84,10 +84,10 @@ class LlamaGraph:
         self.max_seq_len = L
         self.num_aie_columns = cols
         self.keys = [
-            iron.state((G, L * D), name=f"keys_cache_{i}") for i in range(len(W.layers))
+            iron.state((G, L, D), name=f"keys_cache_{i}") for i in range(len(W.layers))
         ]
         self.values = [
-            iron.state((G, L * D), name=f"values_cache_{i}")
+            iron.state((G, L, D), name=f"values_cache_{i}")
             for i in range(len(W.layers))
         ]
         # 1/sqrt(head_dim) over every score, as the elementwise multiply wants it.
@@ -107,16 +107,6 @@ class LlamaGraph:
                 tile_size_output=tile_out,
             )
 
-        row_into_cache = dict(
-            input_sizes=(G, D),
-            input_strides=(D, 1),
-            input_offset=0,
-            output_sizes=(1, G, D),
-            output_strides=(0, L * D, 1),
-            output_offset=0,  # base; the per-call addend is cache_offset
-            num_aie_channels=1,
-        )
-
         def decode_block(i, lw, x, angles, cache_offset, vector_size):
             h = RMSNorm(x, lw.norm1)
             # <grouped query attention>
@@ -125,13 +115,11 @@ class LlamaGraph:
             v = gemv(lw.v, h, tile_out=D // 2)
             q = RoPE(q.reshape(H, D), angles)
             k = RoPE(k.reshape(G, D), angles)
-            StridedCopy(k, keys[i], out_offset=cache_offset, **row_into_cache)
-            StridedCopy(
-                v.reshape(G, D), values[i], out_offset=cache_offset, **row_into_cache
-            )
+            Copy(k, keys[i][:, cache_offset])
+            Copy(v.reshape(G, D), values[i][:, cache_offset])
             # Every head sees its group's keys and values.
-            k_all = Repeat(keys[i], repeat=H // G, transfer_size=D)
-            v_all = Repeat(values[i], repeat=H // G, transfer_size=D)
+            k_all = Repeat(keys[i].reshape(G, L * D), repeat=H // G, transfer_size=D)
+            v_all = Repeat(values[i].reshape(G, L * D), repeat=H // G, transfer_size=D)
             scores = gemv(k_all.reshape(H, L, D), q, tile_out=L // cols)
             scores = ElementwiseMul(
                 scores, scale, num_aie_columns=cols, tile_size=L // cols
@@ -182,20 +170,6 @@ class LlamaGraph:
         def norm(x, weight):
             return RMSNorm(x, weight, num_aie_columns=cols, num_channels=1)
 
-        def rows_into_cache(n):
-            # (n, G, D), the heads interleaved per token as the projection
-            # wrote them, into the first n rows of the cache's (G, L, D).
-            return dict(
-                input_sizes=(G, n, D),
-                input_strides=(D, G * D, 1),
-                input_offset=0,
-                output_sizes=(G, n, D),
-                output_strides=(L * D, D, 1),
-                output_offset=0,
-                transfer_size=1024,
-                num_aie_channels=1,
-            )
-
         def prefill_block(i, lw, x, angles):
             n = x.shape[0]
             h = norm(x, lw.norm1)
@@ -206,8 +180,18 @@ class LlamaGraph:
             # One angle row per position, applied to that position's heads.
             q = RoPE(q.reshape(n * H, D), angles, num_aie_columns=cols)
             k = RoPE(k.reshape(n * G, D), angles, num_aie_columns=cols)
-            StridedCopy(k, keys[i], **rows_into_cache(n))
-            StridedCopy(v, values[i], **rows_into_cache(n))
+            # (n, G, D), the heads interleaved per token as the projection
+            # wrote them, into the first n rows of the cache's (G, L, D).
+            Copy(
+                k.reshape(n, G, D).transpose(1, 0, 2),
+                keys[i][:, :n],
+                transfer_size=1024,
+            )
+            Copy(
+                v.reshape(n, G, D).transpose(1, 0, 2),
+                values[i][:, :n],
+                transfer_size=1024,
+            )
             o = MHA(
                 q.reshape(n, H, D),
                 k.reshape(n, G, D),
@@ -230,17 +214,6 @@ class LlamaGraph:
             down = gemm(act, lw.down)
             return ElementwiseAdd(x, down, num_aie_columns=cols, tile_size=E)
 
-        last_row = dict(
-            input_sizes=(1, E),
-            input_strides=(E, 1),
-            input_offset=0,  # base; the per-call addend is `last`
-            output_sizes=(1, E),
-            output_strides=(E, 1),
-            output_offset=0,
-            output_buffer_size=E,
-            num_aie_channels=1,
-        )
-
         @iron.graph(names_from=W)
         def forward(
             x,
@@ -257,9 +230,8 @@ class LlamaGraph:
                 else:
                     x = decode_block(i, lw, x, angles, cache_offset, vector_size)
             if prompt:
-                # The last prompt row alone, selected by its element offset:
-                # its logits are all the host reads.
-                x = StridedCopy(x, in_offset=last, **last_row).reshape(1, E)
+                # The last prompt row alone: its logits are all the host reads.
+                x = Copy(x[last]).reshape(1, E)
             x = RMSNorm(x, W.norm)
             return gemv(W.out_head, x, tile_out=32)
 

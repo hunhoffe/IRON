@@ -17,12 +17,12 @@ from ml_dtypes import bfloat16
 import iron
 from iron.common.declare import DispatchTime, Scratchpad
 from iron.common.graph import Handle, TracedGraph
+from iron.operators.copy import Copy
 from iron.operators.elementwise_add import ElementwiseAdd
 from iron.operators.elementwise_mul import ElementwiseMul
 from iron.operators.gemv.op import GEMV, GEMVOverlay
 from iron.operators.rms_norm import RMSNorm, WeightedRMSNorm
 from iron.operators.silu import SiLU
-from iron.operators.strided_copy import StridedCopy
 
 E, H = 2048, 8192
 
@@ -51,7 +51,7 @@ def device():
 
 def _ffn():
     w_gate, w_up, w_down, norm_w = z(H, E), z(H, E), z(E, H), z(E)
-    cache = iron.state((4, 1024 * 64))
+    cache = iron.state((4, 1024, 64))
 
     @iron.graph
     def ffn(x, *, pos: Scratchpad[np.int32]):
@@ -63,17 +63,9 @@ def _ffn():
             w_up, h, num_aie_columns=8, tile_size_input=4, tile_size_output=H // 8
         )
         act = ElementwiseMul(SiLU(gate), up)
-        StridedCopy(  # writes state; returns nothing
-            act[: 4 * 64],
-            cache,
-            input_sizes=(4, 64),
-            input_strides=(64, 1),
-            input_offset=0,
-            output_sizes=(1, 4, 64),
-            output_strides=(0, 1024 * 64, 1),
-            output_offset=0,
-            out_offset=pos,
-        )
+        Copy(
+            act[: 4 * 64].reshape(4, 64), cache[:, pos]
+        )  # writes state; returns nothing
         return GEMV(w_down, act, num_aie_columns=8, tile_size_output=E // 8)
 
     return ffn, dict(
@@ -91,7 +83,7 @@ def test_tracing_records_the_runlist_with_names_from_roles():
         ("GEMV", "w2", "weightedrmsnorm0", "gemv2"),
         ("SiLU", "gemv1", "silu3"),
         ("ElementwiseMul", "silu3", "gemv2", "elementwisemul4"),
-        ("StridedCopy", "elementwisemul4[0:512]", "state0"),
+        ("Copy", "elementwisemul4[0:512]", "state0"),
         ("GEMV", "w3", "elementwisemul4", "out"),
     ]
     assert t.input_args == ["x"] and t.output_args == ["out"]
@@ -117,7 +109,7 @@ def test_overlays_are_shared_by_design_key_and_extents_are_not():
         "GEMVOverlay",
         "SiLUOverlay",
         "ElementwiseMulOverlay",
-        "StridedCopyOverlay",
+        "CopyOverlay",
         "GEMVOverlay",
     ]
     assert (gate.M, gate.ov.K, gate.num_batches) == (H, E, 1)
@@ -128,7 +120,7 @@ def test_per_call_values_bind_to_the_operator_and_enable_it():
     t = ffn.trace(x=(1, E))
     (binding,) = t.bindings
     op, value = binding.op, binding.value
-    assert type(op) is StridedCopy and binding.member.name == "out_offset"
+    assert type(op) is Copy and binding.member.name == "out_offset"
     assert value.name == "pos" and value.kind == "scratchpad"
     assert op.uses_value("out_offset") and not op.uses_value("in_offset")
     assert [v.name for v in op.values] == ["out_offset"]
@@ -180,16 +172,7 @@ def test_slices_are_views_into_the_parent_in_bytes():
 
 
 def test_binding_two_handles_to_one_instance_is_an_error():
-    copy = StridedCopy(
-        input_sizes=(64,),
-        input_strides=(1,),
-        input_offset=0,
-        output_sizes=(64,),
-        output_strides=(1,),
-        output_offset=0,
-        input_buffer_size=64,
-        output_buffer_size=64,
-    )
+    copy = Copy(input_buffer_size=64, output_buffer_size=64)
 
     @iron.graph
     def two(x, *, a: Scratchpad[np.int32], b: Scratchpad[np.int32]):
@@ -351,8 +334,8 @@ def test_llama_decode_traces_and_tunes():
         "GEMV",
         "RoPE",
         "RoPE",
-        "StridedCopy",
-        "StridedCopy",
+        "Copy",
+        "Copy",
         "Repeat",
         "Repeat",
         "GEMV",
@@ -417,8 +400,8 @@ def test_llama_prompt_traces_over_the_same_caches():
         "GEMM",
         "RoPE",
         "RoPE",
-        "StridedCopy",
-        "StridedCopy",
+        "Copy",
+        "Copy",
         "MHA",
         "GEMM",
         "ElementwiseAdd",
@@ -430,7 +413,7 @@ def test_llama_prompt_traces_over_the_same_caches():
         "GEMM",
         "ElementwiseAdd",
     ]
-    tail = ["StridedCopy", "WeightedRMSNorm", "GEMV"]
+    tail = ["Copy", "WeightedRMSNorm", "GEMV"]
     assert kinds == per_block * cfg.n_layers + tail
     assert t.input_args == ["x", "angles"] and t.output_args == ["out"]
     assert [v.name for v in t.values] == ["cache_offset", "vector_size", "last"]
@@ -448,23 +431,14 @@ def test_llama_prompt_traces_over_the_same_caches():
     assert K == {cfg.emb_dim, cfg.hidden_dim, cfg.n_heads * cfg.head_dim}
     # The last-row copy is the one operator bound to the per-call offset.
     assert [(type(b.op).__name__, b.member.name) for b in t.bindings] == [
-        ("StridedCopy", "in_offset")
+        ("Copy", "in_offset")
     ]
     for op in t.operators:
         op.resolved(aie_utils.get_current_device())
 
 
 def test_a_bound_value_survives_tuning():
-    copy = StridedCopy(
-        input_sizes=(64,),
-        input_strides=(1,),
-        input_offset=0,
-        output_sizes=(64,),
-        output_strides=(1,),
-        output_offset=0,
-        input_buffer_size=64,
-        output_buffer_size=64,
-    )
+    copy = Copy(input_buffer_size=64, output_buffer_size=64)
 
     @iron.graph
     def f(x, *, a: Scratchpad[np.int32]):

@@ -30,26 +30,15 @@ def _graph():
     """A softmax with a per-call row length, then a copy into a cache at a
     per-call offset: one core-read value and one offset value."""
     from iron.operators.softmax import Softmax
-    from iron.operators.strided_copy import StridedCopy
+    from iron.operators.copy import Copy
 
     R, C, L = 16, 256, 4
-    cache = iron.state((R, L * C), name="cache")
+    cache = iron.state((R, L, C), name="cache")
 
     @iron.graph
     def g(x, *, n: Scratchpad[np.int32], pos: Scratchpad[np.int32]):
         y = Softmax(x, vector_size=n)
-        StridedCopy(
-            y,
-            cache,
-            out_offset=pos,
-            input_sizes=(R, C),
-            input_strides=(C, 1),
-            input_offset=0,
-            output_sizes=(1, R, C),
-            output_strides=(0, L * C, 1),
-            output_offset=0,
-            num_aie_channels=1,
-        )
+        Copy(y, cache[:, pos])
         return y
 
     return g, (R, C)
@@ -73,13 +62,13 @@ def test_values_become_dispatch_time_kernels_at_each_step(device):
         type(op).__name__: chain.op_insts_path_map[id(op)]
         for op in net.sequence.unique_operators()
     }
-    assert set(streams) == {"DynamicSoftmax", "StridedCopy"}
+    assert set(streams) == {"DynamicSoftmax", "Copy"}
     for name, stream in streams.items():
         assert isinstance(stream, DispatchStream), f"{name} has a static stream"
         assert Path(stream.lib_path).exists(), f"{name}: no dispatch library"
         assert len(stream.params) == 1, (name, stream.params)
     # The graph's symbols are the kernels' parameter names.
-    symbols = {symbol for _, symbol, _ in net.symbols}
+    symbols = {symbol for _, symbol, _, _ in net.symbols}
     assert symbols == {s.params[0] for s in streams.values()}
     assert Path(net.image).stat().st_size > 0
     assert net._callable is None

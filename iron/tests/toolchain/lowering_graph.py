@@ -129,17 +129,14 @@ PREFILL = dict(
 
 
 def _reorder(sizes, in_strides, out_strides, **kw):
-    from iron.operators.strided_copy import StridedCopy
+    from iron.common.tiling import Walk
+    from iron.operators.copy import Copy
 
     n = int(np.prod(sizes))
-    return StridedCopy(
-        input_sizes=sizes,
-        input_strides=in_strides,
-        input_offset=0,
+    return Copy(
+        src=Walk(0, tuple(sizes), tuple(in_strides)),
+        dst=Walk(0, tuple(sizes), tuple(out_strides)),
         input_buffer_size=n,
-        output_sizes=sizes,
-        output_strides=out_strides,
-        output_offset=0,
         output_buffer_size=n,
         **kw,
     )

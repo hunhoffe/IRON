@@ -264,9 +264,10 @@ class CompiledGraph:
         self.traced = traced
         self.plan = plan
         self.arena = arena
-        # (graph value name, device symbol, dtype) per bound value.
+        # (graph value name, device symbol, dtype, scale) per bound value: a
+        # per-call index on a view reaches the device as an element offset.
         self.symbols = [
-            (b.value.name, b.symbol, b.value.dtype) for b in traced.bindings
+            (b.value.name, b.symbol, b.value.dtype, b.scale) for b in traced.bindings
         ]
         # Equal design keys are one build (two projections on one array).
         # compile() builds the image; the runtime that loads it is made on
@@ -405,8 +406,8 @@ class CompiledGraph:
             return
         self.callable.write_values(
             {
-                symbol: np.dtype(dtype).type(values[name])
-                for name, symbol, dtype in self.symbols
+                symbol: np.dtype(dtype).type(values[name] * scale)
+                for name, symbol, dtype, scale in self.symbols
             }
         )
 

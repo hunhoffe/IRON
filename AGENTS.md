@@ -373,17 +373,17 @@ state it closes over, and keyword-only parameters annotated
 import iron
 from iron.common.declare import Scratchpad
 
-kv = iron.state((n_kv_groups, max_len * head_dim))
+kv = iron.state((n_kv_groups, max_len, head_dim))
 
 @iron.graph(names_from=model)
 def decode(x, angles, *, pos: Scratchpad[np.int32]):
     h = RMSNorm(x, model.norm.weight)             # a bare tensor is a weight
     k = RoPE(GEMV(model.wk, h), angles)          # class calls infer overlay and extent
-    StridedCopy(k, kv, out_offset=pos, ...)      # a state passed as an output is written
+    Copy(k, kv[:, pos])                          # a state passed as an output is written
     return GEMV(model.wo, h)
 
 net = decode.compile(dev, x=(1, emb), angles=(1, head_dim))
-logits = net(x_tok, ang_tok, pos=n * head_dim)
+logits = net(x_tok, ang_tok, pos=n)
 ```
 
 Overlays with equal `design_key()` are one array; operators with equal keys

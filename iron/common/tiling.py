@@ -465,6 +465,15 @@ def view(shape: Sequence[int], index) -> tuple[int, list[int], list[int]]:
     rejected. Adjacent contiguous dimensions are merged, so a slice that
     selects whole rows collapses to one linear run.
     """
+    offset, dims = _walk(shape, index)
+    merged = _merged(dims) or [(1, 1)]
+    return offset, [n for n, _ in merged], [s for _, s in merged]
+
+
+def _walk(shape: Sequence[int], index) -> tuple[int, list[tuple[int, int]]]:
+    """``(offset, [(size, stride), ...])`` of a basic slice, one entry per
+    sliced axis (an integer index drops its axis), nothing merged.
+    """
     shape = tuple(int(s) for s in shape)
     if not isinstance(index, tuple):
         index = (index,)
@@ -488,14 +497,56 @@ def view(shape: Sequence[int], index) -> tuple[int, list[int], list[int]]:
             if not -n <= i < n:
                 raise IndexError(f"axis {axis}: index {i} out of range for {n}")
             offset += (i % n) * stride
-    # merge adjacent dims that are contiguous: (n1, s1), (n2, s2) with s1 == n2*s2
-    merged: list[tuple[int, int]] = []
-    for n, s in dims:
-        if merged and merged[-1][1] == n * s:
-            pn, _ = merged[-1]
-            merged[-1] = (pn * n, s)
-        else:
-            merged.append((n, s))
-    if not merged:
-        merged = [(1, 1)]
-    return offset, [n for n, _ in merged], [s for _, s in merged]
+    return offset, dims
+
+
+@dataclass(frozen=True)
+class Walk:
+    """A strided walk over a flat buffer: where a view's elements are.
+
+    ``offset`` in elements; ``sizes`` and ``strides`` from the outermost axis
+    in, adjacent contiguous axes merged, so a whole buffer is one run. What
+    a DMA is given, once legalized for the shim.
+    """
+
+    offset: int
+    sizes: tuple[int, ...]
+    strides: tuple[int, ...]
+
+    @classmethod
+    def of(cls, shape) -> "Walk":
+        """The whole of a row-major buffer of ``shape``, axis by axis."""
+        shape = tuple(int(n) for n in shape) or (1,)
+        return cls(0, shape, tuple(prod(shape[i + 1 :]) for i in range(len(shape))))
+
+    @classmethod
+    def slice(cls, shape, key) -> "Walk":
+        """``buffer[key]`` over a row-major buffer of ``shape``."""
+        offset, dims = _walk(shape, key)
+        dims = dims or [(1, 1)]
+        return cls(offset, tuple(n for n, _ in dims), tuple(s for _, s in dims))
+
+    @classmethod
+    def permuted(cls, shape, axes) -> "Walk":
+        """``buffer.transpose(axes)`` over a row-major buffer of ``shape``."""
+        shape = tuple(int(n) for n in shape)
+        if sorted(axes) != list(range(len(shape))):
+            raise ValueError(f"axes {axes} do not permute a shape of rank {len(shape)}")
+        row = [prod(shape[i + 1 :]) for i in range(len(shape))]
+        return cls(0, tuple(shape[a] for a in axes), tuple(row[a] for a in axes))
+
+    @property
+    def elements(self) -> int:
+        return prod(self.sizes)
+
+    @property
+    def contiguous(self) -> bool:
+        """One dense run: what a sub-buffer is."""
+        merged = _merged(list(zip(self.sizes, self.strides))) or [(1, 1)]
+        return len(merged) == 1 and merged[0][1] == 1
+
+    def __str__(self) -> str:
+        return (
+            f"o{self.offset}s{'x'.join(map(str, self.sizes))}"
+            f"t{'x'.join(map(str, self.strides))}"
+        )

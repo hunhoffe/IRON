@@ -16,11 +16,11 @@ its overlay and extent from its arguments (deduplicating overlays by
     def decode(x, angles, *, pos: Scratchpad[np.int32]):
         h = RMSNorm(x, model.norm.weight)
         k = RoPE(GEMV(wk, h), angles)
-        StridedCopy(k, kv[0], out_offset=pos)
+        Copy(k, kv[0][:, pos])
         return GEMV(wo, h)
 
     net = decode.compile(dev, x=(1, emb), angles=(1, head_dim))
-    logits = net(x_tok, ang_tok, pos=n * head_dim)
+    logits = net(x_tok, ang_tok, pos=n)
 
 Tracing produces a :class:`TracedGraph`: the runlist, the buffer names and
 sizes, the value bindings. It is pure bookkeeping and needs no toolchain.

@@ -256,7 +256,21 @@ today**.
   (38 files, +390/−509). Failure set identical to baseline.
 - `610c926` Step 1: the bases are dataclasses to a checker; pyright in CI on
   the declare package. Members generic in their bound form; `Self` returns.
-- (this commit) `Operator.copy()` re-records what `compatible()` writes
+- (this commit) Step 4: views and `Copy`. A graph handle takes numpy's
+  basic indexing plus a per-call `Scratchpad` index on one axis, and
+  `transpose`; a contiguous static region is a sub-buffer as before, any
+  other view a `Walk` over the parent that `Copy` alone takes (its
+  `accept_views`). `Copy(src, dst=None)` replaces `StridedCopy`'s eight
+  fields with two walks; the per-call index binds `in_offset`/`out_offset`
+  with the axis stride as its scale, applied where the host writes the
+  value. States are viewed inside a graph function (a handle when tracing,
+  a remembered key over the host tensor in the reference). llama: caches
+  `(G, L, D)`, `Copy(k, keys[i][:, cache_offset])`, prefill through a
+  transpose view, `Copy(x[last]).reshape(1, E)`; the host passes rows.
+  Descriptors identical to the pinned ones; llama's reference tests pass;
+  both suites identical to baseline. Reshapes in the llama graph: 13 → 11
+  (the two `Repeat` reshapes wait on rank-3 operands).
+- `51e807f` `Operator.copy()` re-records what `compatible()` writes
   (GEMV's rows per column, an `init=False` field a `replace()` resets):
   the toolchain run caught the core loop running zero times, which the
   device-free run cannot see, so the toolchain run is now a gate of every

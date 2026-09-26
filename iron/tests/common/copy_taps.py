@@ -1,59 +1,52 @@
 # SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""The descriptors StridedCopy issues for the copies llama makes, pinned.
+"""The descriptors Copy issues for the copies llama makes, pinned.
 
-llama's graphs spell every copy as sizes, strides and offsets; a copy that
-takes a slice of the destination instead must issue these same descriptors,
-so they are recorded here as (offset, sizes, strides) per channel, exactly.
+llama's graphs used to spell every copy as sizes, strides and offsets; the
+descriptors those issued are recorded here as (offset, sizes, strides) per
+channel, exactly, and the same copies spelled as views must issue them.
 """
+
+from typing import Any
 
 import aie.utils as aie_utils
 import pytest
 
-from iron.operators.strided_copy import StridedCopy, _kv_slot
+from iron.common.tiling import Walk
+from iron.operators.copy import Copy, _kv_slot
 
 G, D, L, E, N = 8, 64, 128, 2048, 16  # kv groups, head dim, context, embed, rows
 
-# One token's (G, D) keys into row `cache_offset` of the (G, L, D) cache.
+# One token's (G, D) keys into row `pos` of the (G, L, D) cache:
+# Copy(k, keys[:, pos]), the row a per-call value.
 ROW_INTO_CACHE = dict(
-    input_sizes=(G, D),
-    input_strides=(D, 1),
-    input_offset=0,
+    src=Walk.of((G, D)),
+    dst=Walk.slice((G, L, D), (slice(None), 0)),
     input_buffer_size=G * D,
-    output_sizes=(1, G, D),
-    output_strides=(0, L * D, 1),
-    output_offset=0,
     output_buffer_size=G * L * D,
     num_aie_channels=1,
 )
-# N tokens' (N, G, D) keys, heads interleaved per token, into the first N rows.
+# N tokens' (N, G, D) keys, heads interleaved per token, into the first N
+# rows: Copy(k.reshape(N, G, D).transpose(1, 0, 2), keys[:, :N]).
 ROWS_INTO_CACHE = dict(
-    input_sizes=(G, N, D),
-    input_strides=(D, G * D, 1),
-    input_offset=0,
+    src=Walk.permuted((N, G, D), (1, 0, 2)),
+    dst=Walk.slice((G, L, D), (slice(None), slice(0, N))),
     input_buffer_size=N * G * D,
-    output_sizes=(G, N, D),
-    output_strides=(L * D, D, 1),
-    output_offset=0,
     output_buffer_size=G * L * D,
     transfer_size=1024,
     num_aie_channels=1,
 )
-# The last prompt row of (4, E), selected by the per-call offset `last`.
+# The last prompt row of (4, E), selected by the per-call index `last`:
+# Copy(x[last]).
 LAST_ROW = dict(
-    input_sizes=(1, E),
-    input_strides=(E, 1),
-    input_offset=0,
+    src=Walk.slice((4, E), (0,)),
     input_buffer_size=4 * E,
-    output_sizes=(1, E),
-    output_strides=(E, 1),
-    output_offset=0,
     output_buffer_size=E,
     num_aie_channels=1,
 )
 
-PINNED = {
+PINNED: dict[str, tuple[dict[str, Any], list, list]] = {
     "row_into_cache": (
         ROW_INTO_CACHE,
         [[(0, (1, 1, 1, 512), (0, 0, 0, 1))]],
@@ -85,16 +78,16 @@ PINNED = {
 }
 
 
-def _taps(op, buffer, sizes, strides, offset):
+def _taps(op, buffer, walk):
     return [
         [(a.offset, a.sizes, a.strides) for a in channel]
-        for channel in op._taps(buffer, sizes, strides, offset)
+        for channel in op._taps(buffer, walk)
     ]
 
 
 @pytest.mark.parametrize("name", sorted(PINNED))
-def test_strided_copy_issues_these_descriptors(name):
+def test_copy_issues_these_descriptors(name):
     kwargs, ins, outs = PINNED[name]
-    op = StridedCopy(**kwargs).resolved(aie_utils.get_current_device())
-    assert _taps(op, op.x, op.input_sizes, op.input_strides, op.input_offset) == ins
-    assert _taps(op, op.y, op.output_sizes, op.output_strides, op.output_offset) == outs
+    op = Copy(**kwargs).resolved(aie_utils.get_current_device())
+    assert _taps(op, op.x, op.src) == ins
+    assert _taps(op, op.y, op.dst) == outs

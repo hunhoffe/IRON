@@ -1,42 +1,48 @@
 # SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from dataclasses import field
+"""A copy between two views: ``Copy(k, keys[i][:, pos])``.
+
+Each side is a walk over its buffer (offset, sizes, strides), which is what a
+DMA is given; the shim channels split the walk on its highest non-unit axis
+and each share is legalized for the shim. A per-call value indexing a view
+reaches the copy as ``in_offset``/``out_offset``, an element offset.
+"""
 
 import dataclasses
+from dataclasses import field
 
 import numpy as np
-from ml_dtypes import bfloat16
-
 from aie.utils.verify import Tolerance
+from ml_dtypes import bfloat16
 
 from iron.common.declare import (
     In,
+    Incompatible,
     Operator,
     Out,
     Overlay,
     Scratchpad,
     StreamIn,
     StreamOut,
-    param,
     auto,
+    param,
 )
 from iron.common.testing import Case, Testing
-from iron.common.tiling import legalize
+from iron.common.tiling import Walk, legalize
 
 
-class StridedCopyOverlay(Overlay):
+class CopyOverlay(Overlay):
     """A memtile pass-through, one channel per fifo; no cores.
 
-    Each channel's descriptor carries 1/num_aie_channels of the tensor, so the
+    Each channel's descriptor carries 1/num_aie_channels of the walk, so the
     fifo object is sized against the per-channel share (``transfer_size``). A
     descriptor shorter than the object starves the memtile's S2MM: it never
     completes an object, never releases the lock, and the drain never returns
     (ERT_CMD_STATE_TIMEOUT). An integer multiple is fine; it cycles the buffer.
     """
 
-    # Derived from input_sizes by the constructor (per-channel share).
-    transfer_size: int | None = auto()
+    transfer_size: int | None = auto()  # None: the per-channel share of the walk
     num_aie_channels: int = auto(1)
     dtype: object = field(default=bfloat16, repr=False)
 
@@ -64,13 +70,9 @@ _N_KV, _HEAD_DIM, _SEQ = 8, 64, 128
 def _kv_slot(seq, slot, num_aie_channels=1):
     """Kwargs writing one (N_KV, HEAD_DIM) token into cache slot ``slot``."""
     return dict(
-        input_sizes=[_N_KV, _HEAD_DIM],
-        input_strides=[_HEAD_DIM, 1],
-        input_offset=0,
+        src=Walk.of((_N_KV, _HEAD_DIM)),
+        dst=Walk.slice((_N_KV, seq, _HEAD_DIM), (slice(None), slot)),
         input_buffer_size=_N_KV * _HEAD_DIM,
-        output_sizes=[1, _N_KV, _HEAD_DIM],
-        output_strides=[0, seq * _HEAD_DIM, 1],
-        output_offset=slot * _HEAD_DIM,
         output_buffer_size=_N_KV * seq * _HEAD_DIM,
         num_aie_channels=num_aie_channels,
     )
@@ -79,13 +81,7 @@ def _kv_slot(seq, slot, num_aie_channels=1):
 def _flat(size, num_aie_channels=1, transfer_size=None):
     """Kwargs for a contiguous copy of ``size`` elements."""
     return dict(
-        input_sizes=[size],
-        input_strides=[1],
-        input_offset=0,
         input_buffer_size=size,
-        output_sizes=[size],
-        output_strides=[1],
-        output_offset=0,
         output_buffer_size=size,
         num_aie_channels=num_aie_channels,
         transfer_size=transfer_size,
@@ -98,15 +94,22 @@ def _pad4(sizes, strides):
     return [1] * (4 - len(sizes)) + sizes, [0] * (4 - len(strides)) + strides
 
 
-class StridedCopy(Operator[StridedCopyOverlay]):
-    """AIE-accelerated strided copy operator.
+class Copy(Operator[CopyOverlay]):
+    """AIE-accelerated copy between two views of two buffers.
 
-    Gathers by the input pattern and scatters by the output pattern, split
-    across the overlay's channels on the highest-index non-unit dimension.
-    Useful for data layout manipulation such as ``input[0, :, 0] -> output[:, 0, 0]``.
+    Gathers by ``src`` and scatters by ``dst``, split across the overlay's
+    channels on the highest non-unit axis. In a graph the walks come from
+    the operands: ``Copy(k, keys[i][:, pos])``, ``Copy(x.transpose(1, 0, 2),
+    y[:, :n])``; a per-call index on a view binds ``in_offset`` or
+    ``out_offset``. Standalone, ``src``/``dst`` are given, or default to the
+    whole of each buffer.
     """
 
-    # StridedCopy moves data and computes nothing, so the gate is exact.
+    # The params that take an operand's view, and the value its per-call
+    # index binds, in operand order.
+    accept_views = (("src", "in_offset"), ("dst", "out_offset"))
+
+    # Copy moves data and computes nothing, so the gate is exact.
     test = Testing(
         [
             Case(_flat(1024), id="contiguous"),
@@ -131,27 +134,36 @@ class StridedCopy(Operator[StridedCopyOverlay]):
     )
 
     input_buffer_size: int = param(repr=False)
-    output_buffer_size: int = param(repr=False)
-    input_sizes: tuple = ()
-    input_strides: tuple = ()
-    input_offset: int = 0
-    output_sizes: tuple = ()
-    output_strides: tuple = ()
-    output_offset: int = 0
-    x = In(input_buffer_size, dtype=StridedCopyOverlay.dtype, to=StridedCopyOverlay.s)
-    y = Out(
-        output_buffer_size, dtype=StridedCopyOverlay.dtype, from_=StridedCopyOverlay.d
-    )
-    # Per-call addends on the two base addresses, patched into the descriptors.
+    output_buffer_size: int | None = param(default=None, repr=False)
+    src: Walk | None = param(default=None)  # None: the whole input
+    dst: Walk | None = param(default=None)  # None: the whole output
+    x = In(input_buffer_size, dtype=CopyOverlay.dtype, to=CopyOverlay.s)
+    y = Out(output_buffer_size, dtype=CopyOverlay.dtype, from_=CopyOverlay.d)
+    # Per-call addends on the two base addresses, in elements.
     in_offset = Scratchpad(np.int32)
     out_offset = Scratchpad(np.int32)
+
+    def validate(self) -> None:
+        if self.src is None:
+            self.src = Walk.of((self.input_buffer_size,))
+        if self.output_buffer_size is None:
+            self.output_buffer_size = self.src.elements
+        if self.dst is None:
+            self.dst = Walk.of((self.output_buffer_size,))
+        if self.src.elements != self.dst.elements:
+            raise ValueError(
+                f"a copy moves the same element count both ways: src {self.src} "
+                f"has {self.src.elements} elements, dst {self.dst} has "
+                f"{self.dst.elements}"
+            )
 
     def resolve(self, dev):
         """The transfer size is the per-channel share of the copy unless given."""
         ov = self.ov
         if ov.transfer_size is None:
-            share = int(np.prod(self.input_sizes)) // ov.num_aie_channels
-            ov = dataclasses.replace(ov, transfer_size=share)
+            ov = dataclasses.replace(
+                ov, transfer_size=self.src.elements // ov.num_aie_channels
+            )
         return dataclasses.replace(self, ov=ov.resolved(dev).copy())
 
     def uses_value(self, name: str) -> bool:
@@ -170,55 +182,32 @@ class StridedCopy(Operator[StridedCopyOverlay]):
     def dtype(self):
         return self.ov.dtype
 
-    def validate(self) -> None:
-        if len(self.input_sizes) != len(self.input_strides):
-            raise ValueError(
-                f"input_sizes and input_strides must have the same length "
-                f"({len(self.input_sizes)} vs {len(self.input_strides)})"
-            )
-        if len(self.output_sizes) != len(self.output_strides):
-            raise ValueError(
-                f"output_sizes and output_strides must have the same length "
-                f"({len(self.output_sizes)} vs {len(self.output_strides)})"
-            )
-        n_in, n_out = int(np.prod(self.input_sizes)), int(np.prod(self.output_sizes))
-        if n_in != n_out:
-            raise ValueError(
-                f"a copy moves the same element count both ways: input_sizes "
-                f"{list(self.input_sizes)} has {n_in} elements, output_sizes "
-                f"{list(self.output_sizes)} has {n_out}"
-            )
-
     def compatible(self) -> None:
-        from iron.common.declare import Incompatible
-
         channels = self.ov.num_aie_channels
-        for label, sizes in (
-            ("input_sizes", self.input_sizes),
-            ("output_sizes", self.output_sizes),
-        ):
-            padded, _ = _pad4(sizes, sizes)
-            highest = max(i for i, sz in enumerate(padded) if sz >= 1)
-            if padded[highest] % channels:
+        for label, walk in (("src", self.src), ("dst", self.dst)):
+            sizes, _ = _pad4(walk.sizes, walk.strides)
+            highest = max(i for i, sz in enumerate(sizes) if sz >= 1)
+            if sizes[highest] % channels:
                 raise Incompatible(
-                    f"Highest dimension of {label} must be divisible by num_aie_channels"
+                    f"the highest axis of {label} {walk} must be divisible by "
+                    f"num_aie_channels ({channels})"
                 )
-        per_channel = int(np.prod(self.input_sizes)) // channels
+        per_channel = self.src.elements // channels
         if per_channel % self.ov.transfer_size:
             raise Incompatible(
-                f"transfer_size {self.ov.transfer_size} must divide the per-channel transfer "
-                f"{per_channel} (= {int(np.prod(self.input_sizes))} / {channels} channels)"
+                f"transfer_size {self.ov.transfer_size} must divide the per-channel "
+                f"transfer {per_channel} (= {self.src.elements} / {channels} channels)"
             )
 
-    def _taps(self, buffer, sizes, strides, offset):
-        """Per channel, the descriptors of its share of the pattern.
+    def _taps(self, buffer, walk: Walk, offset: int = 0):
+        """Per channel, the descriptors of its share of the walk.
 
-        The highest non-unit dimension is split across the channels; each
-        share is then legalized for the shim (a dimension past its slot's
-        wrap is factored or unrolled, order preserved), so a reorder as wide
-        as a sequence lowers rather than failing three tools down.
+        The highest non-unit axis is split across the channels; each share
+        is then legalized for the shim (an axis past its slot's wrap is
+        factored or unrolled, order preserved), so a reorder as wide as a
+        sequence lowers rather than failing three tools down.
         """
-        sizes, strides = _pad4(sizes, strides)
+        sizes, strides = _pad4(walk.sizes, walk.strides)
         highest = max(i for i, sz in enumerate(sizes) if sz >= 1)
         channels = self.ov.num_aie_channels
         share = sizes[highest] // channels
@@ -226,7 +215,7 @@ class StridedCopy(Operator[StridedCopyOverlay]):
         return [
             legalize(
                 buffer.elements,
-                offset + c * share * strides[highest],
+                walk.offset + offset + c * share * strides[highest],
                 split,
                 strides,
                 buffer.dtype,
@@ -235,22 +224,19 @@ class StridedCopy(Operator[StridedCopyOverlay]):
         ]
 
     def reference(self, x, y=None, *, in_offset=0, out_offset=0):
-        """CPU reference: gather by the input tap, scatter by the output tap.
+        """CPU reference: gather by ``src``, scatter by ``dst``.
 
-        ``y`` is the output buffer to write into, in place, when given (a
-        cache the graph passes as an output keeps everything the copy does
-        not touch); otherwise a zeroed buffer of ``output_buffer_size``. The
-        offsets are the per-call values, in elements.
+        ``x`` is the whole input buffer and ``y`` the whole output buffer,
+        written in place when given (a cache the graph passes as an output
+        keeps everything the copy does not touch); otherwise a zeroed buffer
+        of ``output_buffer_size``. The offsets are the per-call values, in
+        elements.
         """
         out = reference(
             x.reshape(-1),
-            self.input_sizes,
-            self.input_strides,
-            self.input_offset,
+            self.src,
             self.output_buffer_size,
-            self.output_sizes,
-            self.output_strides,
-            self.output_offset,
+            self.dst,
             self.ov.num_aie_channels,
             input_offset_addend=int(in_offset),
             output_offset_addend=int(out_offset),
@@ -259,12 +245,8 @@ class StridedCopy(Operator[StridedCopyOverlay]):
         return out if y is None else y
 
     def design(self, rt):
-        ins = self._taps(
-            self.x, self.input_sizes, self.input_strides, self.input_offset
-        )
-        outs = self._taps(
-            self.y, self.output_sizes, self.output_strides, self.output_offset
-        )
+        ins = self._taps(self.x, self.src)
+        outs = self._taps(self.y, self.dst)
         in_off = self.in_offset if self.uses_value("in_offset") else None
         out_off = self.out_offset if self.uses_value("out_offset") else None
         with rt.group() as tg:
@@ -286,17 +268,8 @@ class StridedCopy(Operator[StridedCopyOverlay]):
 # --------------------------------------------------------------------------
 
 
-def _pad_to_4d(sizes, strides):
-    """design.py pads access patterns to 4D before building the taps; the reference
-    has to pad identically or the per-channel split lands on a different dimension."""
-    return (
-        [1] * (4 - len(sizes)) + list(sizes),
-        [0] * (4 - len(strides)) + list(strides),
-    )
-
-
-def _tap_offsets(sizes, strides, offset):
-    """Flat element offsets a TensorAccessPattern visits, in issue order."""
+def _walk_offsets(sizes, strides, offset):
+    """Flat element offsets a walk visits, in issue order."""
     grids = np.meshgrid(*[np.arange(s) for s in sizes], indexing="ij")
     flat = np.full(grids[0].shape, offset, dtype=np.int64)
     for grid, stride in zip(grids, strides):
@@ -304,59 +277,50 @@ def _tap_offsets(sizes, strides, offset):
     return flat.reshape(-1)
 
 
-def _channel_offsets(sizes, strides, offset, num_aie_channels):
-    sizes, strides = _pad_to_4d(sizes, strides)
+def _channel_offsets(walk: Walk, addend: int, num_aie_channels: int):
+    """Per channel, the flat offsets of its share: design's split, exactly."""
+    sizes, strides = _pad4(walk.sizes, walk.strides)
     highest = max(idx for idx, sz in enumerate(sizes) if sz >= 1)
     per_channel = sizes[highest] // num_aie_channels
     split = sizes[:highest] + [per_channel] + sizes[highest + 1 :]
     return [
-        _tap_offsets(split, strides, offset + c * per_channel * strides[highest])
+        _walk_offsets(
+            split, strides, walk.offset + addend + c * per_channel * strides[highest]
+        )
         for c in range(num_aie_channels)
     ]
 
 
 def reference(
     input_flat,
-    input_sizes,
-    input_strides,
-    input_offset,
+    src: Walk,
     output_buffer_size,
-    output_sizes,
-    output_strides,
-    output_offset,
+    dst: Walk,
     num_aie_channels=1,
     input_offset_addend=0,
     output_offset_addend=0,
     into=None,
 ):
-    """Gather by the input tap, scatter by the output tap, one channel at a time.
+    """Gather by ``src``, scatter by ``dst``, one channel at a time.
 
-    The addends are the *_offset_parameter values. They are element counts, not byte
-    offsets: the firmware multiplies the scratchpad word by the element size before
-    adding it into the BD address register. ``into`` is an existing flat output
-    buffer to scatter into in place; without it the output starts zeroed.
+    The addends are the per-call offsets. They are element counts, not byte
+    offsets: the firmware multiplies the scratchpad word by the element size
+    before adding it into the BD address register. ``into`` is an existing
+    flat output buffer to scatter into in place; without it the output
+    starts zeroed.
     """
-    src = _channel_offsets(
-        input_sizes, input_strides, input_offset + input_offset_addend, num_aie_channels
-    )
-    dst = _channel_offsets(
-        output_sizes,
-        output_strides,
-        output_offset + output_offset_addend,
-        num_aie_channels,
-    )
-
+    gather = _channel_offsets(src, input_offset_addend, num_aie_channels)
+    scatter = _channel_offsets(dst, output_offset_addend, num_aie_channels)
     out = (
         np.zeros(int(output_buffer_size), dtype=input_flat.dtype)
         if into is None
         else into
     )
-    for src_c, dst_c in zip(src, dst):
+    for src_c, dst_c in zip(gather, scatter):
         if len(src_c) != len(dst_c):
             raise ValueError(
-                f"tap element counts differ ({len(src_c)} vs {len(dst_c)}); "
-                "the input and output access patterns must move the same number "
-                "of elements"
+                f"walk element counts differ ({len(src_c)} vs {len(dst_c)}); "
+                "src and dst must move the same number of elements"
             )
         out[dst_c] = input_flat[src_c]
     return out

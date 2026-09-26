@@ -12,6 +12,8 @@ runs the same table through the real lowering, to an instruction stream.
 import numpy as np
 from ml_dtypes import bfloat16
 
+from iron.common.tiling import Walk
+
 # (module, class name, [kwargs, ...])
 CASES = [
     # num_aie_columns is pinned everywhere it has a default, rather than left
@@ -148,30 +150,11 @@ CASES = [
     # an OperatorSequence: none declares buffers of its own. Only the leaf
     # operator of that family does, the per-group stream operator, covered here.
     (
-        "strided_copy",
-        "StridedCopy",
+        "copy",
+        "Copy",
         [
-            dict(
-                input_sizes=[1024],
-                input_strides=[1],
-                input_offset=0,
-                output_sizes=[1024],
-                output_strides=[1],
-                output_offset=0,
-                input_buffer_size=1024,
-                output_buffer_size=1024,
-            ),
-            dict(
-                input_sizes=[1024],
-                input_strides=[1],
-                input_offset=0,
-                output_sizes=[1024],
-                output_strides=[1],
-                output_offset=0,
-                input_buffer_size=1024,
-                output_buffer_size=1024,
-                dtype=np.float32,
-            ),
+            dict(input_buffer_size=1024, output_buffer_size=1024),
+            dict(input_buffer_size=1024, output_buffer_size=1024, dtype=np.float32),
             # Input and output buffer sizes are independent here, unlike every
             # other (in, out) operator: a gather of every other pair of a
             # 1024-element buffer into a 256-element one (a pair, because a
@@ -181,24 +164,15 @@ CASES = [
             # element count both ways; the operator checks that at
             # construction.)
             dict(
-                input_sizes=[128, 2],
-                input_strides=[8, 1],
-                input_offset=0,
-                output_sizes=[256],
-                output_strides=[1],
-                output_offset=0,
+                src=Walk(0, (128, 2), (8, 1)),
                 input_buffer_size=1024,
                 output_buffer_size=256,
             ),
             # A reorder of (seq, groups, d) into (groups, seq, d), the KV-cache
-            # write of a prefill: a 3-D pattern the copy legalizes for the shim.
+            # write of a prefill: a 3-D walk the copy legalizes for the shim.
             dict(
-                input_sizes=[4, 128, 64],
-                input_strides=[64, 256, 1],
-                input_offset=0,
-                output_sizes=[4, 128, 64],
-                output_strides=[8192, 64, 1],
-                output_offset=0,
+                src=Walk.permuted((128, 4, 64), (1, 0, 2)),
+                dst=Walk.slice((4, 128, 64), (slice(None), slice(0, 128))),
                 input_buffer_size=4 * 128 * 64,
                 output_buffer_size=4 * 128 * 64,
                 transfer_size=1024,
@@ -206,6 +180,16 @@ CASES = [
         ],
     ),
     # mlir-aie's LUT activations need a tile of at least 1024.
+    (
+        "sigmoid",
+        "Sigmoid",
+        [dict(size=1024, num_aie_columns=1, num_channels=1, tile_size=1024)],
+    ),
+    ("silu", "SiLU", [dict(size=1024, num_aie_columns=1, tile_size=256)]),
+    ("softmax", "Softmax", [dict(rows=16, cols=64)]),
+    # SwiGLUDecode / SwiGLUPrefill are graph functions and SwiGLUPrefillStream
+    # an OperatorSequence: none declares buffers of its own. Only the leaf
+    # operator of that family does, the per-group stream operator, covered here.
     (
         "tanh",
         "Tanh",

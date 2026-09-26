@@ -15,7 +15,7 @@ from aie.iron.device import NPU2
 
 from iron.common.declare import Incompatible
 from iron.operators.repeat import Repeat
-from iron.operators.strided_copy import StridedCopy, _flat
+from iron.operators.copy import Copy, _flat
 from iron.operators.transpose import Transpose
 
 
@@ -48,7 +48,7 @@ def test_transfer_size_not_dividing_the_per_channel_share_is_rejected():
     sends, and the drain's dma_await_task returns ERT_CMD_STATE_TIMEOUT with
     no diagnostic.
     """
-    operator = StridedCopy(**_flat(1024, num_aie_channels=4, transfer_size=512))
+    operator = Copy(**_flat(1024, num_aie_channels=4, transfer_size=512))
     with pytest.raises(
         (AssertionError, ValueError), match="must divide the per-channel transfer"
     ):

@@ -73,7 +73,7 @@ def graph_prefill(config, graph, prompt):
     x = np.zeros((rows, E), dtype=bfloat16)
     x[:n] = _embed(config, prompt)
     logits = graph.graph.reference(
-        x, config.angles[:rows], cache_offset=0, vector_size=n, last=(n - 1) * E
+        x, config.angles[:rows], cache_offset=0, vector_size=n, last=n - 1
     )
     return torch.from_numpy(logits.reshape(-1).astype(np.float32))
 
@@ -82,14 +82,13 @@ def graph_decode(config, graph, tokens, pos, *, vector_size=None):
     """Feed ``tokens`` one at a time through the graph's reference from
     position ``pos``, its caches as they are; the logits after each.
     """
-    D = config.head_dim
     out = []
     for step, token in enumerate(tokens):
         x = _embed(config, token.reshape(1)).reshape(1, config.emb_dim)
         angles = config.angles[pos : pos + 1]
         n = pos + 1 if vector_size is None else vector_size(step, pos)
         logits = graph.graph.reference(
-            x, angles, cache_offset=pos * D, vector_size=n, last=0
+            x, angles, cache_offset=pos, vector_size=n, last=0
         )
         out.append(torch.from_numpy(logits.reshape(-1).astype(np.float32)))
         pos += 1

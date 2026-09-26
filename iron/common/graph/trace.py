@@ -18,7 +18,16 @@ from ..declare.member import _Buffer as _Buffer_
 from ..declare.member import _Value
 from ..design import device_symbol
 from ..image.sequence import OperatorSequence
-from .handle import Handle, State, Value, _tensor_dtype, is_operand
+from ..tiling import Walk
+from .handle import (
+    Handle,
+    State,
+    Value,
+    _HostView,
+    _HostViews,
+    _tensor_dtype,
+    is_operand,
+)
 
 _STACK: list = []
 
@@ -52,11 +61,44 @@ class Binding:
     op: Operator
     member: BoundValue
     value: Value
+    scale: int = 1  # a per-call index on a view: the axis stride, in elements
 
     @property
     def symbol(self) -> str:
         """The device symbol the host writes this value through."""
         return device_symbol(self.op, self.member)
+
+
+def _take_views(cls, operands, kwargs, values, scales):
+    """Hand each view operand's walk to the operator and stand its parent in.
+
+    A class that takes views names, in operand order, the param that holds
+    each operand's walk and the per-call value a dynamic index binds
+    (``Copy.accept_views``). Any other operator takes contiguous operands.
+    """
+    accept = getattr(cls, "accept_views", ())
+    out = []
+    for i, h in enumerate(operands):
+        if i < len(accept):
+            param, offset_member = accept[i]
+            if h.walk is None:
+                kwargs.setdefault(param, Walk.of(h.shape))
+                out.append(h)
+                continue
+            kwargs.setdefault(param, h.walk)
+            if h.index_by is not None:
+                value, stride = h.index_by
+                values[offset_member] = value
+                scales[offset_member] = stride
+            out.append(h.parent)
+        elif h.walk is not None:
+            raise TypeError(
+                f"{cls.__name__} takes a contiguous operand at position {i}, not "
+                f"the view {h!r}; Copy takes views"
+            )
+        else:
+            out.append(h)
+    return out
 
 
 @dataclasses.dataclass
@@ -155,6 +197,10 @@ class Tracer:
 
     # -- operands ---------------------------------------------------------
 
+    def state_as(self, state: State):
+        """What stands for a state viewed inside the graph function: its handle."""
+        return self.operand(state)
+
     def operand(self, x) -> Handle:
         if isinstance(x, Handle):
             return x
@@ -198,6 +244,8 @@ class Tracer:
             # a bound value (the dynamic softmax) decides here.
             cls = target.resolve_class(len(operands), {**kwargs, **values})
             own = self._split_values(cls, values)
+            scales: dict[str, int] = {}
+            operands = _take_views(cls, operands, kwargs, own, scales)
             n_in = sum(
                 1
                 for m in cls._members
@@ -207,13 +255,15 @@ class Tracer:
         else:
             op = target
             own = self._split_values(type(op), values)
+            scales = {}
+            operands = _take_views(type(op), operands, {}, own, scales)
             if kwargs or values:
                 raise TypeError(
                     f"{type(op).__name__} instance called with unexpected keyword "
                     f"arguments {sorted(kwargs) + sorted(values)}"
                 )
         for name, value in own.items():
-            self._bind(op, name, value)
+            self._bind(op, name, value, scales.get(name, 1))
         for name, value in values.items():
             self._bind_overlay(op, name, value)
         return self._record(op, operands)
@@ -238,7 +288,7 @@ class Tracer:
         ov = self.overlays.setdefault(ov.design_key(), ov)
         return cls(ov, **op_kwargs)
 
-    def _bind(self, op, name, value) -> None:
+    def _bind(self, op, name, value, scale: int = 1) -> None:
         if not isinstance(value, Value):
             raise TypeError(
                 f"{type(op).__name__}.{name} takes a per-call value handle (a "
@@ -255,7 +305,7 @@ class Tracer:
             op.use_value(name)
             bound[name] = value
             member = next(v for v in op.values if v.name == name)
-            self.bindings.append(Binding(op, member, value))
+            self.bindings.append(Binding(op, member, value, scale))
 
     def _bind_overlay(self, op, name, value) -> None:
         """Bind a core-read value the operator's overlay declares."""
@@ -374,16 +424,28 @@ class _ReferenceTracer(Tracer):
     def operand(self, x):
         return x
 
+    def state_as(self, state: State):
+        """A state viewed in the reference: a view of its host tensor that
+        remembers the key, so the operator gets the whole tensor and its
+        walk, as the device does, and writes it in place.
+        """
+        if state.host is None:
+            state.host = np.zeros(state.shape, dtype=bfloat16)
+        return _HostViews(state)
+
     def call(self, target, args, kwargs):
-        tensors, states = [], []
+        tensors, states, keys = [], [], []
         for a in args:
-            state = None
-            if isinstance(a, State):
+            state, key = None, None
+            if isinstance(a, _HostView):
+                state, key, a = a.state, a.key, a.state.host
+            elif isinstance(a, State):
                 if a.host is None:
                     a.host = np.zeros(a.shape, dtype=bfloat16)
                 state, a = a, a.host
             tensors.append(a)
             states.append(state)
+            keys.append(key)
         kwargs = dict(kwargs)
         if isinstance(target, type):
             cls = target.resolve_class(len(tensors), kwargs)
@@ -401,6 +463,8 @@ class _ReferenceTracer(Tracer):
                 }
                 values.update({k: kwargs.pop(k) for k in list(kwargs) if k in names})
             shapes = [Handle(t.shape, _tensor_dtype(t), "", "input") for t in tensors]
+            shapes = [h if k is None else h[k] for h, k in zip(shapes, keys)]
+            shapes = _take_views(cls, shapes, kwargs, {}, {})
             n_in = sum(
                 1
                 for m in cls._members
