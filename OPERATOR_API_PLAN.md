@@ -256,7 +256,13 @@ today**.
   (38 files, +390/−509). Failure set identical to baseline.
 - `610c926` Step 1: the bases are dataclasses to a checker; pyright in CI on
   the declare package. Members generic in their bound form; `Self` returns.
-- (this commit) Step 4: views and `Copy`. A graph handle takes numpy's
+- (this commit) Step 5a: `declare_kernel(source_text=)`: a kernel written
+  in the operator's own file, its recipe digest over the text; the
+  hello-world `VectorAdd` (`tests/toolchain/inline_kernel.py`) lowers
+  through the toolchain with its `vadd` compiled from the text. The four
+  elementwise templates collapse with the merge (step 7's first rung),
+  where an operator's operands say how many streams there are.
+- `6aa37f2` Step 4: views and `Copy`. A graph handle takes numpy's
   basic indexing plus a per-call `Scratchpad` index on one axis, and
   `transpose`; a contiguous static region is a sub-buffer as before, any
   other view a `Walk` over the parent that `Copy` alone takes (its

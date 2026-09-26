@@ -328,7 +328,10 @@ Data movement pattern: L3 → Shim DMA → L2 → L1 (tile local) → Compute
    tolerance contract. Bind a further symbol of the same object with
    `fn.object_file.bind(symbol, arg_types)`. `target.kernel(...)` declares
    one the factories do not cover -- a kernel whose compile flags are the
-   overlay's own, like flm's `mm_fused.cc`. An overlay running one kernel
+   overlay's own, like flm's `mm_fused.cc` -- and, with `source_text=`, one
+   written in the operator's own file (the hello-world in
+   `iron/tests/toolchain/inline_kernel.py`: a `vadd` in C++ text, the
+   argument types the streams' tiles). An overlay running one kernel
    reports its contract from `tolerance(target)` (`ElementwiseOverlay` does
    this from `kernel(target)`). If a new C++ compute kernel is needed, add it
    to the
