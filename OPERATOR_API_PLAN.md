@@ -235,7 +235,7 @@ today**.
   (38 files, +390/−509). Failure set identical to baseline.
 - `610c926` Step 1: the bases are dataclasses to a checker; pyright in CI on
   the declare package. Members generic in their bound form; `Self` returns.
-- ruff after mlir-aie's `ruff.toml` (D205/D401 off, for the codebase's
+- `e04956f` + `b9aaecb` ruff after mlir-aie's `ruff.toml` (D205/D401 off, for the codebase's
   sentence summaries); `pyrightconfig.json` after mlir-aie's; both scoped to
   all of `iron/common` and `iron/tests/common` (three tests wait on step 7),
   both clean with and without mlir-aie on the path. The ~95 findings fixed
