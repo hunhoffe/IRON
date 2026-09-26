@@ -419,7 +419,7 @@ BUDGET_FLOOR = 2e-2
 )
 def test_shipped_overlay(M, K, N, epilogue, clamp, npu_runtime):
     """The shipped binary through the same operator: the second reference."""
-    operator = GEMM(Shipped(), M=M, K=K, N=N, epilogue=epilogue, clamp=clamp)
+    operator = Shipped(M=M, K=K, N=N, epilogue=epilogue, clamp=clamp)
     # B drawn row-major (K, N); the operator consumes it packed (pack_B).
     data = vectors(operator, normal=("A",), B=(K, N))
 
@@ -479,12 +479,12 @@ def test_shipped_epilogue_matches_accumulator(epilogue, clamp, npu_runtime):
     # A small input scale keeps the accumulator in the range where these curves
     # are actually curved; at the default scale the product lands around +-900,
     # where gelu and silu are indistinguishable from the identity.
-    probe = GEMM(Shipped(), M=M, K=K, N=N)
+    probe = Shipped(M=M, K=K, N=N)
     data = vectors(probe, normal=("A",), scale=0.5, B=(K, N))
     A, B = data["A"], data["B"]
 
     def run(epi, clm):
-        op = GEMM(Shipped(), M=M, K=K, N=N, epilogue=epi, clamp=clm)
+        op = Shipped(M=M, K=K, N=N, epilogue=epi, clamp=clm)
         op.compile()
         tensor = aie_utils.DEFAULT_TENSOR_CLASS
         out = tensor((M, N), dtype=np.dtype("bfloat16"))

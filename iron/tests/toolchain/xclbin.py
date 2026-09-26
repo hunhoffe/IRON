@@ -13,7 +13,7 @@ gate runs aiecc's xclbin pipeline (kernels with Peano, the PDI, then
   device widths, with no runtime made until the first call;
 * flm/gemm's two compiles, the configuration's xclbin at the reference
   shape and this shape's instruction stream;
-* the shipped flm image's instruction stream against its external overlay (the xclbin
+* the shipped flm image's instruction stream against its pins (the xclbin
   itself is downloaded, not built, and is tried separately);
 * one plain declared operator's ``compile()`` on NPU1.
 
@@ -93,10 +93,9 @@ def test_flm_gemm_links_its_configuration_xclbin_and_its_own_instructions(npu2):
 
 
 def _shipped(**kwargs):
-    from iron.operators.flm.gemm.op import GEMM
     from iron.operators.flm.gemm.shipped import Shipped
 
-    return GEMM(Shipped(), **kwargs)
+    return Shipped(**kwargs)
 
 
 def test_shipped_builds_its_instructions_for_the_external_image(npu2):

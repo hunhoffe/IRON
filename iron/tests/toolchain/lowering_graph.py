@@ -3,7 +3,7 @@
 
 """What the case table does not cover lowers too: graph-traced operators
 with bound per-call values, flm/gemm's configuration and shapes, the
-external shipped-overlay sequence, and the swiglu graph functions' operators.
+shipped image's sequence, and the swiglu graph functions' operators.
 Same gate as ``lowering.py``: aiecc to an instruction stream, no Peano.
 """
 
@@ -79,10 +79,9 @@ def test_flm_gemm_lowers_and_so_does_its_configuration_module(M, K, N, tmp_path)
 
 
 def _shipped(**kwargs):
-    from iron.operators.flm.gemm.op import GEMM
     from iron.operators.flm.gemm.shipped import Shipped
 
-    return GEMM(Shipped(), **kwargs)
+    return Shipped(**kwargs)
 
 
 def test_shipped_external_sequence_lowers(tmp_path):

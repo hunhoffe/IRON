@@ -3,17 +3,18 @@
 
 """bf16 GEMM over a 4-row compute-tile grid, in the declared form.
 
-:class:`FLMGEMMOverlay` is the configuration: the n tile, the A-tile height,
+The array is one configuration of the grid: the n tile, the A-tile height,
 the row-block chunk, the activations compiled into the epilogue and the
 rounding mode. Everything the xclbin depends on, and nothing else; its
-``config_name`` is the xclbin's stem. :class:`GEMM` is a shape on it: M, K,
-N, the activation and the clamp bounds are runtime parameters (residents)
-and reach only the instruction stream, so every shape sharing a
-configuration shares one xclbin. That split is what this operator exists
-for, and :meth:`GEMM._build` compiles the two halves separately.
+``config_name`` is the xclbin's stem. M, K, N, the activation and the
+clamp bounds are values written to the cores and reach only the
+instruction stream, so every shape sharing a configuration shares one
+xclbin. That split is what this operator exists for, and :meth:`GEMM._build`
+compiles the two halves separately.
 
 ``design.py`` keeps the fixed geometry and the L1 budget; README.md has the
-per-choice breakdown against the shipped FastFlowLM overlay.
+per-choice breakdown against the shipped FastFlowLM overlay
+(:mod:`.shipped`).
 """
 
 import dataclasses
@@ -32,11 +33,8 @@ from iron.common.declare import (
     In,
     Operator,
     Out,
-    Overlay,
-    Resident,
-    StreamIn,
-    StreamOut,
     Unresolvable,
+    Value,
     param,
     select,
     auto,
@@ -83,6 +81,10 @@ from iron.operators.flm.gemm.design import (
 from iron.operators.flm.packing import pack_b, packed_b_size
 
 
+def _device_name() -> str:
+    return aie_utils.get_current_device().resolve().name
+
+
 def _clamp_bits(clamp) -> tuple[int, int]:
     """The clamp bounds as the int32 bit patterns the parameter words carry.
 
@@ -96,65 +98,86 @@ def _clamp_bits(clamp) -> tuple[int, int]:
     )
 
 
-# --------------------------------------------------------------------------
-# The overlay: one configuration of the grid.
-# --------------------------------------------------------------------------
+class GEMM(Operator):
+    """AIE-accelerated bf16 GEMM on a 4-row grid, with a fused epilogue.
 
+    Fixed 64/512/128 tiling and an activation plus optional clamp folded into
+    the output stage. M, K, N, the activation and the clamp bounds are
+    values written to the cores: they change the instruction stream only, so
+    every shape on one configuration shares an xclbin.
 
-class FLMGEMMOverlay(Overlay):
-    """The 4-row grid, as wide as the device, for one tiling configuration.
-
-    ``tile_n`` defaults to 64 from the device alone (the general winner; 128
-    beats it by ~9% only on NPU2 at K = 512, where the caller asks for it).
-    ``tile_ma`` and ``m_chunk`` are filled from the device's L1 and the tuning
-    tables. The legacy constructor (``GEMM(M=, K=, N=)``) reproduces the old
-    shape-dependent defaults for both.
+    The grid is as wide as the device. ``tile_n`` defaults to 64 from the
+    device alone (the general winner; 128 beats it by ~9% only on NPU2 at
+    K = 512, where the caller asks for it). ``tile_ma`` and ``m_chunk`` are
+    filled from the device's L1 and the tuning tables.
     """
 
+    M: int = param()
+    K: int = param()
+    N: int = param()
+    # Activation fused into the C drain, selected at run time from the
+    # compiled-in modes.
+    epilogue: Epilogue = param(default=Epilogue.NONE)
+    # Optional (min, max) applied after the activation.
+    clamp: tuple | None = param(default=None)
+    # B's packed block count on AIE2P; filled by validate() from K and N.
+    packed_blocks: int | None = param(default=None, repr=False)
     # n tile width. 64 halves the mmul's accumulator traffic per mac; 128
     # halves A fetches instead. See README.md.
-    tile_n: int | None = auto()
+    tile_n: int = auto(array=True)
     # A-tile rows, decoupled from the accumulator's M_TILE (asymmetric tile
     # buffering). None resolves to whatever L1 affords.
-    tile_ma: int | None = auto()
+    tile_ma: int = auto(array=True)
     # Row-blocks folded into one B fetch. None resolves from tile_n.
-    m_chunk: int | None = auto()
+    m_chunk: int = auto(array=True)
     # The activations the epilogue can select between at run time. Each one
     # compiled in costs program memory, so a deployment that dispatches two
     # should compile two.
-    epilogue_modes: tuple = tuple(Epilogue)
+    epilogue_modes: tuple = param(default=tuple(Epilogue), array=True)
     # Rounding for every f32->bf16 conversion; see Rounding in design.py.
-    rounding: Rounding = Rounding.CONV_EVEN
-    # Filled by tuning, from the device: the grid, B's storage, the L2 tiles.
-    rows: int | None = auto(repr=False)
-    cols: int | None = auto(repr=False)
-    bfp16_b: bool | None = auto(repr=False)
+    rounding: Rounding = param(default=Rounding.CONV_EVEN, array=True)
+    # Filled by resolve, from the device: the grid, B's storage, the L2 tiles.
+    rows: int = auto(repr=False)
+    cols: int = auto(repr=False)
+    bfp16_b: bool = auto(repr=False, array=True)
     # B's element type, on the array and in DDR alike; the host holds a
     # block-float B as bytes (BoundBuffer.host_dtype).
     b_dtype: object = auto(repr=False)
-    l1_b_depth: int | None = auto(repr=False)
-    shim_bds: int | None = auto(repr=False)
-    a_l2: int | None = auto(repr=False)
-    b_l2: int | None = auto(repr=False)
-    c_l2: int | None = auto(repr=False)
+    l1_b_depth: int = auto(repr=False, array=True)
+    shim_bds: int = auto(repr=False)
+    a_l2: int = auto(repr=False)
+    b_l2: int = auto(repr=False)
+    c_l2: int = auto(repr=False)
 
     # The k order pack_B writes within a block: the port's kernel's, or the
     # shipped binary's own (see shipped.py).
     b_overlay_order: ClassVar[bool] = False
 
-    a = StreamIn(a_l2, per=rows, depth=A_DEPTH)
-    b = StreamIn(b_l2, dtype=b_dtype, per=cols, depth=B_DEPTH)
-    c = StreamOut(c_l2, per=cols, depth=C_DEPTH)
+    A = In(M, K, tile=(a_l2,), per=(rows,), depth=A_DEPTH)
+    # On AIE2P B is quantized to bfp16ebs8, so it is declared as a count of
+    # those blocks -- the unit the array, the core and every descriptor into
+    # B already count in. Declaring it in bytes instead made the sequence's
+    # offsets and lengths address a ui8 buffer with block-unit numbers, so a
+    # transfer moved a ninth of what it named. On AIE2 it is a (K, N) element
+    # count, pre-packed.
+    B = In(
+        select(bfp16_b, (packed_blocks,), (K, N)),
+        dtype=b_dtype,
+        tile=(b_l2,),
+        per=(cols,),
+        depth=B_DEPTH,
+    )
+    C = Out(M, N, tile=(c_l2,), per=(cols,), depth=C_DEPTH)
     # The parameter words every core reads once its barrier opens. The last
     # two exist only at m_chunk > 1 (rtp_layout); a word is not free.
-    n_val = Resident(np.int32)
-    m_row_blocks = Resident(np.int32)
-    k_iters = Resident(np.int32)
-    epilogue = Resident(np.int32)
-    clamp_min = Resident(np.int32)
-    clamp_max = Resident(np.int32)
-    n_chunks = Resident(np.int32, optional=True)
-    n_units = Resident(np.int32, optional=True)
+    n_val = Value(np.int32, derive=lambda op: op.N)
+    m_row_blocks = Value(np.int32, derive=lambda op: op._m_row_blocks)
+    k_iters = Value(np.int32, derive=lambda op: op._k_iters)
+    mode = Value(np.int32, derive=lambda op: Epilogue(op.epilogue).mode)
+    clamp_min = Value(np.int32, derive=lambda op: _clamp_bits(op.clamp)[0])
+    clamp_max = Value(np.int32, derive=lambda op: _clamp_bits(op.clamp)[1])
+    n_chunks = Value(np.int32, derive=lambda op: op._n_units, optional=True)
+    n_units = Value(np.int32, derive=lambda op: op._n_units, optional=True)
 
     # -- checks ----------------------------------------------------------------
 
@@ -187,10 +210,40 @@ class FLMGEMMOverlay(Overlay):
         self.epilogue_modes = tuple(
             dict.fromkeys(Epilogue(m) for m in self.epilogue_modes)
         )
+        self.epilogue = Epilogue(self.epilogue)
+        if self.K % MIN_K:
+            raise ValueError(f"K ({self.K}) must be a multiple of {MIN_K}")
+        # Blocks, not bytes: B's declaration counts bfp16ebs8 blocks, and
+        # bfp.itemsize turns that back into the byte count pack_B returns.
+        expected = self.K * self.N // BFP16_GROUP
+        if self.packed_blocks is None:
+            self.packed_blocks = expected
+        elif self.packed_blocks != expected:
+            raise ValueError(
+                f"packed_blocks={self.packed_blocks} does not match K={self.K}, "
+                f"N={self.N} ({expected})"
+            )
+        # A mode the mask leaves out reaches the kernel's default arm, which
+        # is NONE -- an unactivated result rather than an error. Refuse.
+        if (
+            self.epilogue is not Epilogue.NONE
+            and self.epilogue not in self.epilogue_modes
+        ):
+            raise ValueError(
+                f"epilogue {self.epilogue} is not in epilogue_modes "
+                f"{tuple(str(m) for m in self.epilogue_modes)}, so it would "
+                "not be compiled in and the kernel would silently apply none"
+            )
+        if self.clamp is not None:
+            lo, hi = self.clamp
+            if lo > hi:
+                raise ValueError(f"clamp min ({lo}) must be <= max ({hi})")
+        if self.rows is not None:
+            self._check_shape(ValueError)
 
-    def resolve(self, dev) -> "FLMGEMMOverlay":
+    def resolve(self, dev):
         if dev is None:
-            raise Unresolvable("FLMGEMMOverlay is sized from the device's L1 and grid")
+            raise Unresolvable("flm.GEMM is sized from the device's L1 and grid")
         tm = get_target_model(dev.resolve())
         rows, cols = compute_rows(dev), dev.cols
         # B is bfp16ebs8 on AIE2P and bf16 on AIE2. AIE2 has no scalar BFP
@@ -224,7 +277,45 @@ class FLMGEMMOverlay(Overlay):
             c_l2=M_TILE * tile_n * rows,
         )
 
+    def _check_shape(self, error) -> None:
+        # N only needs to tile to tile_n: a trailing group of fewer than
+        # cols column-blocks is handled by per-column trip counts.
+        for name, value, unit in (
+            ("M", self.M, M_TILE * self.rows),
+            ("K", self.K, MIN_K),
+            ("N", self.N, self.tile_n),
+        ):
+            if value % unit != 0:
+                raise error(f"{name} ({value}) must be a multiple of {unit}")
+        m_row_blocks = self.M // (M_TILE * self.rows)
+        if m_row_blocks % self.m_chunk:
+            # A partial group is inexpressible: the object is m_chunk tiles
+            # wide and the forward always drains that much.
+            raise error(
+                f"m_row_blocks ({m_row_blocks}) must be a multiple of m_chunk "
+                f"({self.m_chunk}); pass m_chunk=1 for this shape"
+            )
+
+    def compatible(self) -> None:
+        self._check_shape(Incompatible)
+        if (self._a_split or self._c_split) and _BDS_PER_BLOCK > self.shim_bds:
+            raise Incompatible(
+                f"M={self.M} K={self.K} N={self.N} needs {_BDS_PER_BLOCK} shim "
+                f"buffer descriptors for the split path but a shim tile has only "
+                f"{self.shim_bds}."
+            )
+
     # -- derived -----------------------------------------------------------------
+
+    @property
+    def _tuned(self) -> "GEMM":
+        """This operator resolved for the current device, when construction
+        left it unresolved: the names and the packing read fields resolution
+        fills (tile_n, tile_ma, the B block depth), and both are wanted
+        before the build resolves."""
+        if self._resolved:
+            return self
+        return self.resolved(aie_utils.get_current_device())
 
     @property
     def ct_max_k(self) -> int:
@@ -244,21 +335,40 @@ class FLMGEMMOverlay(Overlay):
             mask |= 1 << Epilogue(m).mode
         return mask
 
-    def config_name(self, dev_name: str) -> str:
-        """Stem of the artifacts that do not depend on the shape.
+    @property
+    def config_name(self) -> str:
+        """Stem of the artifacts that do not depend on the shape: the xclbin's.
 
         ``ck`` needs naming separately because retuning CT_MAX_K_FOR_N moves
         it while tn is unmoved, and tile_ma is caller-overridable. Omitting it
         once served an xclbin built at one ck to a request for another.
         """
+        t = self._tuned
         return (
-            f"FLM_GEMM_tn{self.tile_n}_ck{self.ct_max_k}"
-            f"_ma{self.tile_ma}_mc{self.m_chunk}"
-            f"_em{self.epilogue_mask:x}_{self.rounding}_{dev_name}"
+            f"FLM_GEMM_tn{t.tile_n}_ck{t.ct_max_k}"
+            f"_ma{t.tile_ma}_mc{t.m_chunk}"
+            f"_em{t.epilogue_mask:x}_{t.rounding}_{_device_name()}"
         )
 
-    def name_parts(self) -> list[str]:
-        return [self.config_name(aie_utils.get_current_device().resolve().name)]
+    @property
+    def name(self) -> str:
+        """Artifact stem for the instruction stream, which does depend on it.
+
+        The configuration it runs on, then the runtime parameters on top.
+        Every runtime parameter has to appear, because the sequence writes
+        them as immediates and the build cache keys on filename: a stem that
+        omits one serves the first caller's instruction stream to the
+        second. The clamp bounds go in as raw bit patterns.
+        """
+        base = f"{self.config_name}_M{self.M}_K{self.K}_N{self.N}"
+        if self.epilogue != Epilogue.NONE:
+            base = f"{base}_epi{self.epilogue}"
+        if self.clamp is not None:
+            lo, hi = (
+                int(np.float32(v).view(np.int32)) & 0xFFFFFFFF for v in self.clamp
+            )
+            base = f"{base}_cl{lo:08x}{hi:08x}"
+        return base
 
     @property
     def kernel_object(self) -> str:
@@ -336,9 +446,9 @@ class FLMGEMMOverlay(Overlay):
         ct_out_ty = np.ndarray[(CT_OUT_LEN,), bf16_ty]
         ct_acc_ty = np.ndarray[(M_TILE * N_TILE,), f32]
         # L2 (per memtile): the declared stream tiles.
-        mt_a_ty = self.a.tile
-        mt_b_ty = self.b.tile
-        mt_out_ty = self.c.tile
+        mt_a_ty = self.A.tile
+        mt_b_ty = self.B.tile
+        mt_out_ty = self.C.tile
 
         # All three are compiled into mm_fused.cc, so they name one object.
         # Declared by hand rather than from aie.iron.kernels.fused_mm: this
@@ -561,15 +671,15 @@ class FLMGEMMOverlay(Overlay):
                 )
 
         for r in range(ROWS):
-            self.a[r].bind(a_l3l2_fifos[r].prod())
+            self.A.lane(r).bind(a_l3l2_fifos[r].prod())
         for c in range(COLS):
-            self.b[c].bind(b_l3l2_fifos[c].prod())
-            self.c[c].bind(c_l2l3_fifos[c].cons())
+            self.B.lane(c).bind(b_l3l2_fifos[c].prod())
+            self.C.lane(c).bind(c_l2l3_fifos[c].cons())
         flat = [b for row in rtps for b in row]
         self.n_val.bind(flat, RTP_N_VAL)
         self.m_row_blocks.bind(flat, RTP_M_ROW_BLOCKS)
         self.k_iters.bind(flat, RTP_K_ITERS)
-        self.epilogue.bind(flat, RTP_EPILOGUE)
+        self.mode.bind(flat, RTP_EPILOGUE)
         self.clamp_min.bind(flat, RTP_CLAMP_MIN)
         self.clamp_max.bind(flat, RTP_CLAMP_MAX)
         if "n_chunks" in rtp_slots:
@@ -577,151 +687,11 @@ class FLMGEMMOverlay(Overlay):
             self.n_units.bind(flat, rtp_slots["n_units"])
         return workers
 
-
-# --------------------------------------------------------------------------
-# The operator: one shape and activation on a configuration.
-# --------------------------------------------------------------------------
-
-
-class GEMM(Operator[FLMGEMMOverlay]):
-    """AIE-accelerated bf16 GEMM on a 4-row grid, with a fused epilogue.
-
-    Fixed 64/512/128 tiling and an activation plus optional clamp folded into
-    the output stage. M, K, N, the activation and the clamp bounds are
-    runtime parameters: they change the instruction stream only, so every
-    shape on one configuration shares an xclbin.
-    """
-
-    M: int = param()
-    K: int = param()
-    N: int = param()
-    # Activation fused into the C drain, selected at run time from the
-    # overlay's compiled-in modes.
-    epilogue: Epilogue = Epilogue.NONE
-    # Optional (min, max) applied after the activation.
-    clamp: tuple | None = None
-    # B's packed block count on AIE2P; filled by validate() from K and N.
-    packed_blocks: int | None = param(default=None, repr=False)
-
-    A = In(M, K, to=FLMGEMMOverlay.a)
-    # On AIE2P B is quantized to bfp16ebs8, so it is declared as a count of
-    # those blocks -- the unit the array, the core and every descriptor into
-    # B already count in. Declaring it in bytes instead made the sequence's
-    # offsets and lengths address a ui8 buffer with block-unit numbers, so a
-    # transfer moved a ninth of what it named. On AIE2 it is a (K, N) element
-    # count, pre-packed.
-    B = In(
-        select(FLMGEMMOverlay.bfp16_b, (packed_blocks,), (K, N)),
-        dtype=FLMGEMMOverlay.b_dtype,
-        to=FLMGEMMOverlay.b,
-    )
-    C = Out(M, N, from_=FLMGEMMOverlay.c)
-
-    # -- construction ------------------------------------------------------------
-
-    @property
-    def _tuned_ov(self) -> "FLMGEMMOverlay":
-        """The overlay tuned for the current device, when construction left it untuned.
-
-        The names and the packing read fields tuning fills (tile_n, tile_ma,
-        the B block depth), and both are wanted before the build tunes."""
-        ov = self.ov
-        return ov if ov._resolved else ov.resolved(aie_utils.get_current_device())
-
-    @property
-    def config_name(self) -> str:
-        """Stem of the artifacts that do not depend on the shape: the xclbin's."""
-        return self._tuned_ov.config_name(aie_utils.get_current_device().resolve().name)
-
-    @property
-    def name(self) -> str:
-        """Artifact stem for the instruction stream, which does depend on it.
-
-        The configuration it runs on, then the runtime parameters on top.
-        Every runtime parameter has to appear, because the sequence writes
-        them as immediates and the build cache keys on filename: a stem that
-        omits one serves the first caller's instruction stream to the
-        second. The clamp bounds go in as raw bit patterns.
-        """
-        base = f"{self.config_name}_M{self.M}_K{self.K}_N{self.N}"
-        if self.epilogue != Epilogue.NONE:
-            base = f"{base}_epi{self.epilogue}"
-        if self.clamp is not None:
-            lo, hi = (
-                int(np.float32(v).view(np.int32)) & 0xFFFFFFFF for v in self.clamp
-            )
-            base = f"{base}_cl{lo:08x}{hi:08x}"
-        return base
-
-    # -- checks ----------------------------------------------------------------
-
-    def validate(self) -> None:
-        self.epilogue = Epilogue(self.epilogue)
-        if self.K % MIN_K:
-            raise ValueError(f"K ({self.K}) must be a multiple of {MIN_K}")
-        # Blocks, not bytes: B's declaration counts bfp16ebs8 blocks, and
-        # bfp.itemsize turns that back into the byte count pack_B returns.
-        expected = self.K * self.N // BFP16_GROUP
-        if self.packed_blocks is None:
-            self.packed_blocks = expected
-        elif self.packed_blocks != expected:
-            raise ValueError(
-                f"packed_blocks={self.packed_blocks} does not match K={self.K}, "
-                f"N={self.N} ({expected})"
-            )
-        # A mode the mask leaves out reaches the kernel's default arm, which
-        # is NONE -- an unactivated result rather than an error. Refuse.
-        if (
-            self.epilogue is not Epilogue.NONE
-            and self.epilogue not in self.ov.epilogue_modes
-        ):
-            raise ValueError(
-                f"epilogue {self.epilogue} is not in epilogue_modes "
-                f"{tuple(str(m) for m in self.ov.epilogue_modes)}, so it would "
-                "not be compiled in and the kernel would silently apply none"
-            )
-        if self.clamp is not None:
-            lo, hi = self.clamp
-            if lo > hi:
-                raise ValueError(f"clamp min ({lo}) must be <= max ({hi})")
-        if self.ov.rows is not None:
-            self._check_shape(ValueError)
-
-    def _check_shape(self, error) -> None:
-        ov = self.ov
-        # N only needs to tile to tile_n: a trailing group of fewer than
-        # cols column-blocks is handled by per-column trip counts.
-        for name, value, unit in (
-            ("M", self.M, M_TILE * ov.rows),
-            ("K", self.K, MIN_K),
-            ("N", self.N, ov.tile_n),
-        ):
-            if value % unit != 0:
-                raise error(f"{name} ({value}) must be a multiple of {unit}")
-        m_row_blocks = self.M // (M_TILE * ov.rows)
-        if m_row_blocks % ov.m_chunk:
-            # A partial group is inexpressible: the object is m_chunk tiles
-            # wide and the forward always drains that much.
-            raise error(
-                f"m_row_blocks ({m_row_blocks}) must be a multiple of m_chunk "
-                f"({ov.m_chunk}); pass m_chunk=1 for this shape"
-            )
-
-    def compatible(self) -> None:
-        self._check_shape(Incompatible)
-        ov = self.ov
-        if (self._a_split or self._c_split) and _BDS_PER_BLOCK > ov.shim_bds:
-            raise Incompatible(
-                f"M={self.M} K={self.K} N={self.N} needs {_BDS_PER_BLOCK} shim "
-                f"buffer descriptors for the split path but a shim tile has only "
-                f"{ov.shim_bds}."
-            )
-
     # -- geometry of one dispatch ------------------------------------------------
 
     @property
     def _m_row_blocks(self) -> int:
-        return self.M // (M_TILE * self.ov.rows)
+        return self.M // (M_TILE * self.rows)
 
     @property
     def _k_iters(self) -> int:
@@ -730,44 +700,27 @@ class GEMM(Operator[FLMGEMMOverlay]):
     @property
     def _n_units(self) -> int:
         """Groups of m_chunk row-blocks; every leg is issued per unit."""
-        return self._m_row_blocks // self._tuned_ov.m_chunk
+        return self._m_row_blocks // self.m_chunk
 
     @property
     def _a_split(self) -> bool:
         # A mega_row stride lands in the shim BD's 20-bit iteration step, so
         # it overflows once K or N passes ~8191 elements. Such a leg goes out
         # as one transfer per mega_row. m_chunk > 1 forces the same path.
-        ov = self.ov
         return self._n_units > 1 and (
-            ov.m_chunk > 1 or not _hw_stride_ok(ov.rows * M_TILE * self.K)
+            self.m_chunk > 1 or not _hw_stride_ok(self.rows * M_TILE * self.K)
         )
 
     @property
     def _c_split(self) -> bool:
-        return self._m_row_blocks > 1 and not _hw_stride_ok(
-            self.ov.rows * M_TILE * self.N
-        )
-
-    def resident_values(self) -> dict[str, int]:
-        lo, hi = _clamp_bits(self.clamp)
-        return {
-            "n_val": self.N,
-            "m_row_blocks": self._m_row_blocks,
-            "k_iters": self._k_iters,
-            "epilogue": Epilogue(self.epilogue).mode,
-            "clamp_min": lo,
-            "clamp_max": hi,
-            "n_chunks": self._n_units,
-            "n_units": self._n_units,
-        }
+        return self._m_row_blocks > 1 and not _hw_stride_ok(self.rows * M_TILE * self.N)
 
     # -- the runtime sequence --------------------------------------------------
 
     def sequence(self, rt):
-        ov = self.ov
         M, K, N = self.M, self.K, self.N
-        COLS, ROWS = ov.cols, ov.rows
-        N_TILE, M_CHUNK, B_GROUP = ov.tile_n, ov.m_chunk, ov.b_group
+        COLS, ROWS = self.cols, self.rows
+        N_TILE, M_CHUNK, B_GROUP = self.tile_n, self.m_chunk, self.b_group
         m_row_blocks, k_iters, n_units = (
             self._m_row_blocks,
             self._k_iters,
@@ -776,7 +729,7 @@ class GEMM(Operator[FLMGEMMOverlay]):
         a_split, c_split = self._a_split, self._c_split
         # The unsplit path pipelines whole column-blocks, at 3 descriptors
         # each (A + B + C). The split path bounds itself and ignores this.
-        OVERLAP = max(1, min(OVERLAP_DEFAULT, ov.shim_bds // 3))
+        OVERLAP = max(1, min(OVERLAP_DEFAULT, self.shim_bds // 3))
         # Sweeps where all COLS columns have work, plus a trailing group of
         # rem_blocks columns (0 <= rem_blocks < COLS) that do one block more.
         n_full = N // (N_TILE * COLS)
@@ -873,16 +826,16 @@ class GEMM(Operator[FLMGEMMOverlay]):
                     bounded = (
                         len(taps) > SHIM_TASK_QUEUE and (i + 1) % SHIM_TASK_QUEUE == 0
                     )
-                    rt.fill(ov.a[r], (self.A, tap), group=group, wait=wait or bounded)
+                    rt.fill(self.A.lane(r), tap, group=group, wait=wait or bounded)
 
         def issue_b(mega_col, active_cols, group):
             for c in range(active_cols):
-                rt.fill(ov.b[c], (self.B, b_tap(mega_col, c)), group=group)
+                rt.fill(self.B.lane(c), b_tap(mega_col, c), group=group)
 
         def issue_c(mega_col, active_cols, mbs, group):
             for c in range(active_cols):
                 for tap in c_taps(mega_col, c, mbs):
-                    rt.drain(ov.c[c], (self.C, tap), group=group, wait=True)
+                    rt.drain(self.C.lane(c), tap, group=group, wait=True)
 
         def emit_unsplit():
             pending = []
@@ -950,8 +903,7 @@ class GEMM(Operator[FLMGEMMOverlay]):
     def _reference_shape(self) -> tuple[int, int, int]:
         """The shape the configuration-only module is emitted at: the smallest
         valid one, so the shape-independence is explicit."""
-        ov = self.ov
-        return (M_TILE * ov.rows * ov.m_chunk, MIN_K, ov.tile_n * ov.cols)
+        return (M_TILE * self.rows * self.m_chunk, MIN_K, self.tile_n * self.cols)
 
     def _build(self):
         """The configuration's image plus this shape's instruction stream.
@@ -966,7 +918,7 @@ class GEMM(Operator[FLMGEMMOverlay]):
         from iron.common.image.artifacts import Artifacts, Design, Step
         from iron.common.image.jit_compile import insts_design, xclbin_design
 
-        if self.ov.external is not None:
+        if self.external is not None:
             return super()._build()  # the downloaded image, instructions only
         tuned = self.resolved(aie_utils.get_current_device())
         M, K, N = tuned._reference_shape
@@ -1011,22 +963,22 @@ class GEMM(Operator[FLMGEMMOverlay]):
         consumption order is what makes both B hops linear descriptors. See
         :mod:`iron.operators.flm.packing`.
         """
-        ov = self._tuned_ov
+        t = self._tuned
         return pack_b(
             B,
             k_tile=K_TILE,
-            n_tile=ov.tile_n,
+            n_tile=t.tile_n,
             s=S,
             t=T,
-            ct_k=ov.ct_max_k,
-            bfp16=bool(ov.bfp16_b),
-            round_conv_even=ov.rounding is Rounding.CONV_EVEN,
-            overlay_order=ov.b_overlay_order,
+            ct_k=t.ct_max_k,
+            bfp16=bool(t.bfp16_b),
+            round_conv_even=t.rounding is Rounding.CONV_EVEN,
+            overlay_order=t.b_overlay_order,
         )
 
     def packed_B_size(self, K, N):
         """Elements (bf16) or bytes (bfp16ebs8) that ``pack_B`` returns."""
-        return packed_b_size(K, N, bool(self.ov.bfp16_b))
+        return packed_b_size(K, N, bool(self._tuned.bfp16_b))
 
     def reference(self, A, B):
         """CPU reference: ``C = epilogue(A @ B)``."""

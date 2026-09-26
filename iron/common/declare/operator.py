@@ -71,6 +71,26 @@ def _overlay_class_of(cls: type) -> type | None:
     return None
 
 
+def _check_shipped(cls: type) -> None:
+    """What a class declared with ``image=`` must say, since nothing builds it."""
+    if "array" in vars(cls):
+        raise DeclarationError(
+            f"{cls.__name__} runs a shipped image, so nothing builds its array(); "
+            f"drop the override"
+        )
+    for m in cls._members:
+        if isinstance(m, _Stream) and m.via is None:
+            raise DeclarationError(
+                f"{cls.__name__}.{m.name}: a stream into a shipped image must be "
+                f"pinned with via=; nothing else says which shim it uses"
+            )
+        if isinstance(m, Value) and m.derive is not None and m.address is None:
+            raise DeclarationError(
+                f"{cls.__name__}.{m.name}: a value written into a shipped image "
+                f"needs an address; the sequence writes it there"
+            )
+
+
 class _Itself:
     """``op.ov`` on a one-class operator: the operator is its own array.
 
@@ -160,10 +180,15 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
     # operator tested by its own test.py, or not on its own.
     test: ClassVar[Testing | None] = None
 
-    def __init_subclass__(cls, **kwargs) -> None:
+    def __init_subclass__(cls, image=None, **kwargs) -> None:
         super().__init_subclass__(**kwargs)  # Generic's, first: it sets __parameters__
         overlay_cls = _overlay_class_of(cls)
         cls._overlay_class = overlay_cls
+        if image is not None:
+            # A shipped image: ``class Shipped(GEMM, image=Xclbin(...))``.
+            # Nothing builds its array, so it declares where every stream
+            # enters and every value lives, and may not define array().
+            cls._external = image
         if overlay_cls is not None and not any(
             "ov" in getattr(b, "__dataclass_fields__", {}) for b in cls.__mro__[1:]
         ):
@@ -171,6 +196,8 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
             own = cls.__dict__.get("__annotations__", {})
             cls.__annotations__ = {"ov": overlay_cls, **own}
         declare(cls, repr=False)
+        if image is not None:
+            _check_shipped(cls)
         for m in cls._members:
             if overlay_cls is not None and isinstance(m, (_Stream, Resident)):
                 raise DeclarationError(
@@ -309,6 +336,12 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
     def external(self):
         """The downloaded image this operator runs on, if IRON did not build it."""
         return type(self)._external
+
+    def prebuilt(self):
+        """The file the declared image names, fetched if it is not in the cache."""
+        from ..external import fetch  # imports this package: a cycle at module scope
+
+        return fetch(self.ov.external)
 
     @classmethod
     def shim_columns(cls, dev, num_channels: int = 1) -> int:

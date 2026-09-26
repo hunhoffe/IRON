@@ -15,7 +15,6 @@ binary.
 from __future__ import annotations
 
 import dataclasses
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Self, dataclass_transform
 
 from aie.dialects.aie import (
@@ -136,15 +135,6 @@ class Overlay:
                     f"{cls.__name__}.{m.name}: a resident of an external overlay needs "
                     f"an address; the sequence writes it there"
                 )
-        if not images:
-            return
-        for hook in ("prebuilt", "build"):
-            if getattr(cls, hook) is getattr(Overlay, hook):
-                raise DeclarationError(
-                    f"{cls.__name__} declares an Xclbin, so nothing builds its array: "
-                    f"it must supply {hook}() (iron.common.external.External "
-                    f"does, for a downloaded image)"
-                )
 
     @property
     def external(self) -> Xclbin | None:
@@ -161,24 +151,6 @@ class Overlay:
     def check_shim_columns(self, dev, cols: int, num_channels: int = 1) -> None:
         """Raise :class:`Unresolvable` if ``cols`` exceeds the shim budget."""
         check_shim_columns(self, dev, cols, num_channels)
-
-    # -- an overlay IRON does not design() ---------------------------------
-
-    def prebuilt(self) -> Path:
-        """The file the declared :class:`Xclbin` names, fetched if it is not
-        already in the cache.
-        """
-        raise NotImplementedError(
-            f"{type(self).__name__} declares an Xclbin but no prebuilt()"
-        )
-
-    def build(self, dev, op: "Operator"):
-        """The MLIR module for ``op`` on this overlay, when ``design()`` does
-        not build the array: a runtime sequence against the prebuilt image.
-        """
-        raise NotImplementedError(
-            f"{type(self).__name__} declares an Xclbin but no build()"
-        )
 
     # -- the sequence, when the overlay owns it -----------------------------
 

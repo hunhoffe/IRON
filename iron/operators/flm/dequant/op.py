@@ -15,9 +15,6 @@ from iron.common.declare import (
     Incompatible,
     Operator,
     Out,
-    Overlay,
-    StreamIn,
-    StreamOut,
     Unresolvable,
     param,
     auto,
@@ -52,28 +49,59 @@ from iron.operators.flm.dequant.design import (
 BFP16_GROUP_BYTES = 9
 
 
-class FLMDequantOverlay(Overlay):
-    """The 4-row grid, as wide as the device, for one q4nx tiling.
+class DequantBFP(Operator):
+    """q4nx weights to bfp16, packed the way ``flm.GEMM`` reads B.
 
-    Nothing here depends on K or N: every core loops forever over identical
-    per-block work, so one xclbin serves every weight shape. See README.md.
+    The array is the 4-row grid, as wide as the device, for one q4nx
+    tiling: nothing in it depends on K or N, since every core loops forever
+    over identical per-block work, so one xclbin serves every weight shape.
+    K, N and the interleave move offsets inside the instruction stream only.
+    See README.md for the layout, the parameters and the constraints.
     """
 
+    K: int = param()
+    N: int = param()
+    # A projection interleaved with another in the same buffer: this one
+    # occupies ``run_out_features`` of every ``run_period_out_features``.
+    run_out_features: int | None = param(default=None)
+    run_period_out_features: int | None = param(default=None)
+    # Each buffer is declared in the unit its transfers count in. The q4nx
+    # input is bytes, because a block interleaves three tables at 5 bits per
+    # weight and the fill walks it bytewise. The output is bfp16ebs8 blocks,
+    # because that is what the drains index -- declaring it in its 9-byte
+    # equivalent would make every offset and length address a ninth of what
+    # it names. Filled by validate() from K, N and the interleave.
+    quantized_bytes: int | None = param(default=None, repr=False)
+    packed_blocks: int | None = param(default=None, repr=False)
     # The n tile width the packed output is written for. It has to match the
     # tile_n flm.GEMM reads B at, or the GEMM reads the right bytes in the
     # wrong order.
-    tile_n: int | None = auto()
+    tile_n: int = auto()
     # cols follows the device. ROWS is structural -- it is baked into the
     # split offsets and the join -- so it is not a field; halves is, because
     # a stream's replication count has to be declared to be indexed.
-    cols: int | None = auto(repr=False)
+    cols: int = auto(repr=False)
     halves: int = auto(HALVES, repr=False)
 
     # One q4nx block per core, delivered as one per-column object the cores
     # split; one packed half-tile out per (column, n-half), joined from the
     # two cores that share it.
-    qw = StreamIn(ROWS * BLOCK_BYTES, dtype=np.uint8, per=cols, depth=2)
-    out = StreamOut(HALF_BLOCKS, dtype=v8bfp16ebs8, per=(cols, halves), depth=2)
+    qw = In(
+        quantized_bytes,
+        dtype=np.uint8,
+        tile=(ROWS * BLOCK_BYTES,),
+        per=(cols,),
+        depth=2,
+    )
+    out = Out(
+        packed_blocks,
+        dtype=v8bfp16ebs8,
+        tile=(HALF_BLOCKS,),
+        per=(cols, halves),
+        depth=2,
+    )
+
+    # -- checks ----------------------------------------------------------------
 
     def validate(self) -> None:
         # Not a ValueError: tile_n=128 is a legitimate thing for flm.GEMM to
@@ -84,8 +112,25 @@ class FLMDequantOverlay(Overlay):
                 f"flm.GEMM picks {self.tile_n} for some shapes, and the two must "
                 "agree or the GEMM reads B in the wrong order"
             )
+        self._check_shape(ValueError)
+        # Validates the pair and the multiples; the result is used below.
+        run_geometry(
+            self.run_out_features, self.run_period_out_features, self.N // N_TILE
+        )
+        for name, computed in (
+            ("quantized_bytes", self.quantized_size()),
+            ("packed_blocks", self.K * self.N // BFP16_GROUP),
+        ):
+            declared = getattr(self, name)
+            if declared is None:
+                setattr(self, name, computed)
+            elif declared != computed:
+                raise ValueError(
+                    f"{name}={declared} does not match K={self.K}, N={self.N} "
+                    f"({computed})"
+                )
 
-    def resolve(self, dev) -> "FLMDequantOverlay":
+    def resolve(self, dev):
         if dev is None:
             raise Unresolvable(
                 "the q4nx dequant grid defaults from the device; none given"
@@ -98,12 +143,41 @@ class FLMDequantOverlay(Overlay):
             cols=dev.cols if self.cols is None else self.cols,
         )
 
-    def config_name(self, dev_name: str) -> str:
-        """Stem of the artifacts that do not depend on the shape."""
-        return f"FLM_DequantBFP_tn{self.tile_n}_c{self.cols}_{dev_name}"
+    @staticmethod
+    def _check_extents(K, N, error) -> None:
+        """The divisibility rule. It names K or N, never the tile_n a caller
+        did not pass."""
+        if K % K_TILE_B:
+            raise error(f"K ({K}) must be a multiple of {K_TILE_B}")
+        if N % N_TILE:
+            raise error(f"N ({N}) must be a multiple of {N_TILE}")
 
-    def name_parts(self) -> list[str]:
-        return [self.config_name(aie_utils.get_current_device().resolve().name)]
+    def _check_shape(self, error) -> None:
+        self._check_extents(self.K, self.N, error)
+
+    def compatible(self) -> None:
+        self._check_shape(Incompatible)
+
+    # -- names -----------------------------------------------------------------
+
+    @property
+    def config_name(self) -> str:
+        """Stem of the artifacts that do not depend on the shape: the xclbin's."""
+        t = self if self._resolved else self.resolved(aie_utils.get_current_device())
+        dev_name = aie_utils.get_current_device().resolve().name
+        return f"FLM_DequantBFP_tn{t.tile_n}_c{t.cols}_{dev_name}"
+
+    @property
+    def name(self) -> str:
+        """Stem of the instruction stream, which does depend on the shape.
+
+        The build cache keys on filename, and ``iron.operators.Dequant`` would
+        otherwise share this stem.
+        """
+        base = f"{self.config_name}_K{self.K}_N{self.N}"
+        if self.run_out_features is not None:
+            base = f"{base}_run{self.run_out_features}p{self.run_period_out_features}"
+        return base
 
     # -- the array -------------------------------------------------------------
 
@@ -131,7 +205,7 @@ class FLMDequantOverlay(Overlay):
         workers = []
         for c in range(cols):
             of_qw = ObjectFifo(qw_col_ty, name=f"qw_{c}", depth=2)
-            self.qw[c].bind(of_qw.prod())
+            self.qw.lane(c).bind(of_qw.prod())
             qw_cores = of_qw.cons().split(
                 [BLOCK_BYTES * r for r in range(ROWS)],
                 obj_types=[qw_blk_ty] * ROWS,
@@ -141,7 +215,7 @@ class FLMDequantOverlay(Overlay):
             out_cores = []
             for h in range(HALVES):
                 of_out = ObjectFifo(out_half_ty, name=f"w_{c}_{h}", depth=2)
-                self.out[c * HALVES + h].bind(of_out.cons())
+                self.out.lane(c * HALVES + h).bind(of_out.cons())
                 out_cores += of_out.prod().join(
                     CORE_JOIN_OFFSETS,
                     obj_types=[out_blk_ty] * (ROWS // HALVES),
@@ -159,92 +233,6 @@ class FLMDequantOverlay(Overlay):
             ]
         return workers
 
-
-class DequantBFP(Operator[FLMDequantOverlay]):
-    """q4nx weights to bfp16, packed the way ``flm.GEMM`` reads B.
-
-    K, N and the interleave are runtime parameters: they move offsets inside
-    the instruction stream only, so every shape shares one xclbin. See
-    README.md for the layout, the parameters and the constraints.
-    """
-
-    K: int = param()
-    N: int = param()
-    # A projection interleaved with another in the same buffer: this one
-    # occupies ``run_out_features`` of every ``run_period_out_features``.
-    run_out_features: int | None = param(default=None)
-    run_period_out_features: int | None = param(default=None)
-    # Each buffer is declared in the unit its transfers count in. The q4nx
-    # input is bytes, because a block interleaves three tables at 5 bits per
-    # weight and the fill walks it bytewise. The output is bfp16ebs8 blocks,
-    # because that is what the drains index -- declaring it in its 9-byte
-    # equivalent would make every offset and length address a ninth of what
-    # it names. Filled by validate() from K, N and the interleave.
-    quantized_bytes: int | None = param(default=None, repr=False)
-    packed_blocks: int | None = param(default=None, repr=False)
-
-    qw = In(quantized_bytes, dtype=np.uint8, to=FLMDequantOverlay.qw)
-    out = Out(packed_blocks, dtype=v8bfp16ebs8, from_=FLMDequantOverlay.out)
-
-    # -- legacy accessors ------------------------------------------------------
-
-    @property
-    def tile_n(self) -> int:
-        return self.ov.tile_n
-
-    @property
-    def config_name(self) -> str:
-        """Stem of the artifacts that do not depend on the shape: the xclbin's."""
-        return self.ov.config_name(aie_utils.get_current_device().resolve().name)
-
-    @property
-    def name(self) -> str:
-        """Stem of the instruction stream, which does depend on the shape.
-
-        The build cache keys on filename, and ``iron.operators.Dequant`` would
-        otherwise share this stem.
-        """
-        base = f"{self.config_name}_K{self.K}_N{self.N}"
-        if self.run_out_features is not None:
-            base = f"{base}_run{self.run_out_features}p{self.run_period_out_features}"
-        return base
-
-    # -- checks ----------------------------------------------------------------
-
-    def validate(self) -> None:
-        self._check_shape(ValueError)
-        # Validates the pair and the multiples; the result is used below.
-        run_geometry(
-            self.run_out_features, self.run_period_out_features, self.N // N_TILE
-        )
-        for name, computed in (
-            ("quantized_bytes", self.quantized_size()),
-            ("packed_blocks", self.K * self.N // BFP16_GROUP),
-        ):
-            declared = getattr(self, name)
-            if declared is None:
-                setattr(self, name, computed)
-            elif declared != computed:
-                raise ValueError(
-                    f"{name}={declared} does not match K={self.K}, N={self.N} "
-                    f"({computed})"
-                )
-
-    @staticmethod
-    def _check_extents(K, N, error) -> None:
-        """The divisibility rule. It names K or N, never the tile_n a caller
-        did not pass."""
-        if K % K_TILE_B:
-            raise error(f"K ({K}) must be a multiple of {K_TILE_B}")
-        if N % N_TILE:
-            raise error(f"N ({N}) must be a multiple of {N_TILE}")
-
-    def _check_shape(self, error) -> None:
-        self._check_extents(self.K, self.N, error)
-
-    def compatible(self) -> None:
-        self._check_shape(Incompatible)
-
     # -- host-side sizes ---------------------------------------------------------
 
     def packed_size(self) -> int:
@@ -260,8 +248,7 @@ class DequantBFP(Operator[FLMDequantOverlay]):
     # -- the runtime sequence --------------------------------------------------
 
     def sequence(self, rt):
-        ov = self.ov
-        cols = ov.cols
+        cols = self.cols
         k_tiles = self.K // K_TILE_B
         blocks_per_row = self.K // K_TILE
         n_blocks = self.N // N_TILE
@@ -286,8 +273,8 @@ class DequantBFP(Operator[FLMDequantOverlay]):
                     (cb // run_blocks) * period_blocks + cb % run_blocks
                 ) * cb_bytes
                 rt.fill(
-                    ov.qw[c],
-                    (self.qw, Access(qw_bytes, offset, qw_sizes, qw_strides)),
+                    self.qw.lane(c),
+                    Access(qw_bytes, offset, qw_sizes, qw_strides),
                     group=tg_fill,
                 )
 
@@ -297,15 +284,12 @@ class DequantBFP(Operator[FLMDequantOverlay]):
                 for c, cb in columns:
                     for h in range(HALVES):
                         rt.drain(
-                            ov.out[c * HALVES + h],
-                            (
-                                self.out,
-                                Access(
-                                    out_blocks,
-                                    (cb * k_tiles + kb) * SLAB_BLOCKS + h * HALF_BLOCKS,
-                                    DRAIN_SIZES,
-                                    DRAIN_STRIDES,
-                                ),
+                            self.out.lane(c * HALVES + h),
+                            Access(
+                                out_blocks,
+                                (cb * k_tiles + kb) * SLAB_BLOCKS + h * HALF_BLOCKS,
+                                DRAIN_SIZES,
+                                DRAIN_STRIDES,
                             ),
                             wait=True,
                             group=tg,
@@ -327,7 +311,7 @@ class DequantBFP(Operator[FLMDequantOverlay]):
     def _reference_shape(self) -> tuple[int, int]:
         """The shape the configuration-only module is emitted at. Its runtime
         sequence is discarded; only its device body reaches the xclbin."""
-        return 2 * K_TILE_B, N_TILE * self.ov.cols
+        return 2 * K_TILE_B, N_TILE * self.cols
 
     def _build(self):
         """The configuration's xclbin plus this shape's instruction stream.

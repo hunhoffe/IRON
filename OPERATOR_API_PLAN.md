@@ -284,7 +284,19 @@ today**.
 
 ## Progress
 
-- (this commit) Step 7, rung 3: GEMM and MHA are one class each (−75
+- (this commit) Step 7, rung 4a: flm's GEMM, its shipped binary and
+  DequantBFP are one class each, so every shipped operator now is. The
+  shipped binary is a subclass declared with the image, `class
+  Shipped(GEMM, image=Xclbin(...))`: it pins the knobs (`init=False`),
+  redeclares the operands with `via=`, hides the port's values and lays
+  the image's parameter block out as one `Value(address=, lock=)`; the
+  library drives the image itself (`External`, `Overlay.prebuilt()` and
+  `Overlay.build()` are gone), and a class declared with an image may not
+  define `array()`, must pin every stream and place every value. flm's
+  `epilogue` resident is `mode`, beside the `epilogue` parameter. Call
+  sites: `Shipped(M=, K=, N=)` for `GEMM(Shipped(), M=, K=, N=)`. Both
+  suites identical to baseline.
+- `45364a2` Step 7, rung 3: GEMM and MHA are one class each (−75
   lines net). Their reduction and tile counts are derived `Value`s; the
   tiles GEMM bakes beyond what its L2 streams name (`tile_m/k/n`, the
   layout flags, the accuracy and rounding flags) are declared array-tier;

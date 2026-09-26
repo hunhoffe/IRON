@@ -20,6 +20,7 @@ from iron.common.declare import (
     Out,
     Overlay,
     Resident,
+    Shim,
     StreamIn,
     StreamOut,
     auto,
@@ -418,15 +419,14 @@ def test_flm_gemm_keyword_construction_tunes_from_the_device(flm):
     # Keyword construction leaves every tunable to the overlay's tuning,
     # which reads the device alone; the operator's extent is checked against
     # the tuned overlay by compatible(), not folded into its defaults.
-    assert flm.GEMM(M=512, K=1024, N=1024).ov.tile_n is None
+    assert flm.GEMM(M=512, K=1024, N=1024).tile_n is None
     op = flm.GEMM(M=512, K=1024, N=1024).resolved(_NPU2())
-    ov = op.ov
-    assert (ov.tile_n, ov.m_chunk, ov.rows, ov.cols, ov.bfp16_b) == (64, 1, 4, 8, True)
-    assert ov.tile_ma == flm._default_l1(64, 128, 9 / 8, 65536, 1)[0]
-    # tile_n is tuning, not a function of K: the same on every shape.
-    assert flm.GEMM(M=256, K=512, N=1024).resolved(_NPU2()).ov.tile_n == 64
+    assert (op.tile_n, op.m_chunk, op.rows, op.cols, op.bfp16_b) == (64, 1, 4, 8, True)
+    assert op.tile_ma == flm._default_l1(64, 128, 9 / 8, 65536, 1)[0]
+    # tile_n is resolution, not a function of K: the same on every shape.
+    assert flm.GEMM(M=256, K=512, N=1024).resolved(_NPU2()).tile_n == 64
     assert (
-        op.config_name == f"FLM_GEMM_tn64_ck128_ma{ov.tile_ma}_mc1_emf_conv_even_npu2"
+        op.config_name == f"FLM_GEMM_tn64_ck128_ma{op.tile_ma}_mc1_emf_conv_even_npu2"
     )
     assert op.name == op.config_name + "_M512_K1024_N1024"
     a, b, c = op.buffers
@@ -439,7 +439,7 @@ def test_flm_gemm_keyword_construction_tunes_from_the_device(flm):
         "n_val": 1024,
         "m_row_blocks": 2,
         "k_iters": 2,
-        "epilogue": 0,
+        "mode": 0,
         "clamp_min": int(np.float32(-np.inf).view(np.int32)),
         "clamp_max": int(np.float32(np.inf).view(np.int32)),
         "n_chunks": 2,
@@ -451,43 +451,38 @@ def test_flm_gemm_keyword_construction_tunes_from_the_device(flm):
         flm.GEMM(M=256, K=1024, N=1024, epilogue="gelu", epilogue_modes=("none",))
 
 
-def test_flm_gemm_declared_overlay_tunes_from_the_device_only(flm):
-    ov = flm.FLMGEMMOverlay().resolved(_NPU2())
-    assert ov.tile_n == 64  # no K to look at: the general winner
-    op = flm.GEMM(ov, M=256, K=512, N=512)
-    assert op.ov.tile_n == 64
-    untuned = flm.GEMM(flm.FLMGEMMOverlay(), M=256, K=512, N=512)
-    with pytest.raises(flm.Incompatible, match="tuned overlay"):
+def test_flm_gemm_layout_of_b_follows_the_device(flm):
+    untuned = flm.GEMM(M=256, K=512, N=512)
+    with pytest.raises(flm.Incompatible):
         [b.shape for b in untuned.buffers]  # B's layout follows the device
+    assert untuned.resolved(_NPU2()).B.shape == (512 * 512 // 8,)
 
 
 def test_flm_gemm_unsplit_sequence_issues_c_then_a_then_b_per_block(flm):
     op = flm.GEMM(M=512, K=1024, N=1024).resolved(_NPU2())
-    ov = op.ov
-    log = _record(ov)
-    op.sequence(Sequence(op, ov, {"A": "dA", "B": "dB", "C": "dC"}))
+    log = _record(op)
+    op.sequence(Sequence(op, op, {"A": "dA", "B": "dB", "C": "dC"}))
     verbs = [v for v, *_ in log]
     # Two column-blocks (N = 2 * 8 * 64): each drains C on eight columns,
     # then fills A on four rows and B on eight columns.
     block = ["drain"] * 8 + ["fill"] * 4 + ["fill"] * 8
     assert verbs == block * 2
     drains = [e for e in log if e[0] == "drain"]
-    assert drains[1] == ("drain", "c1", 64, (1, 2, 256, 64), True)
-    assert drains[8] == ("drain", "c0", 8 * 64, (1, 2, 256, 64), True)
-    a_fills = [e for e in log if e[1].startswith("a")]
-    assert a_fills[1] == ("fill", "a1", 64 * 1024, (2, 2, 64, 512), False)
-    b_fills = [e for e in log if e[1].startswith("b")]
+    assert drains[1] == ("drain", "C1", 64, (1, 2, 256, 64), True)
+    assert drains[8] == ("drain", "C0", 8 * 64, (1, 2, 256, 64), True)
+    a_fills = [e for e in log if e[1].startswith("A")]
+    assert a_fills[1] == ("fill", "A1", 64 * 1024, (2, 2, 64, 512), False)
+    b_fills = [e for e in log if e[1].startswith("B")]
     # B's offsets are in v8bfp16ebs8 elements: values // 8.
-    assert b_fills[1] == ("fill", "b1", 64 * 1024 // 8, (2, 2, 1, 512 * 64 // 8), False)
+    assert b_fills[1] == ("fill", "B1", 64 * 1024 // 8, (2, 2, 1, 512 * 64 // 8), False)
 
 
 def test_flm_gemm_split_sequence_drains_one_row_block_at_a_time(flm):
     # N = 10240 puts C's row-block stride past the 20-bit step: c_split.
     op = flm.GEMM(M=512, K=1024, N=10240).resolved(_NPU2())
     assert op._c_split and not op._a_split
-    ov = op.ov
-    log = _record(ov)
-    op.sequence(Sequence(op, ov, {"A": "dA", "B": "dB", "C": "dC"}))
+    log = _record(op)
+    op.sequence(Sequence(op, op, {"A": "dA", "B": "dB", "C": "dC"}))
     drains = [e for e in log if e[0] == "drain"]
     assert len(drains) == 20 * 8 * 2  # blocks x columns x row-blocks
     assert all(sizes == (1, 1, 256, 64) for _, _, _, sizes, _ in drains)
@@ -537,7 +532,7 @@ def test_mem_copy_sequence_pads_a_remainder_to_a_full_line(monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# flm.gemm.Shipped: an external overlay's sequence, device-free
+# flm.gemm.Shipped: the sequence for a shipped image, device-free
 # --------------------------------------------------------------------------
 
 
@@ -557,52 +552,61 @@ class _ForeignRecorder:
         self.log.append(("await", task))
 
 
-def test_external_overlay_declares_its_pins_and_parameter_block():
-    from iron.common.declare import DeclarationError, Xclbin
+def test_a_shipped_image_declares_its_pins_and_parameter_block():
+    from iron.common.declare import DeclarationError, Value, Xclbin
     from iron.operators.flm.gemm.shipped import Shipped
 
-    ov = Shipped()
-    assert ov.external.filename == "flm_mm_f81eba71.xclbin"
-    assert [(p.col, p.channel) for p in (ov.a.pin(r) for r in range(4))] == [
+    op = Shipped(M=256, K=1024, N=1152)
+    assert op.external.filename == "flm_mm_f81eba71.xclbin"
+    assert [(p.col, p.channel) for p in (op.A.lane(r).shim for r in range(4))] == [
         (0, 0),
         (2, 0),
         (4, 0),
         (6, 0),
     ]
-    assert (ov.b.pin(3).col, ov.b.pin(3).channel) == (3, 1)
-    assert (ov.rtp.address, ov.rtp.lock) == (4096, 10)
+    assert (op.B.lane(3).shim.col, op.B.lane(3).shim.channel) == (3, 1)
+    assert (op.rtp.address, op.rtp.lock) == (4096, 10)
 
+    image = Xclbin(url="u", sha256="s", filename="f")
+    # Nothing builds a shipped image's array, so the declaration has to say
+    # where every stream enters and every value lives, and may not build.
     with pytest.raises(DeclarationError, match="pinned with via="):
 
-        class Unpinned(Overlay):
-            image = Xclbin(url="u", sha256="s", filename="f")
-            s = StreamIn(64)
+        class Unpinned(Operator, image=image):
+            n: int = param()
+            x = In(n, tile=(64,))
 
-    # Nothing designs a prebuilt overlay's array, so the declaration has to
-    # say where the image is and what module drives it. flm's External mixin
-    # answers both; an overlay without it is rejected at declaration.
-    with pytest.raises(DeclarationError, match="must supply prebuilt"):
+    with pytest.raises(DeclarationError, match="needs an address"):
 
-        class Unhooked(Overlay):
-            image = Xclbin(url="u", sha256="s", filename="f")
+        class Unplaced(Operator, image=image):
+            n: int = param()
+            x = In(n, tile=(64,), via=Shim(0))
+            count = Value(np.int32, derive=lambda op: op.n)
+
+    with pytest.raises(DeclarationError, match="nothing builds its array"):
+
+        class Built(Operator, image=image):
+            n: int = param()
+            x = In(n, tile=(64,), via=Shim(0))
+
+            def array(self, target):
+                return []
 
 
 def test_shipped_sequence_writes_every_core_then_streams_in_consume_order():
     from iron.common.external import LOCK_ADDRESS_BASE, run_sequence
-    from iron.operators.flm.gemm.op import GEMM
     from iron.operators.flm.gemm.shipped import Shipped
 
-    ov = Shipped()
-    op = GEMM(ov, M=256, K=1024, N=1152, epilogue="gelu", clamp=(-2.0, 2.0))
-    # The port's residents are hidden; the image's block is laid out from
-    # the operator's values.
-    assert list(ov.residents) == ["rtp"]
-    assert ov.resident_values(op) == {
+    op = Shipped(M=256, K=1024, N=1152, epilogue="gelu", clamp=(-2.0, 2.0))
+    # The port's values are hidden; the image's block is laid out from the
+    # operator's fields.
+    assert list(op.residents) == ["rtp"]
+    assert op.resident_values() == {
         "rtp": [2, 256, 1152, 0, 1, 1, -1073741824, 1073741824]
     }
     rec = _ForeignRecorder()
     cores = [(c, r) for r in range(2, 6) for c in range(8)]
-    run_sequence(op, ov, {"A": "dA", "B": "dB", "C": "dC"}, cores, rec)
+    run_sequence(op, op, {"A": "dA", "B": "dB", "C": "dC"}, cores, rec)
     writes = [e for e in rec.log if e[0] == "w"]
     # 8 words on 32 cores, then one lock release per core, before any DMA.
     assert len(writes) == 32 * 8 + 32
@@ -622,13 +626,13 @@ def test_shipped_sequence_writes_every_core_then_streams_in_consume_order():
     # block on column 0 alone, which still receives A on every row.
     assert len(starts) == 20 + 6
     assert starts[:3] == [
-        ("start", ("a", 0), "dA", 0, (1, 2, 64, 512), (0, 512, 1024, 1)),
-        ("start", ("b", 0), "dB", 0, (1, 1, 1, 131072), (0, 0, 0, 1)),
-        ("start", ("c", 0), "dC", 0, (1, 1, 256, 128), (0, 0, 1152, 1)),
+        ("start", ("A", 0), "dA", 0, (1, 2, 64, 512), (0, 512, 1024, 1)),
+        ("start", ("B", 0), "dB", 0, (1, 1, 1, 131072), (0, 0, 0, 1)),
+        ("start", ("C", 0), "dC", 0, (1, 1, 256, 128), (0, 0, 1152, 1)),
     ]
     assert starts[5] == (
         "start",
-        ("a", 1),
+        ("A", 1),
         "dA",
         64 * 1024,
         (1, 2, 64, 512),

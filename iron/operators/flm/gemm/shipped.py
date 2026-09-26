@@ -1,19 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""FastFlowLM's shipped ``mm`` overlay, as a second overlay for :class:`flm.GEMM`.
+"""FastFlowLM's shipped ``mm`` binary, as a second form of :class:`flm.GEMM`.
 
-The port (:class:`iron.operators.flm.gemm.op.FLMGEMMOverlay`) is built from
-source; this is the binary it was ported from, downloaded and pinned by
-digest, and driven by the same operator::
+The port (:class:`iron.operators.flm.gemm.op.GEMM`) is built from source;
+this is the binary it was ported from, downloaded and pinned by digest, and
+driven by the same declaration::
 
-    GEMM(Shipped(), M=1024, K=1536, N=6144, epilogue="silu")
+    Shipped(M=1024, K=1536, N=6144, epilogue="silu")
 
 It exists so the port can be measured against what it was ported from, on
 identical inputs and through the same host path. NPU2 only: the image is
 an 8-column binary.
 
-Nothing here is built. The overlay names what is baked into the xclbin and
+Nothing here is built. The class names what is baked into the xclbin and
 visible nowhere in it: the shim channel map (A on MM2S channel 0 of columns
 0, 2, 4 and 6; B on MM2S channel 1 of every column; C out of S2MM channel
 0 of every column), the address and lock of the eight parameter words every
@@ -29,24 +29,16 @@ its own (``overlay_order``). ``GEMM(rounding=Rounding.FLOOR)`` on the port
 reproduces this overlay bit for bit without an activation.
 """
 
-from typing import Any, ClassVar
+import dataclasses
+from typing import ClassVar
 
 import numpy as np
 from ml_dtypes import bfloat16
 
-from iron.common.declare import (
-    Resident,
-    Shim,
-    StreamIn,
-    StreamOut,
-    Unresolvable,
-    Xclbin,
-    auto,
-)
+from iron.common.declare import In, Out, Shim, Unresolvable, Value, Xclbin, auto, select
 from iron.common.tiling import Access
-from iron.common.external import External
 from iron.operators.flm.gemm.design import Epilogue, K_TILE, M_TILE
-from iron.operators.flm.gemm.op import FLMGEMMOverlay
+from iron.operators.flm.gemm.op import GEMM, _device_name
 
 # The FastFlowLM revision the overlay is taken from. A commit SHA rather than
 # a branch, so the digest below stays valid.
@@ -77,73 +69,94 @@ MIN_M = M_TILE * ROWS
 MIN_K = K_TILE
 
 
-class Shipped(External, FLMGEMMOverlay):
-    """The shipped 4x8 NPU2 ``mm`` binary: its pins and its parameter block."""
+def _parameter_words(op) -> list[int]:
+    """The image's block of eight words: k_iters, M, N, bias, epilogue mode,
+    clamp on, clamp min, clamp max."""
+    clamp_min, clamp_max = op.clamp if op.clamp is not None else (0.0, 0.0)
+    return [
+        op.K // K_TILE,
+        op.M,
+        op.N,
+        0,  # bias, which the operator does not expose
+        Epilogue(op.epilogue).mode,
+        1 if op.clamp is not None else 0,
+        int(np.float32(clamp_min).view(np.int32)),
+        int(np.float32(clamp_max).view(np.int32)),
+    ]
 
-    image = Xclbin(
+
+class Shipped(
+    GEMM,
+    image=Xclbin(
         url=XCLBIN_URL,
         sha256=XCLBIN_SHA256,
         filename=f"flm_mm_{FASTFLOWLM_COMMIT[:8]}.xclbin",
         kernel_name="MLIR_AIE",
-    )
+    ),
+):
+    """The shipped 4x8 NPU2 ``mm`` binary: its pins and its parameter block."""
 
-    # The port's tunables, fixed by the binary. B is bf16 (no bfp16 on this
+    # The port's knobs, fixed by the binary. B is bf16 (no bfp16 on this
     # image), one row-block per B fetch, and the whole of K in one slice.
-    tile_n: int = auto(N_TILE, repr=False)
-    tile_ma: int = auto(M_TILE, repr=False)
-    m_chunk: int = auto(1, repr=False)
-    rows: int = auto(ROWS, repr=False)
-    cols: int = auto(COLS, repr=False)
-    bfp16_b: bool = auto(False, repr=False)
-    b_dtype: object = auto(bfloat16, repr=False)
-    l1_b_depth: int = auto(QUEUE_DEPTH, repr=False)
-    shim_bds: int = auto(16, repr=False)
-    a_l2: int = auto(M_TILE * K_TILE, repr=False)
-    b_l2: int = auto(K_TILE * N_TILE, repr=False)
-    c_l2: int = auto(ROWS * M_TILE * N_TILE, repr=False)
+    tile_n: int = auto(N_TILE, repr=False, init=False)
+    tile_ma: int = auto(M_TILE, repr=False, init=False)
+    m_chunk: int = auto(1, repr=False, init=False)
+    rows: int = auto(ROWS, repr=False, init=False)
+    cols: int = auto(COLS, repr=False, init=False)
+    bfp16_b: bool = auto(False, repr=False, init=False)
+    b_dtype: object = auto(bfloat16, repr=False, init=False)
+    l1_b_depth: int = auto(QUEUE_DEPTH, repr=False, init=False)
+    shim_bds: int = auto(16, repr=False, init=False)
+    a_l2: int = auto(M_TILE * K_TILE, repr=False, init=False)
+    b_l2: int = auto(K_TILE * N_TILE, repr=False, init=False)
+    c_l2: int = auto(ROWS * M_TILE * N_TILE, repr=False, init=False)
     b_overlay_order: ClassVar[bool] = True
 
     # A: one (M_TILE x K_TILE) block per transfer element, broadcast along
     # each compute row from alternate shim columns on MM2S channel 0.
-    a = StreamIn(
-        M_TILE,
-        K_TILE,
-        per=rows,
+    A = In(
+        GEMM.M,
+        GEMM.K,
+        tile=(M_TILE, K_TILE),
+        per=(GEMM.rows,),
         depth=QUEUE_DEPTH,
         via=[Shim(col, 0) for col in A_SOURCE_COL],
     )
     # B: one column's k-blocks, pre-packed, down each column on MM2S channel 1.
-    b = StreamIn(
-        K_TILE,
-        N_TILE,
-        per=cols,
+    B = In(
+        select(GEMM.bfp16_b, (GEMM.packed_blocks,), (GEMM.K, GEMM.N)),
+        dtype=GEMM.b_dtype,
+        tile=(K_TILE, N_TILE),
+        per=(GEMM.cols,),
         depth=QUEUE_DEPTH,
         via=[Shim(c, 1) for c in range(COLS)],
     )
     # C: the joined (ROWS*M_TILE x N_TILE) block, out of every column on
     # S2MM channel 0.
-    c = StreamOut(
-        ROWS * M_TILE,
-        N_TILE,
-        per=cols,
+    C = Out(
+        GEMM.M,
+        GEMM.N,
+        tile=(ROWS * M_TILE, N_TILE),
+        per=(GEMM.cols,),
         depth=QUEUE_DEPTH,
         via=[Shim(c, 0) for c in range(COLS)],
     )
-    # The port's named residents are not this image's: it reads one block
-    # of eight words behind a lock (k_iters, M, N, bias, epilogue mode,
-    # clamp on, clamp min, clamp max).
-    n_val = m_row_blocks = k_iters = epilogue = clamp_min = clamp_max = None
+    # The port's named values are not this image's: it reads one block of
+    # eight words behind a lock.
+    n_val = m_row_blocks = k_iters = mode = clamp_min = clamp_max = None
     n_chunks = n_units = None
-    rtp = Resident(np.int32, address=RTP_ADDRESS, lock=RTP_LOCK_ID)
+    rtp = Value(
+        np.int32, address=RTP_ADDRESS, lock=RTP_LOCK_ID, derive=_parameter_words
+    )
 
-    def resolve(self, dev) -> "Shipped":
+    def resolve(self, dev):
         if dev is not None and (dev.resolve().name != "npu2" or dev.cols < 8):
             raise Unresolvable(
                 "flm.gemm.Shipped is a prebuilt NPU2 overlay and needs the 8 "
                 f"columns of NPU2 (aie2p); got {dev.resolve().name!r} with "
                 f"{dev.cols} columns"
             )
-        return self
+        return dataclasses.replace(self)
 
     @property
     def ct_max_k(self) -> int:
@@ -151,28 +164,14 @@ class Shipped(External, FLMGEMMOverlay):
         # tile_n=128 does not apply.
         return K_TILE
 
-    def config_name(self, dev_name: str) -> str:
-        return f"FLM_MM_{FASTFLOWLM_COMMIT[:8]}_{dev_name}"
+    @property
+    def config_name(self) -> str:
+        return f"FLM_MM_{FASTFLOWLM_COMMIT[:8]}_{_device_name()}"
 
-    def resident_values(self, op) -> dict[str, Any]:
-        clamp_min, clamp_max = op.clamp if op.clamp is not None else (0.0, 0.0)
-        return {
-            "rtp": [
-                op.K // K_TILE,
-                op.M,
-                op.N,
-                0,  # bias, which the operator does not expose
-                Epilogue(op.epilogue).mode,
-                1 if op.clamp is not None else 0,
-                int(np.float32(clamp_min).view(np.int32)),
-                int(np.float32(clamp_max).view(np.int32)),
-            ]
-        }
-
-    def sequence(self, op, rt) -> None:
+    def sequence(self, rt) -> None:
         """One transfer per (column-block, row-block, leg), in the order the
         memtiles consume: column-block outermost, then row-block, then column."""
-        M, K, N = op.M, op.K, op.N
+        M, K, N = self.M, self.K, self.N
         k_iters = K // K_TILE
         m_row_blocks = M // MIN_M
         # Sweeps of the whole grid, plus a trailing group of rem_blocks
@@ -181,7 +180,7 @@ class Shipped(External, FLMGEMMOverlay):
         # column stops draining it.
         n_full = N // (N_TILE * COLS)
         rem_blocks = (N % (N_TILE * COLS)) // N_TILE
-        a_n, b_n, c_n = op.A.elements, op.B.elements, op.C.elements
+        a_n, b_n, c_n = self.A.elements, self.B.elements, self.C.elements
         for mega_col in range(n_full + (1 if rem_blocks else 0)):
             active = rem_blocks if (rem_blocks and mega_col == n_full) else COLS
             for mega_row in range(m_row_blocks):
@@ -189,15 +188,12 @@ class Shipped(External, FLMGEMMOverlay):
                     if c in A_SOURCE_COL:
                         r = A_SOURCE_COL.index(c)
                         rt.fill(
-                            self.a[r],
-                            (
-                                op.A,
-                                Access(
-                                    a_n,
-                                    mega_row * ROWS * M_TILE * K + r * M_TILE * K,
-                                    (1, k_iters, M_TILE, K_TILE),
-                                    (0, K_TILE, K, 1),
-                                ),
+                            self.A.lane(r),
+                            Access(
+                                a_n,
+                                mega_row * ROWS * M_TILE * K + r * M_TILE * K,
+                                (1, k_iters, M_TILE, K_TILE),
+                                (0, K_TILE, K, 1),
                             ),
                         )
                     if c >= active:
@@ -205,28 +201,22 @@ class Shipped(External, FLMGEMMOverlay):
                     # One contiguous run: pack_B has already put this
                     # column's k-blocks in the order the memtile writes them.
                     rt.fill(
-                        self.b[c],
-                        (
-                            op.B,
-                            Access(
-                                b_n,
-                                (mega_col * COLS + c) * N_TILE * K,
-                                (1, 1, 1, k_iters * K_TILE * N_TILE),
-                                (0, 0, 0, 1),
-                            ),
+                        self.B.lane(c),
+                        Access(
+                            b_n,
+                            (mega_col * COLS + c) * N_TILE * K,
+                            (1, 1, 1, k_iters * K_TILE * N_TILE),
+                            (0, 0, 0, 1),
                         ),
                     )
                     rt.drain(
-                        self.c[c],
-                        (
-                            op.C,
-                            Access(
-                                c_n,
-                                mega_col * COLS * N_TILE
-                                + mega_row * ROWS * M_TILE * N
-                                + c * N_TILE,
-                                (1, 1, ROWS * M_TILE, N_TILE),
-                                (0, 0, N, 1),
-                            ),
+                        self.C.lane(c),
+                        Access(
+                            c_n,
+                            mega_col * COLS * N_TILE
+                            + mega_row * ROWS * M_TILE * N
+                            + c * N_TILE,
+                            (1, 1, ROWS * M_TILE, N_TILE),
+                            (0, 0, N, 1),
                         ),
                     )

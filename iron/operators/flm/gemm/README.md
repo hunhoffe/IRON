@@ -43,7 +43,7 @@ and can pack its weights once. Pick `iron.operators.GEMM` when you need tiling
 control or cannot pre-pack B.
 
 The shipped overlay itself is available as
-`GEMM(Shipped(), ...)` ([the shipped overlay](#the-shipped-overlay)) for comparison; `benchmark.py`
+`Shipped(...)` ([the shipped overlay](#the-shipped-overlay)) for comparison; `benchmark.py`
 measures the two against each other and against `iron.operators.GEMM`.
 
 ## Architectures
@@ -208,7 +208,7 @@ GEMM(M=M, K=K, N=N, context=ctx)                           # conv_even, default
 ```
 
 Verified against the shipped overlay on identical inputs, driven through
-`GEMM(Shipped(), ...)`, which runs that xclbin unmodified: with
+`Shipped(...)`, which runs that xclbin unmodified: with
 `floor` and no activation, output is **bit-identical across all 6291456
 elements**. With the `conv_even` default it differs everywhere, and is far more
 accurate — see [Accuracy](#accuracy).
@@ -302,7 +302,7 @@ M=1024 K=1536 N=6144, min of per-run medians:
 | | bytes moved | latency | err/mass |
 |---|---|---|---|
 | `flm.GEMM` (`tile_n=64`) | 47 MB | **1143 us** | 2.39e-04 |
-| `GEMM(Shipped(), ...)` (the shipped overlay) | 107 MB | 2175 us | 9.87e-03 |
+| `Shipped(...)` (the shipped overlay) | 107 MB | 2175 us | 9.87e-03 |
 | `iron.operators.GEMM` (same emulated mode) | 126 MB | 3353 us | 2.41e-04 |
 
 **1.90x the shipped overlay, and 41x more accurate than it** — the accuracy
@@ -432,7 +432,7 @@ design.py, which would fork the xclbin.
 ```python
 from iron.operators.flm import GEMM, Shipped
 
-op = GEMM(Shipped(), M=1024, K=1536, N=6144, epilogue="silu", context=ctx)
+op = Shipped(M=1024, K=1536, N=6144, epilogue="silu", context=ctx)
 op.compile()
 op.get_callable()(A, op.pack_B(B), C_out)
 ```
@@ -473,7 +473,7 @@ packaging serve it:
 
 ### Differences from the port
 
-| | `GEMM(Shipped(), ...)` | `GEMM(...)` |
+| | `Shipped(...)` | `GEMM(...)` |
 |---|---|---|
 | provenance | shipped binary, downloaded | built from source in this repo |
 | devices | NPU2 only | NPU2 and NPU1 |

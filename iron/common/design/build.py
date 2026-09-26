@@ -52,8 +52,10 @@ def build_design(
     ov = op.ov
     if ov.external is not None:
         # A downloaded image: no array to build, only the sequence against
-        # the pins the overlay declares, which the overlay itself emits.
-        return ov.build(dev, op)
+        # its pins. external imports this package, so the name is local.
+        from ..external import build_external
+
+        return build_external(dev, op)
     target = Target(dev, kernels_dir, trace_size, image)
 
     # Per-call values get their device parameters before the array is built,
