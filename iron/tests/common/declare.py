@@ -10,6 +10,7 @@ The design-generating half is ``iron/common/design/`` and needs the
 toolchain.
 """
 
+import contextlib
 import dataclasses
 
 import numpy as np
@@ -232,6 +233,79 @@ def test_optional_leading_dim_is_omitted_when_one():
     assert MV(M=64, K=256).A.shape == (64, 256)
     assert MV(M=64, K=256, num_batches=3).A.shape == (3, 64, 256)
     assert MV(M=64, K=256, num_batches=3).C.shape == (3, 64)
+
+
+def test_an_optional_dim_may_sit_anywhere_and_an_operand_of_either_rank_binds_it():
+    class Stack(Operator):
+        rows: int = param()
+        cols: int = param()
+        seq: int = param(default=1)
+        x = In(rows, optional(seq), cols)
+        y = Out(rows, optional(seq), cols)
+
+    assert infer(Stack, (8, 64)) == {"rows": 8, "cols": 64, "seq": 1}
+    assert infer(Stack, (8, 16, 64)) == {"rows": 8, "cols": 64, "seq": 16}
+    with pytest.raises(ValueError, match="rank 4"):
+        infer(Stack, (8, 2, 16, 64))
+    assert Stack(rows=8, cols=64).x.shape == (8, 64)
+    assert Stack(rows=8, cols=64, seq=16).y.shape == (8, 16, 64)
+
+
+class _RecordingRuntime:
+    """What a sequence hands ``rt.fill``/``rt.drain``: ``(buffer name, descriptor)``."""
+
+    def __init__(self) -> None:
+        self.calls: list = []
+
+    @contextlib.contextmanager
+    def group(self):
+        yield self
+
+    def fill(self, buffer, tap, **_):
+        self.calls.append(("fill", buffer.name, tap))
+
+    def drain(self, buffer, tap, **_):
+        self.calls.append(("drain", buffer.name, tap))
+
+
+def test_a_stack_and_its_flat_spelling_move_the_same_descriptors():
+    """``Repeat`` on the cache ``(G, L, D)`` is the repeat on ``(G, L * D)``:
+    the same rows, the same row length, the same transfers.
+    """
+    from iron.operators.repeat import Repeat
+
+    flat = Repeat(rows=8, cols=2048 * 64, repeat=4, transfer_size=64)
+    stack = Repeat(rows=8, seq=2048, cols=64, repeat=4)
+    assert stack.x.shape == (8, 2048, 64) and stack.y.shape == (32, 2048, 64)
+    taps = []
+    for op in (flat, stack):
+        rt = _RecordingRuntime()
+        op.resolved(FakeDev(cols=8)).sequence(rt)
+        taps.append(rt.calls)
+    assert taps[0] == taps[1]
+    assert stack.resolved(FakeDev(cols=8)).transfer_size == 64  # the row's last axis
+
+
+def test_explain_says_what_a_build_compiles_in_and_what_it_takes_per_call():
+    op = MV(M=1024, K=128, columns=2)
+    lines = op.explain().splitlines()
+    assert lines[0].startswith("MV(") and lines[0].endswith("(unresolved)")
+    assert lines[1] == (
+        "  array, compiled into every core: K=128, columns=2, tile_out=64, "
+        "epilogue='none'"
+    )
+    assert lines[2] == "  sequence, the host's alone: M=1024, num_batches=1, vec=None"
+    assert lines[3] == "  count: written once per build"
+    assert lines[4] == "  start: unused here"  # MV binds it only when a graph does
+    resolved = op.resolved(FakeDev(cols=8)).explain().splitlines()
+    assert resolved[0].endswith("(resolved)") and "vec=64" in resolved[2]
+    assert resolved[3] == "  count: written once per build, 8 here"
+    op.use_value("count")  # a graph binds them: per call from here on
+    op.use_value("start")
+    assert op.explain().splitlines()[3:] == [
+        "  count: per call, a scratchpad word patched or read",
+        "  start: per call, a scratchpad word patched or read",
+    ]
 
 
 def test_buffers_carry_the_declared_dtype_and_size():

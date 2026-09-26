@@ -404,7 +404,8 @@ example, and `test_llama_names_only_the_knobs_that_matter` proves each
 keyword the graph still spells is one the profile could not have given).
 
 Operators with equal `array_key()` share one array; with equal
-`design_key()` they are one build. `compile(dev, boundaries=, image=)` derives the image (a
+`design_key()` they are one build; `op.explain()` prints which fields are
+which and how each value reaches the device. `compile(dev, boundaries=, image=)` derives the image (a
 fused ELF on NPU2, per-step xclbins with `boundaries=iron.each_step`) and
 `verbose=True` prints why. It links the image (`net.image`) and stops
 there: the runtime that loads it is made on the first call, so a host with

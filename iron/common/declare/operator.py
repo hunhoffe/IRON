@@ -623,3 +623,47 @@ class Operator(metaclass=_OperatorMeta):
             if f.repr
         )
         return f"{type(self).__name__}({own})"
+
+    def explain(self) -> str:
+        """What a build of this operator compiles in and what it takes per call.
+
+        One line per tier: the array's fields (every core is built from them;
+        one array serves every operator with the same), the sequence's (the
+        host's alone), then each value: written once per build, with its
+        number once resolved; per call, as a scratchpad word or a regenerated
+        instruction stream; or unused by this instance.
+        """
+        fields = {
+            f.name: getattr(self, f.name) for f in dataclasses.fields(self) if f.compare
+        }
+
+        def spell(names):
+            return ", ".join(f"{n}={fields[n]!r}" for n in names) or "nothing"
+
+        array = [n for n in fields if n in self._array_fields]
+        sequence = [n for n in fields if n not in self._array_fields]
+        lines = [
+            repr(self) + (" (resolved)" if self._resolved else " (unresolved)"),
+            f"  array, compiled into every core: {spell(array)}",
+            f"  sequence, the host's alone: {spell(sequence)}",
+        ]
+        for m in self._members:
+            if not isinstance(m, _Value):
+                continue
+            if (
+                isinstance(m, Value)
+                and m.derive is not None
+                and not self.uses_value(m.name)
+            ):
+                given = f", {m.derive(self)!r} here" if self._resolved else ""
+                how = "written once per build" + given
+            elif self.uses_value(m.name):
+                how = "per call, " + (
+                    "the instruction stream regenerated around it"
+                    if m.kind == "dispatch"
+                    else "a scratchpad word patched or read"
+                )
+            else:
+                how = "unused here"
+            lines.append(f"  {m.name}: {how}")
+        return "\n".join(lines)

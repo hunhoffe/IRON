@@ -87,7 +87,6 @@ def profile(config, max_seq_len) -> Profile:
     p.add(GEMV, M=E, K=F, tile_size_input=1, tile_size_output=E // cols)  # down
     p.add(GEMV, M=L, K=D, num_batches=H, tile_size_output=L // cols)  # scores
     p.add(GEMV, M=V, K=E, tile_size_output=32)  # the head
-    p.add(Repeat, transfer_size=D)
     p.add(Transpose, M=L, N=D, num_batches=H, num_aie_columns=2, m=256, n=32)
     p.add(ElementwiseAdd, size=E, tile_size=E // cols)
     p.add(ElementwiseMul, size=F, tile_size=F // cols)
@@ -112,8 +111,8 @@ class LlamaGraph:
     """The graph function and the state it closes over.
 
     ``keys[i]`` and ``values[i]`` are the layer caches, each ``(n_kv_groups,
-    max_seq_len * head_dim)``: the flat per-group layout both phases write
-    and decode's repeat reads. ``scale`` is the attention scale as a tensor,
+    max_seq_len, head_dim)``: the per-group layout both phases write and
+    decode's repeat reads. ``scale`` is the attention scale as a tensor,
     since the elementwise multiply takes one.
 
     A prompt of ``rows`` rows needs ``rows`` a multiple of 512 (MHA's eight
@@ -154,9 +153,9 @@ class LlamaGraph:
             Copy(k, keys[i][:, cache_offset])
             Copy(v.reshape(G, D), values[i][:, cache_offset])
             # Every head sees its group's keys and values.
-            k_all = Repeat(keys[i].reshape(G, L * D), repeat=H // G)
-            v_all = Repeat(values[i].reshape(G, L * D), repeat=H // G)
-            scores = GEMV(k_all.reshape(H, L, D), q)
+            k_all = Repeat(keys[i], repeat=H // G)
+            v_all = Repeat(values[i], repeat=H // G)
+            scores = GEMV(k_all, q)
             # One row of scores per column; its size is the FFN's when
             # H * L == F, so the tile is said here.
             scores = ElementwiseMul(scores, scale, tile_size=L // cols)
@@ -164,7 +163,7 @@ class LlamaGraph:
             # every column from there on, so the cache's unwritten tail
             # contributes nothing.
             weights = Softmax(scores, vector_size=vector_size)
-            v_t = Transpose(v_all.reshape(H, L, D))
+            v_t = Transpose(v_all)
             ctx = GEMV(v_t, weights)
             o = GEMV(lw.o, ctx.reshape(H * D))
             # </grouped query attention>

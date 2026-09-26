@@ -162,12 +162,13 @@ class DimRef:
 
 
 class _Optional:
-    """A leading dimension that is present only when greater than one.
+    """A dimension that is present only when greater than one.
 
     ``In(optional(num_batches), M, K)`` declares ``(M, K)`` for a single batch
     and ``(num_batches, M, K)`` otherwise, which is how batched operators
-    already spell their host shapes. Inference reads the rank to tell the two
-    apart.
+    already spell their host shapes; ``In(rows, optional(seq), cols)`` takes
+    a matrix or a stack of them. Inference reads the rank to tell the two
+    apart, so a declaration has at most one.
     """
 
     __slots__ = ("ref",)
@@ -180,7 +181,7 @@ class _Optional:
 
 
 def optional(ref) -> _Optional:
-    """Mark a leading dimension as omitted when it equals one. See :class:`_Optional`."""
+    """Mark a dimension as omitted when it equals one. See :class:`_Optional`."""
     return _Optional(ref)
 
 

@@ -167,6 +167,11 @@ def declare(cls: type) -> None:
                 _check_dim_ref(
                     cls, m, d, "dimension", allow_tunable=isinstance(m, _Stream)
                 )
+            if sum(isinstance(d, _Optional) for d in m.dims) > 1:
+                raise DeclarationError(
+                    f"{cls.__name__}.{m.name}: at most one optional() dimension, "
+                    f"since the rank tells whether it is present"
+                )
         if isinstance(m, _Stream) and m.per is not None:
             per = m.per if isinstance(m.per, tuple) else (m.per,)
             per = _rewrite_refs(per, cls, fields_by_obj)

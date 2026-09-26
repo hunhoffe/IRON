@@ -64,19 +64,19 @@ def infer(cls, *operand_shapes, outputs=(), **given) -> dict[str, Any]:
     for m, shape in pairs:
         shape = tuple(int(s) for s in shape)
         dims = list(m.dims)
-        leading = dims[0] if dims and isinstance(dims[0], _Optional) else None
-        if leading is not None:
-            if len(shape) == len(dims):
-                bind(leading.ref, shape[0], f"{m.name}.shape[0]")
-                shape = shape[1:]
-            elif len(shape) == len(dims) - 1:
-                bind(leading.ref, 1, f"{m.name} (rank {len(shape)})")
+        at = next((i for i, d in enumerate(dims) if isinstance(d, _Optional)), None)
+        if at is not None:
+            optional = dims.pop(at)
+            if len(shape) == len(dims) + 1:
+                bind(optional.ref, shape[at], f"{m.name}.shape[{at}]")
+                shape = shape[:at] + shape[at + 1 :]
+            elif len(shape) == len(dims):
+                bind(optional.ref, 1, f"{m.name} (rank {len(shape)})")
             else:
                 raise ValueError(
                     f"{cls.__name__}: operand {m.name} has rank {len(shape)}, "
                     f"declared {m!r}"
                 )
-            dims = dims[1:]
         expanded: list = []
         for d in dims:
             if isinstance(d, _Select):

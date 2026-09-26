@@ -290,6 +290,34 @@ today**.
 
 ## Progress
 
+- (this commit) `explain()` (decision 3B's last item) and rank-3 Repeat.
+  `op.explain()` prints the array tier, the sequence tier and each value's
+  route: written once per build (with its number once resolved), per call
+  as a scratchpad word or a regenerated stream, or unused. `optional()`
+  may sit on any axis of a declaration (one per declaration; the rank says
+  whether it is present), so `Repeat` declares `In(rows, optional(seq),
+  cols)` and takes the cache `(G, L, D)` as it is: the four reshapes
+  around llama's two repeats are gone (17 → 13; the rest split heads out
+  of a projection's flat output, which is the projection's rank, not the
+  graph's), the profile's `transfer_size=D` line with them, since a row's
+  last axis is the default. The real-shape equivalence check against the
+  explicit graph stays identical. Both suites identical to baseline.
+- (this commit) Review of the open typing item (Step 7, "open, noted": a
+  per-call value at a graph call site is not a parameter a checker knows).
+  Probed with pyright. The constructor form can be typed: a `Value` that
+  is a descriptor-typed dataclass field (`__set__` takes `T | Handle`,
+  `__get__` returns the bound value) makes `MV(M=, K=, start="x")` and
+  `MV(..., strat=5)` errors and `op.start` a typed read, at the price of
+  an annotation on every `Value` line (`start: Value[np.int32] =
+  Value(np.int32)`, since an unannotated class attribute is not a field to
+  a checker). The graph-call form cannot: `MV(a, b, start=pos)` goes
+  through the metaclass `__call__`, whose `**kwargs` no annotation can tie
+  to the class's own fields, so a misspelled or mistyped value there is
+  caught at trace time only (it is: `TypeError: has no per-call value`).
+  Recommendation: leave it. The constructor form is the rarer one for a
+  value (a number there is a resident, which `derive=` already covers),
+  and the annotation tax lands on every operator for a check the graph
+  form, where values are actually bound, cannot get.
 - `8738ce5` Profiles. `Profile` (`declare/profile.py`, exported from
   `iron.common`) is data: `add(cls, **fields)` lines whose `param()`
   fields select operators by shape (one left out matches any value) and

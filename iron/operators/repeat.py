@@ -9,7 +9,7 @@ import numpy as np
 from aie.utils.verify import Tolerance
 from ml_dtypes import bfloat16
 
-from iron.common import In, Operator, Out, auto, param
+from iron.common import In, Operator, Out, auto, optional, param
 from iron.common.testing import Case, Testing
 from iron.common.tiling import DMA_BD_MAX_WRAP, Access, granule_elements
 
@@ -19,7 +19,9 @@ class Repeat(Operator):
     ``transfer_size`` elements, no cores.
 
     The repeat is entirely in the runtime sequence's descriptors: the input
-    is re-read ``repeat`` times and the output interleaved.
+    is re-read ``repeat`` times and the output interleaved. The input is
+    ``(rows, cols)`` or a stack ``(rows, seq, cols)``, repeated along its
+    first axis either way; a row is ``seq * cols`` elements.
     """
 
     # rows, cols, repeat, transfer_size. The sequence splits cols into chunks
@@ -50,13 +52,14 @@ class Repeat(Operator):
     rows: int = param()
     cols: int = param()
     repeat: int = param()
+    seq: int = param(default=1)  # the stack's middle axis; absent when one
     # rows * repeat; derived unless given, since a shape may not be an expression.
     out_rows: int | None = param(default=None, repr=False)
     transfer_size: int = auto(repr=False)  # None: cols
     dtype: Any = field(default=bfloat16, repr=False)
 
-    x = In(rows, cols, dtype=dtype, tile=(transfer_size,))
-    y = Out(out_rows, cols, dtype=dtype, tile=(transfer_size,))
+    x = In(rows, optional(seq), cols, dtype=dtype, tile=(transfer_size,))
+    y = Out(out_rows, optional(seq), cols, dtype=dtype, tile=(transfer_size,))
 
     def validate(self) -> None:
         expected = self.rows * self.repeat
@@ -71,8 +74,13 @@ class Repeat(Operator):
     def resolve(self, dev):
         return dataclasses.replace(self, transfer_size=self.transfer_size or self.cols)
 
+    @property
+    def row(self) -> int:
+        """Elements per row: ``seq * cols``."""
+        return self.seq * self.cols
+
     def _cols_split(self) -> int:
-        """Split cols into cols_split chunks of cols // cols_split.
+        """Split a row into cols_split chunks of row // cols_split.
 
         The chunk length is the innermost descriptor dimension, at most 1023
         and a whole number of 32-bit words; the chunk count is the next
@@ -80,7 +88,7 @@ class Repeat(Operator):
         no split of it is ever word-aligned at bf16; that is reported here
         rather than left to the BD verifier.
         """
-        cols = self.cols
+        cols = self.row
         granule = granule_elements(self.dtype)
         for divisor in range(1, cols + 1):
             if cols % divisor:
@@ -109,7 +117,7 @@ class Repeat(Operator):
         return []
 
     def sequence(self, rt):
-        rows, cols, repeat = self.rows, self.cols, self.repeat
+        rows, cols, repeat = self.rows, self.row, self.repeat
         cols_split = self._cols_split()
         chunk = cols // cols_split
         # The chunk length is innermost so the contiguous run is the innermost
