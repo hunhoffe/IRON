@@ -256,7 +256,14 @@ today**.
   (38 files, +390/−509). Failure set identical to baseline.
 - `610c926` Step 1: the bases are dataclasses to a checker; pyright in CI on
   the declare package. Members generic in their bound form; `Self` returns.
-- (this commit) Step 5a: `declare_kernel(source_text=)`: a kernel written
+- (this commit) Step 6: the C11 gate, `tests/toolchain/array_identity.py`:
+  each operator built at two extents with the same knobs must leave
+  byte-identical per-core ELFs (the real build; an insts-only lowering
+  compiles no core). ReLU, ElementwiseAdd, Softmax, RoPE, RMSNorm and GEMM
+  pass on both device widths; GEMV is a strict xfail, since it bakes the
+  rows per column into its core loop (the `rows` `Value` of the merge
+  fixes it); Repeat and Copy have no core.
+- `a99ced5` Step 5a: `declare_kernel(source_text=)`: a kernel written
   in the operator's own file, its recipe digest over the text; the
   hello-world `VectorAdd` (`tests/toolchain/inline_kernel.py`) lowers
   through the toolchain with its `vadd` compiled from the text. The four
