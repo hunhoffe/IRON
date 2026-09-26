@@ -12,6 +12,7 @@ and a :class:`Scratchpad` or :class:`DispatchTime` written per call.
 
 from __future__ import annotations
 
+import contextvars
 from typing import TYPE_CHECKING, Any, Callable, ClassVar, Generic, TypeVar, overload
 
 import numpy as np
@@ -266,6 +267,49 @@ class DispatchTime(_Value):
     """
 
     kind = "dispatch"
+
+
+# The extents a ``derive`` reads, recorded while an operator evaluates one
+# (see Operator._per_call_derived); None when nothing is recording.
+_extent_reads: contextvars.ContextVar[set[str] | None] = contextvars.ContextVar(
+    "iron.extent_reads", default=None
+)
+
+
+class Extent(_Value):
+    """A shape field a graph may bound per call.
+
+    ``valid = Extent(size)`` reads as ``size`` on an instance until a graph
+    bounds an operand the field sizes (``x[:n]``); from then on it is per
+    call, and so is every :class:`Value` whose ``derive`` reads it, which the
+    host evaluates with the call's bound and writes as a word. The image is
+    built for the field's full value, so a bound is at most it. The field is
+    a ``param()``.
+    """
+
+    kind = "scratchpad"
+
+    def __init__(self, field: Any, dtype: Any = np.int32) -> None:
+        super().__init__(dtype)
+        self.field = field  # a Field in the class body; the DimRef once declared
+
+    @overload
+    def __get__(self, instance: None, owner: type | None = None) -> Self: ...
+    @overload
+    def __get__(self, instance: object, owner: type | None = None) -> int: ...
+    def __get__(self, instance, owner=None):
+        if instance is None:
+            return self
+        reads = _extent_reads.get()
+        if reads is not None:
+            reads.add(self.name)
+        bound = instance.__dict__.get("_extents", {}).get(self.name)
+        if bound is not None:
+            return bound
+        return getattr(instance, self.field.name)
+
+    def __repr__(self) -> str:
+        return f"Extent({self.field!r})"
 
 
 class Value(_Value):

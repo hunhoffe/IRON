@@ -47,7 +47,7 @@ its shape fields a graph may bound:
 ```python
 class Elementwise(Operator):
     size: int = param()
-    valid: int = Extent(size)                # size, or fewer per call
+    valid = Extent(size)                     # size, or fewer per call
     count = Value(np.int32, derive=lambda op: op.valid // (op.cores * op.tile_size))
 ```
 
@@ -140,3 +140,19 @@ sets), pyright and ruff clean, and a Progress entry.
    trace against the CPU reference at several prompt lengths.
 
 ## Progress
+
+- `(this commit)` Step 1, the vocabulary. `Extent(field)` is a value
+  member that reads as its field until a graph bounds it; `x[:n]` puts a
+  bound on a handle, carried through `reshape` (rescaled by the merged or
+  split axes) and `transpose`, and refused on a slice of a bounded handle
+  or a start past zero; the tracer binds a bound to the operator's Extent
+  whose field sizes that axis, refuses one where no Extent does, and bounds
+  the outputs the same field sizes, so one slice bounds a whole block. A
+  `Value` whose derivation reads a bound extent is per call: the operator
+  records the extents a derivation touches, `derived_at()` evaluates it at
+  a call's bound, and the compiled graph writes one word per bound value
+  and one per such derivation. `fill`/`drain` take `size_by={dim: word}`:
+  on the dispatch path the scalar replaces the size; on a full ELF it asks
+  the upstream handle for `size_parameters=` and, until mlir-aie has the
+  size kind, raises naming the contract. `explain()` says what is bounded.
+  Both suites identical to baseline; nine new tests.

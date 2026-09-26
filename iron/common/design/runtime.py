@@ -10,6 +10,7 @@ lowers each transfer to MLIR tasks. The same base serves
 
 from __future__ import annotations
 
+import inspect
 from contextlib import contextmanager
 from typing import Any
 
@@ -42,10 +43,14 @@ class Transfers:
 
     op: Operator
 
-    def fill(self, stream, source, *, group=None, wait: bool = False, offset_by=None):
+    def fill(
+        self, stream, source, *, group=None, wait=False, offset_by=None, size_by=None
+    ):
         raise NotImplementedError
 
-    def drain(self, stream, dest, *, group=None, wait: bool = True, offset_by=None):
+    def drain(
+        self, stream, dest, *, group=None, wait=True, offset_by=None, size_by=None
+    ):
         raise NotImplementedError
 
     def group(self):
@@ -100,13 +105,25 @@ class Sequence(Transfers):
 
     # -- transfers ---------------------------------------------------------
 
-    def fill(self, stream, source, *, group=None, wait: bool = False, offset_by=None):
-        return self._transfer("fill", stream, source, group, wait, offset_by)
+    def fill(
+        self, stream, source, *, group=None, wait=False, offset_by=None, size_by=None
+    ):
+        """Fill ``stream`` from ``source``. ``offset_by`` moves the transfer's
+        base address by a per-call value; ``size_by`` (``{dim: value}``)
+        patches the descriptor's size on those dimensions per call, the
+        outermost being 0. Both take scratchpad-kind values.
+        """
+        return self._transfer("fill", stream, source, group, wait, offset_by, size_by)
 
-    def drain(self, stream, dest, *, group=None, wait: bool = True, offset_by=None):
-        return self._transfer("drain", stream, dest, group, wait, offset_by)
+    def drain(
+        self, stream, dest, *, group=None, wait=True, offset_by=None, size_by=None
+    ):
+        """Drain ``stream`` into ``dest``; see :meth:`fill` for the per-call forms."""
+        return self._transfer("drain", stream, dest, group, wait, offset_by, size_by)
 
-    def _transfer(self, verb: str, stream, what, group, wait: bool, offset_by=None):
+    def _transfer(
+        self, verb: str, stream, what, group, wait: bool, offset_by=None, size_by=None
+    ):
         handle = self._handle(stream)
         self.used.add(id(handle))
         buffer, accesses, sliced_by = self._resolve(what, stream)
@@ -116,8 +133,10 @@ class Sequence(Transfers):
                 f"{offset_by.name} has no device parameter: the operator does not use "
                 f"it (uses_value) or the build has not created it yet"
             )
+        sizes_by = self._sizes_by(size_by)
         data = self._rt_data[buffer.name]
         dynamic = offset_by is not None and offset_by.ssa is not None
+        dynamic = dynamic or any(v.ssa is not None for v in sizes_by.values())
         offset_parameter = (
             offset_by.param if offset_by is not None and not dynamic else None
         )
@@ -130,34 +149,81 @@ class Sequence(Transfers):
                 group=group if group is not None else self._group,
             )
             if dynamic:
-                # The dispatch-time form: the same pattern, its offset the
-                # per-call scalar plus the static one, regenerated per call.
-                assert offset_by is not None
+                # The dispatch-time form: the same pattern with the per-call
+                # scalars in place of the constants, regenerated per call.
                 if not isinstance(acc, Access):
                     raise TypeError(
-                        f"{offset_by.name}: a dispatch-time offset needs an Access, "
-                        f"got {acc!r}"
+                        f"a dispatch-time offset or size needs an Access, got {acc!r}"
                     )
+                sizes: list[Any] = list(acc.sizes)
+                for dim, value in sizes_by.items():
+                    sizes[dim] = value.ssa
+                offset = (
+                    _plus(offset_by.ssa, acc.offset)
+                    if offset_by is not None and offset_by.ssa is not None
+                    else acc.offset
+                )
                 tasks.append(
                     fn(
                         data,
-                        sizes=list(acc.sizes),
+                        sizes=sizes,
                         strides=list(acc.strides),
-                        offset=_plus(offset_by.ssa, acc.offset),
+                        offset=offset,
                         transfer_len=acc.count,
                         **common,
                     )
                 )
             else:
+                patched = {}
+                if sizes_by:
+                    if not isinstance(acc, Access):
+                        raise TypeError(f"a per-call size needs an Access, got {acc!r}")
+                    if "size_parameters" not in inspect.signature(fn).parameters:
+                        raise NotImplementedError(
+                            f"{type(self.op).__name__}: a per-call size on a full ELF "
+                            f"needs mlir-aie's size-kind scratchpad parameter "
+                            f"(fill/drain(size_parameters={{dim: param}})), which this "
+                            f"toolchain does not have (LENGTH_FREE_PLAN.md)"
+                        )
+                    patched["size_parameters"] = {
+                        dim: value.param for dim, value in sizes_by.items()
+                    }
                 tasks.append(
                     fn(
                         data,
                         acc.tap() if isinstance(acc, Access) else acc,
                         offset_parameter=offset_parameter,
+                        **patched,
                         **common,
                     )
                 )
         return tasks[-1] if len(tasks) == 1 else tasks
+
+    def _sizes_by(self, size_by) -> dict[int, BoundValue]:
+        """The checked ``{dim: value}`` of a per-call size."""
+        if not size_by:
+            return {}
+        out = {}
+        for dim, value in size_by.items():
+            if not isinstance(value, BoundValue):
+                raise TypeError(
+                    f"size_by takes a value member's word (op.value(name)), got "
+                    f"{value!r} for dimension {dim}"
+                )
+            if value.kind != "scratchpad":
+                raise ValueError(
+                    f"{value.name} is {value.kind}; a per-call size is a scratchpad "
+                    f"word patched into the descriptor"
+                )
+            if value.param is None:
+                raise ValueError(
+                    f"{value.name} has no device parameter: the operator does not "
+                    f"use it (uses_value) or the build has not created it yet"
+                )
+            if not 0 <= int(dim) < 4:
+                raise ValueError(f"a descriptor has dimensions 0..3, not {dim}")
+            out[int(dim)] = value
+        return out
 
     def _handle(self, stream):
         if isinstance(stream, BoundBuffer):

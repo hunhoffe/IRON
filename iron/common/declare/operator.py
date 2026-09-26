@@ -13,6 +13,7 @@ and the instance's buffer attributes report shapes in elements.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import inspect
 from types import FunctionType
@@ -38,7 +39,7 @@ from .bound import BoundBuffer, BoundStream, BoundValue
 from .creation import declare
 from .field import DeclarationError, Unresolvable, param
 from .infer import infer, infer_kwargs
-from .member import Value, _Buffer, _Member, _Stream, _Value
+from .member import Extent, Value, _Buffer, _extent_reads, _Member, _Stream, _Value
 from .naming import label_parts
 from .profile import current as current_profile
 from .shim import check_shim_columns, shim_columns
@@ -479,15 +480,78 @@ class Operator(metaclass=_OperatorMeta):
         """Whether this instance drives the declared per-call value ``name``.
 
         A value an instance does not use gets no device parameter and no
-        sync. The default is every declared value, except a ``Value`` with a
-        derivation, which is per-call only when a graph binds it
-        (:meth:`use_value`); an operator whose values are optional (a copy
-        with or without a patched offset) overrides this.
+        sync. The default is every declared value, except an ``Extent``,
+        per call only when a graph bounds it, and a ``Value`` with a
+        derivation, per call when a graph binds it (:meth:`use_value`) or
+        its derivation reads a bound extent; an operator whose values are
+        optional (a copy with or without a patched offset) overrides this.
         """
         member = next((m for m in self._members if m.name == name), None)
-        if isinstance(member, Value) and member.derive is not None:
+        if isinstance(member, Extent):
             return name in self.used_values
+        if isinstance(member, Value) and member.derive is not None:
+            return name in self.used_values or name in self._per_call_derived()
         return True
+
+    @property
+    def bound_extents(self) -> dict[str, str | None]:
+        """Extent name -> the graph value bounding it, for the bound ones."""
+        bound = self.bound_values
+        return {
+            m.name: bound[m.name]
+            for m in self._members
+            if isinstance(m, Extent) and m.name in bound
+        }
+
+    def _per_call_derived(self) -> frozenset[str]:
+        """The derived values whose derivation reads a bound extent."""
+        if not self.bound_extents:
+            return frozenset()
+        out = set()
+        for m in self._members:
+            if not (isinstance(m, Value) and m.derive is not None):
+                continue
+            reads: set[str] = set()
+            token = _extent_reads.set(reads)
+            try:
+                m.derive(self)
+            except Exception:
+                pass  # unresolved: what it read before failing still counts
+            finally:
+                _extent_reads.reset(token)
+            if reads & self.bound_extents.keys():
+                out.add(m.name)
+        return frozenset(out)
+
+    def derived_at(self, name: str, **extents: int) -> Any:
+        """The value ``name``'s derivation with the extents at the given
+        bounds: the word the host writes for one call.
+        """
+        member = next((m for m in self._members if m.name == name), None)
+        if not (isinstance(member, Value) and member.derive is not None):
+            raise TypeError(f"{type(self).__name__}.{name} is not a derived value")
+        unknown = set(extents) - {
+            m.name for m in self._members if isinstance(m, Extent)
+        }
+        if unknown:
+            raise TypeError(
+                f"{type(self).__name__} declares no Extent {sorted(unknown)}"
+            )
+        at = copy.copy(self)
+        vars(at)["_extents"] = {**self.__dict__.get("_extents", {}), **extents}
+        return member.derive(at)
+
+    def value(self, name: str) -> "BoundValue":
+        """The device word of the value member ``name`` (an ``Extent`` reads
+        as an integer on the instance, so this is how a sequence names its
+        word).
+        """
+        try:
+            return self._bound[name]
+        except KeyError:
+            raise TypeError(
+                f"{type(self).__name__} declares no value {name!r}"
+            ) from None
 
     def use_value(self, name: str, bound_to: str | None = None) -> None:
         """Record that a graph binds the per-call value ``name`` on this
@@ -734,10 +798,20 @@ class Operator(metaclass=_OperatorMeta):
             f"  array, compiled into every core: {spell(array)}",
             f"  sequence, the host's alone: {spell(sequence)}",
         ]
+        per_call_derived = self._per_call_derived()
         for m in self._members:
             if not isinstance(m, _Value):
                 continue
-            if (
+            if isinstance(m, Extent):
+                bound = self.bound_extents.get(m.name)
+                how = (
+                    f"per call, bounds {m.field.name} (graph value {bound})"
+                    if m.name in self.bound_extents
+                    else f"{m.field.name}, unbounded"
+                )
+            elif isinstance(m, Value) and m.name in per_call_derived:
+                how = "per call, derived from a bounded extent"
+            elif (
                 isinstance(m, Value)
                 and m.derive is not None
                 and not self.uses_value(m.name)

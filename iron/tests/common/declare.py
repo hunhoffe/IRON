@@ -21,6 +21,7 @@ import iron
 from iron.common import (
     DeclarationError,
     DispatchTime,
+    Extent,
     In,
     Incompatible,
     Operator,
@@ -657,3 +658,96 @@ def test_mha_pads_the_sequence_and_groups_kv():
     assert grouped[1].shape == (2, 128, 64)
     assert plain[1].shape == plain[0].shape
     assert [spec.direction for spec in grouped] == ["in", "in", "in", "out"]
+
+
+# --------------------------------------------------------------------------
+# An extent a graph may bound per call
+# --------------------------------------------------------------------------
+
+
+class Rows(Operator):
+    """Rows of ``cols`` elements over ``lanes`` lanes; ``rows`` may be bounded."""
+
+    rows: int = param()
+    cols: int = param()
+    lanes: int = auto(2)
+    valid = Extent(rows)
+    count = Value(np.int32, derive=lambda op: op.valid // op.lanes)  # reads the extent
+    width = Value(np.int32, derive=lambda op: op.cols)  # does not
+    x = In(rows, cols, tile=(1, cols), per=(lanes,))
+    y = Out(rows, cols, tile=(1, cols), per=(lanes,))
+
+    def resolve(self, dev):
+        return dataclasses.replace(self)
+
+    def array(self, target):
+        return []
+
+    def reference(self, x):
+        return x
+
+
+def test_an_extent_reads_as_its_field_until_a_graph_bounds_it():
+    op = Rows(rows=64, cols=8)
+    assert op.valid == 64 and Rows.valid.field is Rows.rows
+    assert not op.uses_value("valid") and not op.uses_value("count")
+    assert op.resident_values() == {"count": 32, "width": 8}
+    assert op.derived_at("count", valid=16) == 8 and op.valid == 64  # unchanged
+    assert "valid: rows, unbounded" in op.explain()
+    with pytest.raises(TypeError, match="no Extent \\['n'\\]"):
+        op.derived_at("count", n=1)
+    with pytest.raises(DeclarationError, match="must name a param"):
+
+        class Bad(Operator):
+            n: int = auto(4)
+            valid = Extent(n)
+            x = In(n)
+
+
+def test_a_bounded_operand_binds_the_extent_and_what_derives_from_it(npu2):
+    @iron.graph
+    def g(x, *, n: Scratchpad[np.int32]):
+        y = Rows(x[:n])  # bounds this instance
+        return Rows(y)  # and, through its output, the next
+
+    t = g.trace(x=(64, 8))
+    a, b = t.operators
+    for op in (a, b):
+        assert op.bound_extents == {"valid": "n"}
+        assert op.uses_value("valid") and op.uses_value("count")
+        assert not op.uses_value("width")  # still written once per build
+        assert set(op.residents) == {"width"}
+        assert [v.name for v in op.values] == ["valid", "count"]
+    assert [(bd.member.name, bd.value.name) for bd in t.bindings] == [
+        ("valid", "n"),
+        ("valid", "n"),
+    ]
+    lines = a.explain().splitlines()
+    assert "  valid: per call, bounds rows (graph value n)" in lines
+    assert "  count: per call, derived from a bounded extent" in lines
+    # Two instances alike in every field but one bounded are two designs.
+    assert a.design_key() != Rows(rows=64, cols=8).design_key()
+    assert a.design_key() == b.design_key()
+
+
+def test_a_bound_is_refused_where_no_extent_takes_it():
+    @iron.graph
+    def g(x, *, n: Scratchpad[np.int32]):
+        return MV(x[:n], x[0])  # M is not an Extent of MV
+
+    with pytest.raises(TypeError, match="MV.A cannot be bounded per call on axis 0"):
+        g.trace(x=(64, 128))
+
+    @iron.graph
+    def h(x, *, n: DispatchTime[np.int32]):
+        return Rows(x[:n])
+
+    with pytest.raises(ValueError, match="only a Scratchpad value can bound"):
+        h.trace(x=(64, 8))
+
+    @iron.graph
+    def k(x, *, n: Scratchpad[np.int32]):
+        return Rows(x[:, :n])  # cols is not an Extent
+
+    with pytest.raises(TypeError, match="axis 1"):
+        k.trace(x=(64, 8))

@@ -13,6 +13,7 @@ for an operator whose design is written by hand.
 from .declare import (
     DeclarationError,
     DispatchTime,
+    Extent,
     In,
     Incompatible,
     Operator,
@@ -38,6 +39,7 @@ __all__ = [
     "DesignGenerator",
     "DispatchTime",
     "Elementwise",
+    "Extent",
     "In",
     "Incompatible",
     "Operator",

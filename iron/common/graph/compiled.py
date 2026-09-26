@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import inspect
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, overload
 
 import aie.utils as aie_utils
@@ -24,8 +24,9 @@ import numpy as np
 from aie.utils import bfp
 from ml_dtypes import bfloat16
 
-from ..declare.member import ValueSpec, _Value
+from ..declare.member import Extent, ValueSpec, _Value
 from ..declare.profile import Profile
+from ..design import device_symbol
 from ..device import device_name
 from ..image.allocator import ArenaPlan
 from ..image.callable import ScratchArena
@@ -271,11 +272,11 @@ class CompiledGraph:
         self.traced = traced
         self.plan = plan
         self.arena = arena
-        # (graph value name, device symbol, dtype, scale) per bound value: a
-        # per-call index on a view reaches the device as an element offset.
-        self.symbols = [
-            (b.value.name, b.symbol, b.value.dtype, b.scale) for b in traced.bindings
-        ]
+        # (device symbol, dtype, word) per scratchpad word a call writes:
+        # each bound value (a per-call index on a view scaled to an element
+        # offset), and each value derived from a bounded extent, computed by
+        # the operator from the call's bound.
+        self.words = _words(traced)
         # Equal design keys are one build (two projections on one array).
         # compile() builds the image; the runtime that loads it is made on
         # first use, so a host without an NPU can still compile.
@@ -409,14 +410,49 @@ class CompiledGraph:
                 f"{self.traced.name}: per-call values {sorted(missing)} missing"
                 + (f"; {sorted(unknown)} unknown" if unknown else "")
             )
-        if not self.symbols:
+        if not self.words:
             return
         self.callable.write_values(
             {
-                symbol: np.dtype(dtype).type(values[name] * scale)
-                for name, symbol, dtype, scale in self.symbols
+                symbol: np.dtype(dtype).type(word(values))
+                for symbol, dtype, word in self.words
             }
         )
+
+
+def _words(traced: TracedGraph) -> list[tuple[str, Any, Callable[[Mapping], Any]]]:
+    """The scratchpad words a call writes, each from the call's values."""
+    words: list[tuple[str, Any, Callable[[Mapping], Any]]] = []
+    for b in traced.bindings:
+        words.append(
+            (b.symbol, b.value.dtype, lambda v, b=b: v[b.value.name] * b.scale)
+        )
+    seen: set[int] = set()
+    for b in traced.bindings:
+        op = b.op
+        if id(op) in seen or not isinstance(b.member.member, Extent):
+            continue
+        seen.add(id(op))
+        extents = [
+            (e.member.name, e.value.name, e.scale)
+            for e in traced.bindings
+            if e.op is op and isinstance(e.member.member, Extent)
+        ]
+
+        def at(v, extents=extents):
+            return {name: v[graph_name] * scale for name, graph_name, scale in extents}
+
+        for name in sorted(op._per_call_derived()):
+            word = op.value(name)
+            symbol = device_symbol(op, word)
+            words.append(
+                (
+                    symbol,
+                    word.dtype,
+                    lambda v, op=op, name=name, at=at: op.derived_at(name, **at(v)),
+                )
+            )
+    return words
 
 
 @overload

@@ -35,10 +35,20 @@ class Handle:
         "start",
         "walk",
         "index_by",
+        "bounds",
     )
 
     def __init__(
-        self, shape, dtype, name, role, parent=None, start=0, walk=None, index_by=None
+        self,
+        shape,
+        dtype,
+        name,
+        role,
+        parent=None,
+        start=0,
+        walk=None,
+        index_by=None,
+        bounds=None,
     ):
         self.shape = tuple(int(s) for s in shape)
         self.dtype = dtype
@@ -49,6 +59,9 @@ class Handle:
         self.start = start  # element offset into the parent, for a slice
         self.walk: Walk | None = walk  # over the parent's buffer, for a view
         self.index_by: tuple[Value, int] | None = index_by  # (value, axis stride)
+        # axis -> (value, scale): the first value * scale entries of that axis
+        # are the valid ones this call (``x[:n]``); the rest are padding.
+        self.bounds: dict[int, tuple[Value, int]] = dict(bounds or {})
 
     @property
     def elements(self) -> int:
@@ -78,7 +91,16 @@ class Handle:
             raise ValueError(f"cannot reshape {self!r} to {list(shape)}")
         if self.walk is not None:
             raise ValueError(f"cannot reshape a view {self!r}; reshape what it views")
-        return Handle(shape, self.dtype, self.name, self.role, self.parent, self.start)
+        bounds = _rescale_bounds(self, shape)
+        return Handle(
+            shape,
+            self.dtype,
+            self.name,
+            self.role,
+            self.parent,
+            self.start,
+            bounds=bounds,
+        )
 
     def transpose(self, *axes) -> "Handle":
         """The same buffer walked with its axes permuted (no data moves)."""
@@ -90,7 +112,10 @@ class Handle:
             )
         walk = Walk.permuted(self.shape, axes)
         shape = tuple(self.shape[a] for a in axes)
-        return Handle(shape, self.dtype, self.name, "view", self, 0, walk)
+        bounds = {axes.index(axis): b for axis, b in self.bounds.items()}
+        return Handle(
+            shape, self.dtype, self.name, "view", self, 0, walk, bounds=bounds
+        )
 
     def __getitem__(self, key) -> "Handle":
         if self.walk is not None or self.parent is not None:
@@ -106,10 +131,26 @@ class Handle:
         if len(entries) > rank:
             raise IndexError(f"too many indices for shape {self.shape}")
         entries += [slice(None)] * (rank - len(entries))
+        if self.bounds:
+            raise TypeError(f"{self!r} is bounded per call; slice what it bounds")
         index_by = None
-        static, shape = [], []
+        static, shape, bounds = [], [], {}
         for axis, (entry, n) in enumerate(zip(entries, self.shape)):
-            if isinstance(entry, Value):
+            if isinstance(entry, slice) and isinstance(entry.stop, Value):
+                # x[:n]: the first n along this axis are the valid ones.
+                if entry.start not in (None, 0) or entry.step not in (None, 1):
+                    raise ValueError(
+                        f"{entry.stop.name} bounds an axis from its start: [:{entry.stop.name}]"
+                    )
+                if entry.stop.kind != "scratchpad":
+                    raise ValueError(
+                        f"{entry.stop.name} is {entry.stop.kind}; only a Scratchpad "
+                        f"value can bound an axis, since it patches a transfer's size"
+                    )
+                bounds[axis] = (entry.stop, 1)
+                static.append(slice(None))
+                shape.append(n)
+            elif isinstance(entry, Value):
                 if index_by is not None:
                     raise ValueError("one axis at most is indexed by a per-call value")
                 if entry.kind != "scratchpad":
@@ -127,9 +168,24 @@ class Handle:
             else:
                 static.append(int(entry))
         walk = Walk.slice(self.shape, tuple(static))  # checks ranges, empties
+        if bounds and tuple(shape) == self.shape:
+            # The whole buffer, bounded: the same handle with the bound on it.
+            return Handle(
+                self.shape,
+                self.dtype,
+                self.name,
+                self.role,
+                self.parent,
+                self.start,
+                bounds=bounds,
+            )
         if index_by is None and walk.contiguous:
-            return Handle(shape, self.dtype, self.name, "slice", self, walk.offset)
-        return Handle(shape, self.dtype, self.name, "view", self, 0, walk, index_by)
+            return Handle(
+                shape, self.dtype, self.name, "slice", self, walk.offset, bounds=bounds
+            )
+        return Handle(
+            shape, self.dtype, self.name, "view", self, 0, walk, index_by, bounds=bounds
+        )
 
     def __repr__(self) -> str:
         return f"Handle({self.buffer_name!r}, {list(self.shape)}, {bfp.dtype_name(self.dtype)})"
@@ -179,6 +235,45 @@ class State:
 def state(shape, dtype=bfloat16, name=None) -> State:
     """Declare device-resident state a graph function closes over."""
     return State(shape, dtype, name)
+
+
+def _rescale_bounds(h: Handle, shape) -> dict[int, tuple["Value", int]]:
+    """The bounds of ``h`` on its reshape to ``shape``: a bound on the leading
+    axis survives when that axis is merged with the axes after it or split
+    into leading ones, the count rescaled by the factor.
+    """
+    if not h.bounds:
+        return {}
+    (axis, (value, scale)), *more = h.bounds.items()
+    if more or axis != 0:
+        raise ValueError(
+            f"cannot reshape {h!r}: a bound is carried through a reshape on the "
+            f"leading axis only"
+        )
+    old, new = h.shape[0], int(shape[0])
+    if new == old:
+        return {0: (value, scale)}
+    if new % old == 0 and _leading_product(h.shape, new // old):
+        return {0: (value, scale * (new // old))}
+    factor = old // new if old % new == 0 else 0
+    if factor and _leading_product(tuple(shape), factor) and scale % factor == 0:
+        return {0: (value, scale // factor)}
+    raise ValueError(
+        f"cannot reshape {h!r} to {list(shape)}: the bound on its leading axis "
+        f"({value.name} x {scale}) does not divide into the new leading axis"
+    )
+
+
+def _leading_product(shape, factor: int) -> bool:
+    """Whether some run of axes after the first multiplies to ``factor``."""
+    p = 1
+    for n in shape[1:]:
+        p *= n
+        if p == factor:
+            return True
+        if p > factor:
+            break
+    return factor == 1
 
 
 class Value:

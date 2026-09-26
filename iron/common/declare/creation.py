@@ -28,7 +28,7 @@ from .field import (
     _Select,
     _tier_of,
 )
-from .member import _Buffer, _Member, _Stream
+from .member import Extent, _Buffer, _Member, _Stream
 
 
 def members_of(cls: type) -> list[_Member]:
@@ -194,6 +194,14 @@ def declare(cls: type) -> None:
                     f"{cls.__name__}.{m.name}: at most one optional() dimension, "
                     f"since the rank tells whether it is present"
                 )
+        if isinstance(m, Extent):
+            (ref,) = _rewrite_refs((m.field,), cls, fields_by_obj)
+            if not isinstance(ref, DimRef) or ref.tier != "param":
+                raise DeclarationError(
+                    f"{cls.__name__}.{m.name}: Extent({ref!r}) must name a param() "
+                    f"field, the one a graph may bound per call"
+                )
+            m.field = ref
         if isinstance(m, _Stream) and m.per is not None:
             per = m.per if isinstance(m.per, tuple) else (m.per,)
             per = _rewrite_refs(per, cls, fields_by_obj)

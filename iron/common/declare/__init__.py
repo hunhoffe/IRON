@@ -57,7 +57,7 @@ from .field import (
     param,
     select,
 )
-from .member import DispatchTime, In, Out, Scratchpad, Shim, Value, Xclbin
+from .member import DispatchTime, Extent, In, Out, Scratchpad, Shim, Value, Xclbin
 from .operator import Operator
 from .profile import Profile
 from .spec import from_spec
@@ -65,6 +65,7 @@ from .spec import from_spec
 __all__ = [
     "DeclarationError",
     "DispatchTime",
+    "Extent",
     "In",
     "Incompatible",
     "Operator",

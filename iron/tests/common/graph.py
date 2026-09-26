@@ -595,3 +595,47 @@ def test_a_bound_value_survives_tuning():
     assert [v.name for v in copy.resolved(aie_utils.get_current_device()).values] == [
         "out_offset"
     ]
+
+
+# --------------------------------------------------------------------------
+# A bound on a handle: the first n of an axis are the valid ones this call
+# --------------------------------------------------------------------------
+
+
+def test_a_bound_travels_through_reshape_and_transpose():
+    from iron.common.graph.handle import Value
+
+    n = Value("n", "scratchpad", np.int32)
+    x = Handle((64, 8, 4), bfloat16, "x", "input")
+    b = x[:n]
+    assert b.shape == x.shape and b.bounds == {0: (n, 1)} and b.walk is None
+    assert b.reshape(512, 4).bounds == {0: (n, 8)}  # merged with the axis after it
+    assert b.reshape(64 * 8 * 4).bounds == {0: (n, 32)}
+    assert b.reshape(512, 4).reshape(64, 8, 4).bounds == {0: (n, 1)}  # split back
+    assert b.transpose(1, 0, 2).bounds == {1: (n, 1)}
+    with pytest.raises(ValueError, match="does not divide"):
+        b.reshape(32, 16, 4)  # a leading axis no run of the others makes
+    with pytest.raises(TypeError, match="bounded per call; slice what it bounds"):
+        b[0]
+    with pytest.raises(ValueError, match="from its start"):
+        x[2:n]
+
+
+def test_the_words_a_call_writes_come_from_the_bound(npu2):
+    """Each bound value is a word, and so is every value an operator derives
+    from a bounded extent, computed by the operator from the call's bound.
+    """
+    from iron.common.graph.compiled import _words
+    from iron.tests.common.declare import Rows
+
+    @iron.graph
+    def g(x, *, n: Scratchpad[np.int32]):
+        return Rows(x[:n].reshape(64 * 8, 1))  # rows x 8 seen as rows*8 x 1
+
+    t = g.trace(x=(64, 8))
+    (op,) = t.operators
+    words = {symbol: word for symbol, _, word in _words(t)}
+    assert set(words) == {f"{op.name}_valid_n", f"{op.name}_count"}
+    call = {"n": 16}
+    assert words[f"{op.name}_valid_n"](call) == 16 * 8  # the reshape's scale
+    assert words[f"{op.name}_count"](call) == 16 * 8 // 2  # derived: valid // lanes

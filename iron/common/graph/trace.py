@@ -15,9 +15,10 @@ from ml_dtypes import bfloat16
 
 from ..declare import Operator
 from ..declare.bound import BoundValue
+from ..declare.field import DimRef, _Optional, _Select
 from ..declare.infer import infer, infer_kwargs
+from ..declare.member import Extent, _Value
 from ..declare.member import _Buffer as _Buffer_
-from ..declare.member import _Value
 from ..design import device_symbol
 from ..image.sequence import OperatorSequence
 from ..tiling import Walk
@@ -68,6 +69,38 @@ class Binding:
     def symbol(self) -> str:
         """The device symbol the host writes this value through."""
         return device_symbol(self.op, self.member)
+
+
+def _dim_names(buffer, rank: int) -> list[str | None]:
+    """The field sizing each axis of an operand of ``buffer`` at ``rank``."""
+    dims: list = []
+    for d in buffer.member.dims:
+        if isinstance(d, _Select):
+            dims.extend([None] * len(d.when_true))
+        else:
+            dims.append(d)
+    if len(dims) == rank + 1:  # an optional() dimension omitted at this rank
+        dims = [d for d in dims if not isinstance(d, _Optional)]
+    names = []
+    for d in dims:
+        if isinstance(d, _Optional):
+            d = d.ref
+        names.append(d.name if isinstance(d, DimRef) else None)
+    return names
+
+
+def _extent_for(cls, buffer, rank: int, axis: int):
+    """The Extent of ``cls`` whose field sizes ``axis`` of the operand, or None."""
+    names = _dim_names(buffer, rank)
+    name = names[axis] if axis < len(names) else None
+    return next(
+        (
+            m
+            for m in cls._members
+            if isinstance(m, Extent) and name is not None and m.field.name == name
+        ),
+        None,
+    )
 
 
 def _take_views(cls, operands, kwargs, values, scales):
@@ -282,6 +315,19 @@ class Tracer:
         )
         return cls(**{**kwargs, **inferred})
 
+    def _output_bounds(self, op, buffer, rank: int) -> dict:
+        """An output sized by a bounded extent's field is bounded the same way."""
+        bounds = {}
+        names = _dim_names(buffer, rank)
+        for binding in self.bindings:
+            if binding.op is not op or not isinstance(binding.member.member, Extent):
+                continue
+            field = binding.member.member.field.name
+            for axis, name in enumerate(names):
+                if name == field:
+                    bounds[axis] = (binding.value, binding.scale)
+        return bounds
+
     def _bind(self, op, name, value, scale: int = 1) -> None:
         if not isinstance(value, Value):
             raise TypeError(
@@ -335,6 +381,15 @@ class Tracer:
                     f"{type(op).__name__}.{b.name} is {bfp.dtype_name(b.dtype)}; "
                     f"operand {h!r} is {bfp.dtype_name(h.dtype)}"
                 )
+            for axis, (value, scale) in h.bounds.items():
+                extent = _extent_for(type(op), b, len(h.shape), axis)
+                if extent is None:
+                    raise TypeError(
+                        f"{type(op).__name__}.{b.name} cannot be bounded per call on "
+                        f"axis {axis} ({value.name}): it declares no Extent for the "
+                        f"field sizing it"
+                    )
+                self._bind(op, extent.name, value, scale)
         slots, outputs, it, given = [], [], iter(operands[: len(ins)]), iter(given_outs)
         for b in buffers:
             if b.direction == "in":
@@ -350,15 +405,20 @@ class Tracer:
                 # A flat-declared output (an elementwise operator) keeps the
                 # shape of the operand it is the size of, so a (rows, cols)
                 # activation stays (rows, cols) through SiLU.
+                bounds: dict = {}
                 if len(shape) == 1:
                     like = next((h for h in operands if h.elements == b.elements), None)
                     if like is not None:
                         shape = like.shape
+                        bounds = dict(like.bounds)  # sized by it: bounded like it
+                if not bounds:
+                    bounds = self._output_bounds(op, b, len(shape))
                 h = Handle(
                     shape,
                     b.dtype,
                     f"{type(op).__name__.lower()}{next(self._counter)}",
                     "intermediate",
+                    bounds=bounds,
                 )
                 slots.append(h)
                 outputs.append(h)

@@ -10,7 +10,7 @@ recorded calls are what upstream's ObjectFifoHandle.fill/drain accept; that
 is the toolchain's job and the operator tests' job.
 """
 
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -600,3 +600,72 @@ def test_shipped_sequence_writes_every_core_then_streams_in_consume_order():
     # Every task is awaited exactly once, the last ones by the trailing finish.
     awaited = [e[1] for e in rec.log if e[0] == "await"]
     assert sorted(awaited) == sorted((k, n) for n, (_, k, *_) in enumerate(starts, 1))
+
+
+# --------------------------------------------------------------------------
+# A per-call size in a transfer
+# --------------------------------------------------------------------------
+
+
+class _SizedHandle:
+    """A fifo handle whose fill takes the assumed size-kind parameter."""
+
+    def __init__(self, log):
+        self.log = log
+
+    def fill(self, data, tap, wait, group, offset_parameter, size_parameters=None):
+        self.log.append(("fill", data, offset_parameter, size_parameters))
+
+    def drain(self, data, tap, wait, group, offset_parameter, size_parameters=None):
+        self.log.append(("drain", data, offset_parameter, size_parameters))
+
+
+class _DynamicHandle:
+    """A fifo handle on the dispatch path: sizes and offsets are scalars."""
+
+    def __init__(self, log):
+        self.log = log
+
+    def fill(self, data, *, sizes, strides, offset, transfer_len, wait, group):
+        self.log.append(("fill", data, sizes, offset))
+
+
+def _bounded_unary():
+    from iron.tests.common.declare import Rows
+
+    op = Rows(rows=64, cols=8).resolved(FakeDev())
+    op.use_value("valid", "n")  # what a graph does for x[:n]
+    for name in ("valid", "count"):
+        op.value(name).param = f"<{name}>"
+    return op
+
+
+def test_a_size_patch_names_the_dimension_and_the_word():
+    log = []
+    op = _bounded_unary()
+    op.streams["x"].bind(_SizedHandle(log), 0)
+    rt = Sequence(op, {"x": "dx", "y": "dy"})
+    acc = Access(64 * 8, 0, (1, 1, 32, 8), (0, 0, 16, 1))
+    rt.fill(op.x.lane(0), acc, size_by={2: op.value("count")})
+    assert log == [("fill", "dx", None, {2: "<count>"})]
+    with pytest.raises(ValueError, match="dimensions 0..3"):
+        rt.fill(op.x.lane(0), acc, size_by={4: op.value("count")})
+    with pytest.raises(TypeError, match="value member's word"):
+        rt.fill(op.x.lane(0), acc, size_by={2: 32})  # a number, not a word
+
+
+def test_a_size_patch_needs_the_toolchain_kind_or_the_dispatch_path():
+    log = []
+    op = _bounded_unary()
+    op.streams["x"].bind(FakeHandle("x0", log), 0)  # no size_parameters= upstream
+    rt = Sequence(op, {"x": "dx", "y": "dy"})
+    acc = Access(64 * 8, 0, (1, 1, 32, 8), (0, 0, 16, 1))
+    with pytest.raises(NotImplementedError, match="size-kind scratchpad parameter"):
+        rt.fill(op.x.lane(0), acc, size_by={2: op.value("count")})
+    # On the dispatch path the scalar stands in for the size itself.
+    op = _bounded_unary()
+    op.streams["x"].bind(_DynamicHandle(log), 0)
+    op.value("count").ssa = cast(Any, "<n>")
+    rt = Sequence(op, {"x": "dx", "y": "dy"})
+    rt.fill(op.x.lane(0), acc, size_by={2: op.value("count")})
+    assert log == [("fill", "dx", [1, 1, "<n>", 8], 0)]
