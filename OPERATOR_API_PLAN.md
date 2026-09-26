@@ -171,7 +171,8 @@ profiles are exported slices. Nothing in an operator class knows it exists.
 ## Steps
 
 Each separately reviewable; each ends at the full device-free run against the
-baseline (80 failed / 1680 passed / 38 skipped on `26ce43f`: 40 need
+baseline and the toolchain run (`iron/tests/toolchain`, its own conftest;
+4 failures on `26ce43f`, all needing a device) against its (80 failed / 1680 passed / 38 skipped on `26ce43f`: 40 need
 `pyxrt`, 35 need a device, 5 re-bind a device after clearing it); each fix
 minimal. `pyright` and `ruff check` clean at every commit.
 
@@ -240,7 +241,13 @@ today**.
   (38 files, +390/−509). Failure set identical to baseline.
 - `610c926` Step 1: the bases are dataclasses to a checker; pyright in CI on
   the declare package. Members generic in their bound form; `Self` returns.
-- (this commit) Step 3b: the column knob defaults from the device on GEMV,
+- (this commit) `Operator.copy()` re-records what `compatible()` writes
+  (GEMV's rows per column, an `init=False` field a `replace()` resets):
+  the toolchain run caught the core loop running zero times, which the
+  device-free run cannot see, so the toolchain run is now a gate of every
+  step. Step 4's first item: `tests/common/copy_taps.py` pins the exact
+  descriptors StridedCopy issues for llama's three copies and the KV slot.
+- `5d63876` Step 3b: the column knob defaults from the device on GEMV,
   Softmax and RoPE (`auto()`; the operator's `resolve` picks the most
   columns the shim budget allows that divide its extents; RMSNorm keeps one
   core per row; GEMM keeps its given eight, since its host buffers are

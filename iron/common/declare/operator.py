@@ -271,6 +271,11 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
         if self.used_values:
             vars(new)["_used_values"] = set(self.used_values)
         new._resolved = self._resolved
+        if self._resolved:
+            # What compatible() records on the overlay (GEMV's rows per
+            # column) is part of a resolved instance; a replace() resets an
+            # init=False field to its default, so the copy records it again.
+            new.compatible()
         return new
 
     @property
