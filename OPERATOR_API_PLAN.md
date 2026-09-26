@@ -290,7 +290,7 @@ today**.
 
 ## Progress
 
-- (this commit) Audit, batch A: the silent-wrong-answer bugs. A per-call
+- `ca956de` Audit, batch A: the silent-wrong-answer bugs. A per-call
   value's graph binding is part of what is built: `use_value(name,
   bound_to)` records the graph value, `design_key` and the device symbol
   carry it, so two instances alike in every field that read different
