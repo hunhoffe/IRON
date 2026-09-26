@@ -147,7 +147,7 @@ sets), pyright and ruff clean, and a Progress entry.
 
 ## Progress
 
-- `(this commit)` Step 5, the llama graph. `forward` takes `rows`; a
+- `5c6369e` Step 5, the llama graph. `forward` takes `rows`; a
   prompt is `x[:rows]` and `angles[:rows]` at the top of its branch, and
   that one slice bounds every operator of every block (the last row's
   copy, the final norm and the head run one row and are not); the cache
