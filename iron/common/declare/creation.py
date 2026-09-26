@@ -142,6 +142,27 @@ def declare(cls: type) -> None:
                 f"annotation; annotating one turns it into a constructor argument"
             )
 
+    inherited = {
+        f.name
+        for base in cls.__mro__[1:]
+        if dataclasses.is_dataclass(base)
+        for f in dataclasses.fields(base)
+    }
+    for name, value in list(vars(cls).items()):
+        if (
+            name in inherited
+            and name not in annotations
+            and value is not None
+            and not isinstance(value, _Member)
+            and not callable(value)
+            and not isinstance(value, (property, classmethod, staticmethod))
+        ):
+            raise DeclarationError(
+                f"{cls.__name__}.{name} = {value!r} does not override the inherited "
+                f"field: annotate it, `{name}: int = auto({value!r})` (with "
+                f"init=False to pin it), or dataclass keeps the base's default"
+            )
+
     dataclasses.dataclass(cls, eq=False, repr=False)  # in place; the same object
 
     # dataclass keeps the Field objects the class body bound to bare names

@@ -15,7 +15,6 @@ from iron.common import (
     Incompatible,
     Operator,
     Out,
-    Unresolvable,
     Value,
     auto,
     param,
@@ -52,9 +51,9 @@ class GEMM(Operator):
     tile_m: int = auto(64, array=True)
     tile_k: int = auto(64, array=True)
     tile_n: int = auto(64, array=True)
-    # Given, not resolved: the host buffers are padded by it (mem_tile_n), so
-    # a GEMM knows its column count before any device does.
-    num_aie_columns: int = auto(8)
+    # None: the most columns the device's shim budget allows that split N
+    # into whole tile_n-wide tiles.
+    num_aie_columns: int = auto()
     # A @ B = C, with either operand optionally stored column-major. The
     # layout flags transpose a declared shape rather than resize it.
     b_col_maj: bool = param(default=False, array=True)
@@ -174,34 +173,26 @@ class GEMM(Operator):
             raise ValueError(
                 f"Output dtype ({dout}) must be equal or larger to input dtype ({din})"
             )
-        # The extents at construction, so a bad shape is reported where it
-        # is written rather than at resolution.
+        # The extents that need no device, at construction, so a bad shape
+        # is reported where it is written; N waits for the column count.
         for name, value, unit in (
             ("M", self.M, self.tile_m * N_AIE_ROWS),
             ("K", self.K, self.tile_k),
-            ("N", self.N, self.tile_n * self.num_aie_columns),
         ):
             if value % unit != 0:
                 raise ValueError(f"{name} ({value}) must be a multiple of {unit}")
 
     def resolve(self, dev):
-        cols = self.num_aie_columns
-        if dev is not None:
-            name = dev.resolve().name
-            if name == "npu1" and cols > 4:
-                raise Unresolvable(
-                    "Invalid configuration: NPU (Phoenix/Hawk) has 4 columns"
-                )
-            if name == "npu2" and cols > 8:
-                raise Unresolvable(
-                    "Invalid configuration: NPU2 (Strix/Strix Halo/Krackan) has 8 columns"
-                )
+        cols = self.resolve_columns(
+            dev, self.num_aie_columns, fits=lambda c: self.N % (self.tile_n * c) == 0
+        )
+        new = dataclasses.replace(self, num_aie_columns=cols)
         return dataclasses.replace(
-            self,
+            new,
             n_shim_mem_a=min(cols, N_AIE_ROWS),
-            a_l2=self.mem_tile_m_a * self.tile_k,
+            a_l2=new.mem_tile_m_a * self.tile_k,
             b_l2=self.tile_k * self.tile_n,
-            c_l2=self.mem_tile_m_c * self.tile_n,
+            c_l2=new.mem_tile_m_c * self.tile_n,
         )
 
     def compatible(self) -> None:

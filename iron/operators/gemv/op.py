@@ -14,7 +14,6 @@ from iron.common import (
     Incompatible,
     Operator,
     Out,
-    Unresolvable,
     Value,
     auto,
     optional,
@@ -149,19 +148,11 @@ class GEMV(Operator):
         leave each column a whole number of tiles of M; the rest follows
         from K and from each other, not from the device.
         """
-        cols = self.num_aie_columns
-        if cols is None:
-            if dev is None:
-                raise Unresolvable(
-                    "num_aie_columns defaults from the device; none given"
-                )
-            tile = self.tile_size_output or self.tile_size_input
-            unit = tile * self.tile_size_input // math.gcd(tile, self.tile_size_input)
-            budget = self.shim_columns(dev)
-            fits = [c for c in range(1, budget + 1) if self.M % (c * unit) == 0]
-            cols = max(fits, default=1)
-        elif dev is not None:
-            self.check_shim_columns(dev, cols)
+        tile = self.tile_size_output or self.tile_size_input
+        unit = tile * self.tile_size_input // math.gcd(tile, self.tile_size_input)
+        cols = self.resolve_columns(
+            dev, self.num_aie_columns, fits=lambda c: self.M % (c * unit) == 0
+        )
         return dataclasses.replace(
             self,
             num_aie_columns=cols,

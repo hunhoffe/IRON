@@ -559,6 +559,33 @@ def test_resolve_must_return_a_copy():
     assert not op._resolved
 
 
+def test_overriding_an_inherited_field_needs_an_annotation():
+    with pytest.raises(DeclarationError, match="tile_out: int = auto\\(32\\)"):
+
+        class Pinned(MV):
+            tile_out = 32  # dataclass would keep the base's 64 in silence
+
+    class Annotated(MV):
+        tile_out: int = auto(32)
+
+    assert Annotated(M=64, K=64).tile_out == 32
+
+
+def test_resolve_columns_is_the_count_given_or_the_most_that_fit():
+    from aie.iron.device import from_name
+
+    op = MV(M=96, K=64)
+    dev = from_name("npu2", n_cols=8)  # the shim budget is the device's
+    assert op.resolve_columns(dev, 2) == 2  # given, within the budget
+    assert op.resolve_columns(dev, None) == 8  # the whole budget, nothing to fit
+    assert op.resolve_columns(dev, None, fits=lambda c: 96 % (c * 32) == 0) == 3
+    assert (
+        op.resolve_columns(dev, None, fits=lambda c: False) == 1
+    )  # compatible() will say why
+    with pytest.raises(Unresolvable, match="none is bound and none was given"):
+        op.resolve_columns(None, None)
+
+
 def test_inference_binds_the_fields_from_the_operands():
     op = MV.from_operands(
         (3, 1024, 128),

@@ -15,7 +15,6 @@ from iron.common import (
     Incompatible,
     Operator,
     Out,
-    Unresolvable,
     Value,
     auto,
     optional,
@@ -137,15 +136,15 @@ class Transpose(Operator):
             )
 
     def resolve(self, dev):
-        cols = self.num_aie_columns
-        if cols is None:
-            if dev is None:
-                raise Unresolvable(
-                    "num_aie_columns defaults from the device; none given"
-                )
-            cols = self.shim_columns(dev, self.num_channels)
-        elif dev is not None:
-            self.check_shim_columns(dev, cols, self.num_channels)
+        """Columns default to the most the device's shim budget allows that
+        split N into whole n-wide tiles.
+        """
+        cols = self.resolve_columns(
+            dev,
+            self.num_aie_columns,
+            self.num_channels,
+            fits=lambda c: self.N % c == 0 and (self.N // c) % self.n == 0,
+        )
         return dataclasses.replace(self, num_aie_columns=cols)
 
     def compatible(self) -> None:
@@ -156,14 +155,11 @@ class Transpose(Operator):
             raise Incompatible(
                 f"Matrix columns ({self.N}) must be a multiple of {self.n}"
             )
-        if self.M * self.N % (self.m * self.n * cols * chans) != 0:
-            raise Incompatible(
-                "Transfer size must be divisible by m*n*num_columns*num_channels"
-            )
-        # The product check is necessary but not sufficient: the design tiles each
-        # dimension separately, as [M // num_channels // m, N // num_columns // n, m, n].
-        # A quotient that is not a whole number of tiles silently drops the remainder,
-        # and one that floors to zero reaches the transfer as a zero-length size.
+        # The design tiles each dimension separately, as
+        # [M // num_channels // m, N // num_columns // n, m, n]. A quotient
+        # that is not a whole number of tiles silently drops the remainder,
+        # and one that floors to zero reaches the transfer as a zero-length
+        # size, so each split is checked on its own, then the product.
         if (self.N // cols) % self.n:
             raise Incompatible(
                 f"num_aie_columns ({cols}) does not split N={self.N} "
@@ -177,6 +173,11 @@ class Transpose(Operator):
                 f"into whole m-tall tiles: each channel gets "
                 f"{self.M // chans} rows, which is not a multiple "
                 f"of m={self.m}"
+            )
+        if self.M * self.N % (self.m * self.n * cols * chans) != 0:
+            raise Incompatible(
+                f"M x N ({self.M} x {self.N}) is not whole {self.m} x {self.n} tiles "
+                f"over {cols} columns x {chans} channels"
             )
 
     def array(self, target) -> list:

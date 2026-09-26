@@ -14,7 +14,6 @@ from iron.common import (
     Incompatible,
     Operator,
     Out,
-    Unresolvable,
     Value,
     auto,
     param,
@@ -102,22 +101,13 @@ class RoPE(Operator):
         """Columns default to the most the device's shim budget allows that
         divide both the rows and the angle rows.
         """
-        cols = self.num_aie_columns
-        if cols is None:
-            if dev is None:
-                raise Unresolvable(
-                    "num_aie_columns defaults from the device; none given"
-                )
-            assert self.angle_rows is not None  # validate() filled it
-            budget = self.shim_columns(dev)
-            fits = [
-                c
-                for c in range(1, budget + 1)
-                if self.rows % c == 0 and self.angle_rows % c == 0
-            ]
-            cols = max(fits)
-        elif dev is not None:
-            self.check_shim_columns(dev, cols)
+        angle_rows = self.angle_rows
+        assert angle_rows is not None  # validate() filled it
+        cols = self.resolve_columns(
+            dev,
+            self.num_aie_columns,
+            fits=lambda c: self.rows % c == 0 and angle_rows % c == 0,
+        )
         return dataclasses.replace(self, num_aie_columns=cols)
 
     def compatible(self) -> None:

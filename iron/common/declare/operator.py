@@ -19,6 +19,7 @@ from types import FunctionType
 from typing import (
     TYPE_CHECKING,
     Any,
+    Callable,
     ClassVar,
     Self,
     TypeVar,
@@ -254,6 +255,34 @@ class Operator(metaclass=_OperatorMeta):
 
     def check_shim_columns(self, dev, cols: int, num_channels: int = 1) -> None:
         check_shim_columns(self, dev, cols, num_channels)
+
+    def resolve_columns(
+        self,
+        dev,
+        given: int | None,
+        num_channels: int = 1,
+        *,
+        fits: Callable[[int], bool] | None = None,
+    ) -> int:
+        """The column count to resolve to: ``given``, checked against the
+        shim budget, or the most the budget allows that ``fits``.
+
+        ``fits(c)`` is the operator's own rule for ``c`` columns leaving
+        whole tiles; when no count within the budget does, one column is
+        returned and :meth:`compatible` names the rule. With no device
+        bound and no count given, :class:`Unresolvable`.
+        """
+        if given is not None:
+            if dev is not None:
+                self.check_shim_columns(dev, given, num_channels)
+            return given
+        if dev is None:
+            raise Unresolvable(
+                f"{type(self).__name__}: the column count defaults from the "
+                f"device; none is bound and none was given"
+            )
+        budget = self.shim_columns(dev, num_channels)
+        return next((c for c in range(budget, 0, -1) if fits is None or fits(c)), 1)
 
     def reference(self, *inputs):
         raise NotImplementedError(

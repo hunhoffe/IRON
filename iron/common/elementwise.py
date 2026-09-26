@@ -76,8 +76,8 @@ class Elementwise(Operator):
     bank drops the fifo depth to one.
     """
 
-    # None: every column the device's shim budget allows, one channel each,
-    # default_tile lines.
+    # None: the most columns the device's shim budget allows that leave
+    # every core whole lines, one channel each, default_tile lines.
     num_aie_columns: int = auto()
     num_channels: int = auto(1)
     tile_size: int = auto()
@@ -96,13 +96,13 @@ class Elementwise(Operator):
                 f"tile_size={tile_size} exceeds the {self.tile_cap}-element line "
                 f"one core holds ({type(self).__name__}.tile_cap)"
             )
-        cols = self.num_aie_columns
-        if dev is not None:
-            if cols is None:
-                cols = self.shim_columns(dev, self.num_channels)
-            self.check_shim_columns(dev, cols, self.num_channels)
-        elif cols is None:
-            raise Unresolvable("num_aie_columns defaults from the device; none given")
+        (out,) = self.outputs
+        cols = self.resolve_columns(
+            dev,
+            self.num_aie_columns,
+            self.num_channels,
+            fits=lambda c: out.elements % (c * self.num_channels * tile_size) == 0,
+        )
         return dataclasses.replace(self, num_aie_columns=cols, tile_size=tile_size)
 
     def compatible(self) -> None:
@@ -110,9 +110,11 @@ class Elementwise(Operator):
         share = self.cores * self.tile_size
         if out.elements % share:
             raise Incompatible(
-                f"{out.name} ({out.elements} elements) must be a multiple of "
-                f"num_aie_columns * num_channels * tile_size ({share}): every "
-                f"core streams whole {self.tile_size}-element lines"
+                f"{type(self).__name__}: {out.elements} elements do not divide "
+                f"into whole {self.tile_size}-element lines over "
+                f"{self.num_aie_columns} columns x {self.num_channels} channels "
+                f"({share} per pass); give a tile_size= or num_aie_columns= "
+                f"that divides it"
             )
 
     @property

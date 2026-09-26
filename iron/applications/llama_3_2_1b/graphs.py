@@ -69,14 +69,12 @@ def profile(config, max_seq_len) -> Profile:
     row on the bound device's width, four input rows per GEMV tile (one for
     the down projection), thirty-two rows of logits. A prompt spans the
     device's columns for its norms and elementwise ops, one row per tile,
-    and its GEMMs take the widest column count their narrowest projection
-    fills at 64-wide tiles; MHA's pipelines and the GEMMs' row tile fit
-    ``max_seq_len``.
+    and MHA's pipelines and the GEMMs' row tile fit ``max_seq_len``.
 
     Every value is one the graph ran with before it was a profile; none has
     been re-measured. A tuner writing this profile replaces these lines.
     """
-    H, G, D = config.n_heads, config.n_kv_groups, config.head_dim
+    H, D = config.n_heads, config.head_dim
     E, F, V = config.emb_dim, config.hidden_dim, config.vocab_size
     L, cols = max_seq_len, _device_columns()
     p = Profile()
@@ -97,12 +95,7 @@ def profile(config, max_seq_len) -> Profile:
     p.add(ElementwiseAdd, tile_size=E)
     p.add(ElementwiseMul, tile_size=min(F, ElementwiseMul.tile_cap))  # the FFN row
     p.add(SiLU, tile_size=min(F, SiLU.tile_cap))  # exceeds one core's line
-    narrowest = min(H * D, G * D, E, F)
-    p.add(
-        GEMM,
-        num_aie_columns=max(c for c in range(1, cols + 1) if narrowest % (64 * c) == 0),
-        tile_m=min(64, L // 4),
-    )
+    p.add(GEMM, tile_m=min(64, L // 4))
     p.add(MHA, num_of_pipelines=min(8, L // 64))
     return p
 

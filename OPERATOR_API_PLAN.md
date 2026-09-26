@@ -290,6 +290,24 @@ today**.
 
 ## Progress
 
+- (this commit) Audit, batch B: the newcomer bugs. One
+  `Operator.resolve_columns(dev, given, num_channels, fits=)` is the
+  column-budget rule everywhere: the count given, checked against the
+  shim budget, or the most the budget allows that leaves whole tiles by
+  the operator's own `fits`, else one and `compatible()` names the rule.
+  Elementwise, Softmax, RoPE, GEMV, Transpose and GEMM use it (six
+  spellings gone, with Softmax's bare `max()` on an empty sequence and
+  Transpose resolving to a count it then refused). The knob-free hello
+  world resolves at 1024 elements. GEMM's column count is a knob the
+  device fills (it was `auto(8)`, a constant no device could change, so
+  every GEMM failed on NPU1); its M and K rules stay at construction, N
+  waits for the count; the llama profile no longer says what GEMM picks
+  on its own. Overriding an inherited field without an annotation is a
+  `DeclarationError` naming the fix, where dataclass kept the base's
+  default in silence. Toolchain: four GEMM-on-NPU1 cases that skipped now
+  pass; both suites otherwise identical to baseline. At the scaled-down
+  test shape each GEMM now takes the width its own N fills (8 or 4) where
+  the profile gave all of them 4; the real shape is unchanged.
 - `ca956de` Audit, batch A: the silent-wrong-answer bugs. A per-call
   value's graph binding is part of what is built: `use_value(name,
   bound_to)` records the graph value, `design_key` and the device symbol

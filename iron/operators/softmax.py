@@ -15,7 +15,6 @@ from iron.common import (
     Incompatible,
     Operator,
     Out,
-    Unresolvable,
     Value,
     auto,
     param,
@@ -82,21 +81,12 @@ class Softmax(Operator):
         """Columns default to the most the device's shim budget allows that
         leave every core a whole number of rows.
         """
-        cols = self.num_aie_columns
-        if cols is None:
-            if dev is None:
-                raise Unresolvable(
-                    "num_aie_columns defaults from the device; none given"
-                )
-            budget = self.shim_columns(dev, self.num_channels)
-            fits = [
-                c
-                for c in range(1, budget + 1)
-                if self.rows % (c * self.num_channels) == 0
-            ]
-            cols = max(fits)
-        elif dev is not None:
-            self.check_shim_columns(dev, cols, self.num_channels)
+        cols = self.resolve_columns(
+            dev,
+            self.num_aie_columns,
+            self.num_channels,
+            fits=lambda c: self.rows % (c * self.num_channels) == 0,
+        )
         return dataclasses.replace(self, num_aie_columns=cols)
 
     @property
