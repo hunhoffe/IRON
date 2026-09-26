@@ -202,12 +202,27 @@ minimal. `pyright` and `ruff check` clean at every commit.
    first profile registered is `llama_decode` with today's 46 values, and
    `applications/llama_3_2_1b/test.py`'s bit-identical-logits check runs
    against it before any inferred default is trusted.
-4. **Views and `Copy`.** First a test pinning the exact `Access` lists
-   `StridedCopy._taps` produces. Then `tiling.view` → `TensorAccessPattern.
-   from_slice`; stop flattening in `infer.py`; `Handle.__getitem__` on tuple
-   keys + per-call `Scratchpad` start; `Copy.sequence(rt)` passes views to
-   `rt.fill`/`rt.drain`; `_taps`, `_pad4`, `_kv_slot`, `_flat` and the eight
-   sizes/strides fields go. Name the channel-split axis explicitly.
+4. **Views and `Copy`.** The pin test first (done: `tests/common/copy_taps.
+   py`). Then:
+   - A graph handle takes numpy basic indexing, `h[..., a:b]`, `h[i]`,
+     `h.transpose(1, 0, 2)`, and a per-call `Scratchpad` value as the index
+     on one axis, `keys[i][:, pos]`. A view is metadata: the base buffer and
+     a `Walk` (offset, sizes, strides over it), plus the axis stride the
+     per-call index scales. A contiguous static view is a sub-buffer, as
+     today; any other view is an operand of `Copy` alone.
+   - `Copy(src, dst=None)` replaces `StridedCopy`: two `Walk` params in
+     place of eight sizes/strides/offset fields; its sequence legalizes each
+     walk per channel (`_taps`' split of the highest non-unit axis, as
+     pinned). `in_offset`/`out_offset` stay its per-call values; a per-call
+     index binds to them with the axis stride as its scale, applied where
+     the host writes the value (upstream's scratchpad offset is a raw
+     element offset). The class declares which params take a view
+     (`accept_views`), the one hook.
+   - llama: caches become `(G, L, D)`; `Copy(k, keys[i][:, pos])`, `Copy(v.
+     reshape(G, D), values[i][:, pos])`, prefill `Copy(k.reshape(n, G, D).
+     transpose(1, 0, 2), keys[i][:, :n])`, `Copy(x[last]).reshape(1, E)`;
+     the host passes row indices (`pos`, `n - 1`), not element offsets.
+     Rank flattening in `infer.py` stays until the merge.
 5. **Collapse the four one-purpose templates**; land `inline()` and the
    hello-world operator (`source_text=` on `declare_kernel`, hashing the
    string; `arg_types` from operands).
