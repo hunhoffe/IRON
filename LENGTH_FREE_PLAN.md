@@ -141,7 +141,7 @@ sets), pyright and ruff clean, and a Progress entry.
 
 ## Progress
 
-- `(this commit)` Step 1, the vocabulary. `Extent(field)` is a value
+- `e5e84d9` Step 1, the vocabulary. `Extent(field)` is a value
   member that reads as its field until a graph bounds it; `x[:n]` puts a
   bound on a handle, carried through `reshape` (rescaled by the merged or
   split axes) and `transpose`, and refused on a slice of a bounded handle
