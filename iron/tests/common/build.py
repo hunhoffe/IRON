@@ -279,12 +279,12 @@ def test_mha_sequence_is_one_descriptor_set_per_kv_group(monkeypatch):
     }
     kv = Access(head, 0, (4, 2, 512, 64), (0, 512 * 64, 64, 1))
     assert log == [
-        ("fill", "q0", "dQ", q[0], False),
-        ("fill", "q1", "dQ", q[1], False),
-        ("fill", "k0", "dK", kv, False),
-        ("fill", "v0", "dV", kv, False),
-        ("drain", "o0", "dO", q[0], True),
-        ("drain", "o1", "dO", q[1], True),
+        ("fill", "Q0", "dQ", q[0], False),
+        ("fill", "Q1", "dQ", q[1], False),
+        ("fill", "K0", "dK", kv, False),
+        ("fill", "V0", "dV", kv, False),
+        ("drain", "O0", "dO", q[0], True),
+        ("drain", "O1", "dO", q[1], True),
     ]
 
 
@@ -326,7 +326,7 @@ def test_mha_sequence_over_interleaved_heads_is_strided_the_same_way(monkeypatch
         for i in range(s.count):
             s.bind(Handle(f"{s.name}{i}", log), i)
     op.sequence(Sequence(op, ov, {"Q": "dQ", "K": "dK", "V": "dV", "O": "dO"}))
-    assert [name for name, _ in log] == ["q0", "q1", "k0", "v0", "o0", "o1"] * 2
+    assert [name for name, _ in log] == ["Q0", "Q1", "K0", "V0", "O0", "O1"] * 2
     q0, q1, k0, *_ = [tap for _, tap in log[:6]]
     # Q: (heads 2 at stride d, blocks 2, rows 256 at stride 4d, d)
     assert q0.sizes == (2, 2, 256, 64) and q0.strides == (64, 2 * 256 * 256, 256, 1)

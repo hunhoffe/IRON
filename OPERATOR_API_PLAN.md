@@ -284,7 +284,15 @@ today**.
 
 ## Progress
 
-- (this commit) Step 7, rung 2: GEMV, Softmax, RoPE, Transpose, Repeat,
+- (this commit) Step 7, rung 3: GEMM and MHA are one class each (−75
+  lines net). Their reduction and tile counts are derived `Value`s; the
+  tiles GEMM bakes beyond what its L2 streams name (`tile_m/k/n`, the
+  layout flags, the accuracy and rounding flags) are declared array-tier;
+  MHA's `B_q` and pipeline count likewise. A sequence may hand a lane any
+  descriptor alone (an `Access` or an upstream `TensorAccessPattern`).
+  `GEMM(M=, K=, N=, b_col_maj=True)` and `MHA(num_heads=, seq_len=)` are
+  the whole constructions. Both suites identical to baseline.
+- `702cca1` Step 7, rung 2: GEMV, Softmax, RoPE, Transpose, Repeat,
   MemCopy and Copy are one class each (7 files, −177 lines net). Their
   trip counts are derived `Value`s; GEMV's `tiles` replaces the rows per
   column it compiled into its core loop, so the C11 gate now passes for

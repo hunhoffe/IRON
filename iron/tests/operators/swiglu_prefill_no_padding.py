@@ -40,4 +40,4 @@ def test_aligned_seq_len_traces_with_the_given_extents():
         (512, 2048, 2048),
         (512, 2048, 2048),
     ]
-    assert gemms[0].ov is gemms[1].ov  # gate and up share one array
+    assert gemms[0].array_key() == gemms[1].array_key()  # gate and up share one array

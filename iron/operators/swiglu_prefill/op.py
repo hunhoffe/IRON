@@ -13,7 +13,7 @@ import aie.utils as aie_utils
 
 import iron
 from iron.operators.elementwise_mul import ElementwiseMul
-from iron.operators.gemm.op import GEMM, GEMMOverlay
+from iron.operators.gemm.op import GEMM
 from iron.operators.silu import SiLU
 
 
@@ -54,9 +54,7 @@ def swiglu_prefill(
 
     @iron.graph
     def prefill(x):
-        cols = num_aie_columns or GEMMOverlay.shim_columns(
-            aie_utils.get_current_device()
-        )
+        cols = num_aie_columns or GEMM.shim_columns(aie_utils.get_current_device())
         gate = GEMM(x, w_gate, num_aie_columns=cols, **projection)
         up = GEMM(x, w_up, num_aie_columns=cols, **projection)
         swished = SiLU(gate, num_aie_columns=cols, tile_size=hidden_dim // cols)

@@ -306,7 +306,7 @@ def test_swiglu_prefill_traces_over_a_sequence():
     t = ffn.trace(x=(256, E))
     gemms = [s.op for s in t.steps if type(s.op) is GEMM]
     assert [(g.M, g.K, g.N) for g in gemms] == [(256, E, H), (256, E, H), (256, H, E)]
-    assert gemms[0].ov is gemms[1].ov
+    assert gemms[0].array_key() == gemms[1].array_key()
     silu = next(s.op for s in t.steps if type(s.op) is SiLU)
     assert silu.size == 256 * H
 
@@ -423,7 +423,7 @@ def test_llama_prompt_traces_over_the_same_caches():
     # Every projection reads the (out, in) checkpoint layout through the
     # column-major flag, which the trace carries into shape inference.
     gemms = [op for op, *_ in t.runlist if type(op).__name__ == "GEMM"]
-    assert all(op.ov.b_col_maj for op in gemms)
+    assert all(op.b_col_maj for op in gemms)
     K = {op.K for op in gemms}
     assert K == {cfg.emb_dim, cfg.hidden_dim, cfg.n_heads * cfg.head_dim}
     # The last-row copy is the one operator bound to the per-call offset.

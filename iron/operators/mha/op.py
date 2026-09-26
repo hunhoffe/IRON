@@ -3,23 +3,21 @@
 
 """Fused multi-head attention, in the declared form.
 
-:class:`MHAOverlay` is the array: ``num_of_pipelines`` three-stage pipelines
-(QK matmul, partial softmax, PV matmul), one per column, fed by a Q stream
-split across the pipelines on a memtile and by K and V streams every
-pipeline consumes. The block sizes, the head dimension and the pipeline
-count configure it; the sequence length and the head counts do not. The
-cores loop forever and read their trip counts from four residents the
-sequence writes.
+The array is ``num_of_pipelines`` three-stage pipelines (QK matmul, partial
+softmax, PV matmul), one per column, fed by a Q stream split across the
+pipelines on a memtile and by K and V streams every pipeline consumes. The
+block sizes, the head dimension and the pipeline count configure it; the
+sequence length and the head counts do not. The cores loop forever and
+read their trip counts from four values the sequence writes.
 
-:class:`MHA` is the host ABI: Q and O as ``(num_heads, seq_pad, d)``, K and
-V as ``(num_KV_heads, seq_pad, d)`` with the sequence padded to a multiple
-of ``B_q * num_of_pipelines``. Its sequence is an override: one task group
-per (head, Q block) that fills Q for every shim, fills that head's whole K
-and V, and drains O.
+The host ABI is Q and O as ``(num_heads, seq_pad, d)``, K and V as
+``(num_KV_heads, seq_pad, d)`` with the sequence padded to a multiple of
+``B_q * num_of_pipelines``. The sequence is an override: one task group per
+KV group that fills Q for every shim, fills that group's K and V, and
+drains O.
 """
 
 import dataclasses
-from dataclasses import field
 
 import numpy as np
 from ml_dtypes import bfloat16
@@ -30,12 +28,9 @@ from iron.common.declare import (
     In,
     Operator,
     Out,
-    Overlay,
-    Resident,
     Shim,
-    StreamIn,
-    StreamOut,
     Unresolvable,
+    Value,
     param,
     auto,
 )
@@ -47,39 +42,72 @@ _I32x4 = np.ndarray[(4,), np.dtype[np.int32]]  # type: ignore[misc]
 MAC_DIMS = (8, 8, 8)
 
 
-# --------------------------------------------------------------------------
-# The overlay: the pipelined attention array.
-# --------------------------------------------------------------------------
-
-
-class MHAOverlay(Overlay):
-    """The array for fused attention over ``(B_q, d)`` Q blocks and ``(d, B_kv)`` K/V blocks.
+class MHA(Operator):
+    """AIE-accelerated Multi-Head Attention operator: fused attention over
+    ``(B_q, d)`` Q blocks and ``(d, B_kv)`` K/V blocks.
 
     More than six pipelines split the Q and O traffic over two shims (each
     memtile split serves at most six pipelines), so the Q and O streams have
-    ``q_shims`` slots, each carrying ``join_rows = B_q * pipelines_per_shim``
+    ``q_shims`` lanes, each carrying ``join_rows = B_q * pipelines_per_shim``
     rows per block.
     """
 
-    d: int = param(
-        default=64
-    )  # head dimension: the width of every tile and the kernel's DIM_K
-    B_q: int = auto(64)
+    num_heads: int = param()
+    # None takes the padded length inference binds from a shape (seq_pad).
+    seq_len: int | None = param(default=None)
+    # The K/V head count: fewer than num_heads is grouped-query attention.
+    # 0 or None means plain MHA (as many as num_heads); validate() fills it.
+    num_KV_heads: int | None = param(default=None)
+    # seq_len rounded up to a multiple of B_q * num_of_pipelines; filled by
+    # validate(), and checked against the value inference binds from a shape.
+    seq_pad: int | None = param(default=None, repr=False)
+    # The layout a projection GEMM produces, ``(seq, heads, d)`` with the
+    # heads interleaved per token, read and written as it is: a head's block
+    # is then a strided slice, and no copy reorders the heads to the front.
+    heads_interleaved: bool = param(default=False)
+    # The head dimension: the width of every tile and the kernel's DIM_K.
+    d: int = param(default=64)
+    B_q: int = auto(64, array=True)
     B_kv: int = auto(64)
-    num_of_pipelines: int = auto(1)
-    emulate_bf16_mmul_with_bfp16: bool = field(default=True, repr=False)
-    # Filled by tuning: how the pipelines are split across shims.
-    q_shims: int | None = auto(repr=False)
-    join_rows: int | None = auto(repr=False)
+    num_of_pipelines: int = auto(1, array=True)
+    emulate_bf16_mmul_with_bfp16: bool = param(default=True, repr=False)
+    # Filled by resolve: how the pipelines are split across shims.
+    q_shims: int = auto(repr=False)
+    join_rows: int = auto(repr=False)
 
-    q = StreamIn(join_rows, d, per=q_shims, via=Shim(4))
-    k = StreamIn(d, B_kv, via=Shim(5))
-    v = StreamIn(d, B_kv, via=Shim(6))
-    o = StreamOut(join_rows, d, per=q_shims, via=Shim(7))
-    q_blocks_per_pipeline = Resident(np.int32)
-    kv_blocks = Resident(np.int32)
-    s_q = Resident(np.int32)  # the unpadded sequence length, for masking
-    s_kv = Resident(np.int32)
+    Q = In(
+        select(heads_interleaved, (seq_pad, num_heads, d), (num_heads, seq_pad, d)),
+        tile=(join_rows, d),
+        per=(q_shims,),
+        via=Shim(4),
+    )
+    K = In(
+        select(
+            heads_interleaved, (seq_pad, num_KV_heads, d), (num_KV_heads, seq_pad, d)
+        ),
+        tile=(d, B_kv),
+        via=Shim(5),
+    )
+    V = In(
+        select(
+            heads_interleaved, (seq_pad, num_KV_heads, d), (num_KV_heads, seq_pad, d)
+        ),
+        tile=(d, B_kv),
+        via=Shim(6),
+    )
+    O = Out(
+        select(heads_interleaved, (seq_pad, num_heads, d), (num_heads, seq_pad, d)),
+        tile=(join_rows, d),
+        per=(q_shims,),
+        via=Shim(7),
+    )
+    # The cores' trip counts, and the unpadded lengths for masking.
+    q_blocks_per_pipeline = Value(
+        np.int32, derive=lambda op: op.seq_pad // (op.B_q * op.num_of_pipelines)
+    )
+    kv_blocks = Value(np.int32, derive=lambda op: op.seq_pad // op.B_kv)
+    s_q = Value(np.int32, derive=lambda op: op.seq_len)
+    s_kv = Value(np.int32, derive=lambda op: op.seq_len)
 
     # -- checks ----------------------------------------------------------------
 
@@ -102,8 +130,35 @@ class MHAOverlay(Overlay):
             raise ValueError(f"B_kv must be divisible by t ({self.B_kv} % {t} != 0)")
         if self.d % s:
             raise ValueError(f"d must be divisible by s ({self.d} % {s} != 0)")
+        if self.num_heads <= 0:
+            raise ValueError("Number of num_heads must be greater than 0")
+        if not self.num_KV_heads:
+            self.num_KV_heads = self.num_heads
+        if self.num_KV_heads > self.num_heads:
+            raise ValueError(
+                "Number of KV num_heads must be less than or equal to number of num_heads"
+            )
+        if self.num_heads % self.num_KV_heads:
+            raise ValueError(
+                f"Number of num_heads ({self.num_heads}) must be divisible by "
+                f"number of KV num_heads ({self.num_KV_heads})"
+            )
+        if self.seq_len is None:
+            if self.seq_pad is None:
+                raise ValueError("MHA needs seq_len (or seq_pad, from a shape)")
+            self.seq_len = self.seq_pad
+        if self.seq_len <= 0:
+            raise ValueError("seq_len must be greater than 0")
+        expected = self.seq_padding(self.seq_len)
+        if self.seq_pad is None:
+            self.seq_pad = expected
+        elif self.seq_pad != expected:
+            raise ValueError(
+                f"seq_pad={self.seq_pad} does not match seq_len={self.seq_len} "
+                f"padded to a multiple of B_q * num_of_pipelines ({expected})"
+            )
 
-    def resolve(self, dev) -> "MHAOverlay":
+    def resolve(self, dev):
         if dev is not None and dev.resolve().name != "npu2":
             raise Unresolvable(
                 f"MHA is pinned to the NPU2 array (memtiles at columns 3-7); "
@@ -115,6 +170,15 @@ class MHAOverlay(Overlay):
             q_shims=q_shims,
             join_rows=self.B_q * (self.num_of_pipelines // q_shims),
         )
+
+    def compatible(self) -> None:
+        assert self.seq_len is not None  # validate() filled it
+        expected = self.seq_padding(self.seq_len)
+        if self.seq_pad != expected:
+            raise Incompatible(
+                f"seq_pad ({self.seq_pad}) is not seq_len ({self.seq_len}) padded "
+                f"to a multiple of B_q * num_of_pipelines ({expected})"
+            )
 
     # -- derived geometry ------------------------------------------------------
 
@@ -153,7 +217,7 @@ class MHAOverlay(Overlay):
         k_ty = np.ndarray[(d, B_kv), np.dtype[dtype]]
         qk_ty = np.ndarray[(B_q, B_kv), np.dtype[dtype]]
         s_ty = np.ndarray[(4 * B_q,), np.dtype[dtype]]
-        joined_ty = self.q.tile  # (n_join * B_q, d)
+        joined_ty = self.Q.tile  # (n_join * B_q, d)
 
         # Every one of these comes out of mha.cc, which #includes mm.cc and
         # softmax.cc, so they all name one object: matmul_QK is its QK^T
@@ -558,10 +622,10 @@ class MHAOverlay(Overlay):
         # performance preference. Q enters on column 4 and O leaves on 7,
         # both slots sharing the tile's two channels; K and V take 5 and 6.
         for shim in range(self.q_shims):
-            self.q[shim].bind(inQ[shim].prod(tile=Tile(col=4, row=0)))
-            self.o[shim].bind(memO[shim].cons(tile=Tile(col=7, row=0)))
-        self.k.bind(inK.prod(tile=Tile(col=5, row=0)))
-        self.v.bind(inV.prod(tile=Tile(col=6, row=0)))
+            self.Q.lane(shim).bind(inQ[shim].prod(tile=Tile(col=4, row=0)))
+            self.O.lane(shim).bind(memO[shim].cons(tile=Tile(col=7, row=0)))
+        self.K.bind(inK.prod(tile=Tile(col=5, row=0)))
+        self.V.bind(inV.prod(tile=Tile(col=6, row=0)))
 
         flat_rtps = [b for stage in mha_rtps_list for b in stage]
         self.q_blocks_per_pipeline.bind(flat_rtps, 0)
@@ -570,111 +634,6 @@ class MHAOverlay(Overlay):
         self.s_kv.bind(flat_rtps, 3)
 
         return matmul_workers + softmax_workers + matmul_pv_workers
-
-
-# --------------------------------------------------------------------------
-# The operator: the host ABI, declared against the overlay.
-# --------------------------------------------------------------------------
-
-
-class MHA(Operator[MHAOverlay]):
-    """AIE-accelerated Multi-Head Attention operator"""
-
-    num_heads: int = param()
-    # None takes the padded length inference binds from a shape (seq_pad).
-    seq_len: int | None = param(default=None)
-    # The K/V head count: fewer than num_heads is grouped-query attention.
-    # 0 or None means plain MHA (as many as num_heads); validate() fills it.
-    num_KV_heads: int | None = param(default=None)
-    # seq_len rounded up to a multiple of B_q * num_of_pipelines; filled by
-    # validate(), and checked against the value inference binds from a shape.
-    seq_pad: int | None = param(default=None, repr=False)
-    # The layout a projection GEMM produces, ``(seq, heads, d)`` with the
-    # heads interleaved per token, read and written as it is: a head's block
-    # is then a strided slice, and no copy reorders the heads to the front.
-    heads_interleaved: bool = field(default=False)
-
-    Q = In(
-        select(
-            heads_interleaved,
-            (seq_pad, num_heads, MHAOverlay.d),
-            (num_heads, seq_pad, MHAOverlay.d),
-        ),
-        to=MHAOverlay.q,
-    )
-    K = In(
-        select(
-            heads_interleaved,
-            (seq_pad, num_KV_heads, MHAOverlay.d),
-            (num_KV_heads, seq_pad, MHAOverlay.d),
-        ),
-        to=MHAOverlay.k,
-    )
-    V = In(
-        select(
-            heads_interleaved,
-            (seq_pad, num_KV_heads, MHAOverlay.d),
-            (num_KV_heads, seq_pad, MHAOverlay.d),
-        ),
-        to=MHAOverlay.v,
-    )
-    O = Out(
-        select(
-            heads_interleaved,
-            (seq_pad, num_heads, MHAOverlay.d),
-            (num_heads, seq_pad, MHAOverlay.d),
-        ),
-        from_=MHAOverlay.o,
-    )
-
-    # -- checks ----------------------------------------------------------------
-
-    def validate(self) -> None:
-        if self.num_heads <= 0:
-            raise ValueError("Number of num_heads must be greater than 0")
-        if not self.num_KV_heads:
-            self.num_KV_heads = self.num_heads
-        if self.num_KV_heads > self.num_heads:
-            raise ValueError(
-                "Number of KV num_heads must be less than or equal to number of num_heads"
-            )
-        if self.num_heads % self.num_KV_heads:
-            raise ValueError(
-                f"Number of num_heads ({self.num_heads}) must be divisible by "
-                f"number of KV num_heads ({self.num_KV_heads})"
-            )
-        if self.seq_len is None:
-            if self.seq_pad is None:
-                raise ValueError("MHA needs seq_len (or seq_pad, from a shape)")
-            self.seq_len = self.seq_pad
-        if self.seq_len <= 0:
-            raise ValueError("seq_len must be greater than 0")
-        expected = self.ov.seq_padding(self.seq_len)
-        if self.seq_pad is None:
-            self.seq_pad = expected
-        elif self.seq_pad != expected:
-            raise ValueError(
-                f"seq_pad={self.seq_pad} does not match seq_len={self.seq_len} "
-                f"padded to a multiple of B_q * num_of_pipelines ({expected})"
-            )
-
-    def compatible(self) -> None:
-        ov = self.ov
-        expected = ov.seq_padding(self.seq_len)
-        if self.seq_pad != expected:
-            raise Incompatible(
-                f"seq_pad ({self.seq_pad}) is not seq_len ({self.seq_len}) padded "
-                f"to a multiple of B_q * num_of_pipelines ({expected})"
-            )
-
-    def resident_values(self) -> dict[str, int]:
-        ov = self.ov
-        return {
-            "q_blocks_per_pipeline": self.seq_pad // (ov.B_q * ov.num_of_pipelines),
-            "kv_blocks": self.seq_pad // ov.B_kv,
-            "s_q": self.seq_len,
-            "s_kv": self.seq_len,
-        }
 
     def reference(self, Q, K, V):
         """CPU reference: causal attention per head, K and V repeated over each
@@ -690,7 +649,7 @@ class MHA(Operator[MHAOverlay]):
         # Against torch's FLASH backend this differs by under 1e-6, which is
         # less than torch's own FLASH and MATH backends differ from each other.
         q, k, v = (t.astype(np.float32) for t in (Q, K, V))
-        scores = np.matmul(q, np.swapaxes(k, -2, -1)) / np.sqrt(np.float32(self.ov.d))
+        scores = np.matmul(q, np.swapaxes(k, -2, -1)) / np.sqrt(np.float32(self.d))
         seq = scores.shape[-1]
         scores += np.triu(np.full((seq, seq), -np.inf, dtype=np.float32), 1)
         e = np.exp(scores - scores.max(axis=-1, keepdims=True))
@@ -718,12 +677,11 @@ class MHA(Operator[MHAOverlay]):
         """
         from iron.common.tiling import legalize
 
-        ov = self.ov
         heads, kv_heads = self.num_heads, self.num_KV_heads
         group = heads // kv_heads
-        rows = ov.join_rows  # Q rows each shim carries per block
-        blocks = self.seq_pad // (rows * ov.q_shims)  # per pipeline
-        S, d = self.seq_pad, ov.d
+        rows = self.join_rows  # Q rows each shim carries per block
+        blocks = self.seq_pad // (rows * self.q_shims)  # per pipeline
+        S, d = self.seq_pad, self.d
 
         def strides_of(buffer):
             # (head, row) element strides of a (heads, seq, d) or, interleaved
@@ -738,7 +696,7 @@ class MHA(Operator[MHAOverlay]):
                 buffer.elements,
                 head0 * head_s + shim * rows * row_s,
                 (group, blocks, rows, d),
-                (head_s, ov.q_shims * rows * row_s, row_s, 1),
+                (head_s, self.q_shims * rows * row_s, row_s, 1),
                 buffer.dtype,
             )
 
@@ -756,14 +714,14 @@ class MHA(Operator[MHAOverlay]):
         for kv_head in range(kv_heads):
             head0 = kv_head * group
             with rt.group():
-                for shim in range(ov.q_shims):
+                for shim in range(self.q_shims):
                     for acc in q_rows(self.Q, head0, shim):
-                        rt.fill(ov.q[shim], (self.Q, acc))
+                        rt.fill(self.Q.lane(shim), acc)
                 for acc in kv_rows(self.K, kv_head):
-                    rt.fill(ov.k, (self.K, acc))
+                    rt.fill(self.K, acc)
                 for acc in kv_rows(self.V, kv_head):
-                    rt.fill(ov.v, (self.V, acc))
-                for shim in range(ov.q_shims):
+                    rt.fill(self.V, acc)
+                for shim in range(self.q_shims):
                     accs = q_rows(self.O, head0, shim)
                     for acc in accs:
-                        rt.drain(ov.o[shim], (self.O, acc), wait=acc is accs[-1])
+                        rt.drain(self.O.lane(shim), acc, wait=acc is accs[-1])

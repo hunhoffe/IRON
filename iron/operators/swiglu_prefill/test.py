@@ -106,5 +106,5 @@ def test_weight_layout_reaches_every_gemm(b_col_maj):
     down = np.zeros((E, H) if b_col_maj else (H, E), dtype=bfloat16)
     t = swiglu_prefill(w, w, down, b_col_maj=b_col_maj).trace(x=(256, E))
     gemms = [s.op for s in t.steps if type(s.op) is GEMM]
-    assert [g.ov.b_col_maj for g in gemms] == [b_col_maj] * 3
+    assert [g.b_col_maj for g in gemms] == [b_col_maj] * 3
     assert [(g.K, g.N) for g in gemms] == [(E, H), (E, H), (H, E)]

@@ -457,11 +457,11 @@ def test_from_spec_builds_an_operator_from_literal_shapes():
 
 
 def test_gemm_layout_flags_transpose_rather_than_resize():
-    from iron.operators.gemm.op import GEMM, GEMMOverlay
+    from iron.operators.gemm.op import GEMM
 
-    plain = GEMM(GEMMOverlay(), M=256, K=64, N=512).buffers
-    b_major = GEMM(GEMMOverlay(b_col_maj=True), M=256, K=64, N=512).buffers
-    c_major = GEMM(GEMMOverlay(c_col_maj=True), M=256, K=64, N=512).buffers
+    plain = GEMM(M=256, K=64, N=512).buffers
+    b_major = GEMM(M=256, K=64, N=512, b_col_maj=True).buffers
+    c_major = GEMM(M=256, K=64, N=512, c_col_maj=True).buffers
     assert plain[1].shape == (64, 512) and b_major[1].shape == (512, 64)
     assert plain[2].shape == (256, 512) and c_major[2].shape == (512, 256)
     # Transposing a layout must not change how many bytes move.
@@ -470,10 +470,10 @@ def test_gemm_layout_flags_transpose_rather_than_resize():
 
 
 def test_mha_pads_the_sequence_and_groups_kv():
-    from iron.operators.mha.op import MHA, MHAOverlay
+    from iron.operators.mha.op import MHA
 
-    grouped = MHA(MHAOverlay(), num_heads=8, seq_len=100, num_KV_heads=2).buffers
-    plain = MHA(MHAOverlay(), num_heads=8, seq_len=100).buffers
+    grouped = MHA(num_heads=8, seq_len=100, num_KV_heads=2).buffers
+    plain = MHA(num_heads=8, seq_len=100).buffers
     # 100 rounds up to 128, so Q is 8 heads x 128 x 64.
     assert grouped[0].shape == (8, 128, 64)
     # Grouped K/V are narrower than Q; plain K/V are exactly as wide.

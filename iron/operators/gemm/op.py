@@ -15,11 +15,8 @@ from iron.common.declare import (
     In,
     Operator,
     Out,
-    Overlay,
-    Resident,
-    StreamIn,
-    StreamOut,
     Unresolvable,
+    Value,
     param,
     select,
     auto,
@@ -33,47 +30,62 @@ def ceildiv(a, b):
 N_AIE_ROWS = 4
 
 
-# --------------------------------------------------------------------------
-# The overlay: the whole-array matmul, tiled m x k x n.
-# --------------------------------------------------------------------------
+class GEMM(Operator):
+    """AIE-accelerated General Matrix Multiplication (GEMM) layer.
 
-
-class GEMMOverlay(Overlay):
-    """The array for C = A @ B: a 4-row grid of cores, one column of B per AIE column.
-
-    A is broadcast across columns and distributed across rows in
-    (m * n_A_tiles_per_shim, k) blocks; B is distributed across columns and
-    broadcast across rows in (k, n) blocks; C is joined across rows and
-    distributed across columns in (m * 4, n) blocks. The extents M, K, N
-    belong to :class:`GEMM`; the core's reduction and tile counts are
-    residents the sequence writes.
+    ``C = A @ B`` on a 4-row grid of cores, one column of B per AIE column,
+    tiled m x k x n. A is broadcast across columns and distributed across
+    rows in (m * n_A_tiles_per_shim, k) blocks; B is distributed across
+    columns and broadcast across rows in (k, n) blocks; C is joined across
+    rows and distributed across columns in (m * 4, n) blocks. The core's
+    reduction and tile counts are values the sequence writes, so the array
+    does not depend on the extents.
     """
 
-    tile_m: int = auto(64)
-    tile_k: int = auto(64)
-    tile_n: int = auto(64)
+    M: int = param()
+    K: int = param()
+    N: int = param()
+    tile_m: int = auto(64, array=True)
+    tile_k: int = auto(64, array=True)
+    tile_n: int = auto(64, array=True)
     # Given, not resolved: the host buffers are padded by it (mem_tile_n), so
     # a GEMM knows its column count before any device does.
     num_aie_columns: int = auto(8)
-    b_col_maj: bool = False
-    c_col_maj: bool = False
-    emulate_bf16_mmul_with_bfp16: bool = field(default=True, repr=False)
-    prio_accuracy: bool = field(default=False, repr=False)
-    round_conv_even: bool = field(default=True, repr=False)
+    # A @ B = C, with either operand optionally stored column-major. The
+    # layout flags transpose a declared shape rather than resize it.
+    b_col_maj: bool = param(default=False, array=True)
+    c_col_maj: bool = param(default=False, array=True)
+    emulate_bf16_mmul_with_bfp16: bool = param(default=True, repr=False, array=True)
+    prio_accuracy: bool = param(default=False, repr=False, array=True)
+    round_conv_even: bool = param(default=True, repr=False, array=True)
     dtype_in: object = field(default=bfloat16, repr=False)
     dtype_out: object = field(default=bfloat16, repr=False)
-    use_scalar: bool = field(default=False, repr=False)
-    # Filled by tuning: the L2 tile of each stream and how many shims carry A.
-    n_shim_mem_a: int | None = auto(repr=False)
-    a_l2: int | None = auto(repr=False)
-    b_l2: int | None = auto(repr=False)
-    c_l2: int | None = auto(repr=False)
+    use_scalar: bool = param(default=False, repr=False, array=True)
+    # Filled by resolve: the L2 tile of each stream and how many shims carry A.
+    n_shim_mem_a: int = auto(repr=False)
+    a_l2: int = auto(repr=False)
+    b_l2: int = auto(repr=False)
+    c_l2: int = auto(repr=False)
 
-    a = StreamIn(a_l2, dtype=dtype_in, per=n_shim_mem_a)
-    b = StreamIn(b_l2, dtype=dtype_in, per=num_aie_columns)
-    c = StreamOut(c_l2, dtype=dtype_out, per=num_aie_columns)
-    k_div_k = Resident(np.int32)  # reduction steps per output tile
-    n_tiles = Resident(np.int32)  # output tiles per core
+    A = In(M, K, dtype=dtype_in, tile=(a_l2,), per=(n_shim_mem_a,))
+    B = In(
+        select(b_col_maj, (N, K), (K, N)),
+        dtype=dtype_in,
+        tile=(b_l2,),
+        per=(num_aie_columns,),
+    )
+    C = Out(
+        select(c_col_maj, (N, M), (M, N)),
+        dtype=dtype_out,
+        tile=(c_l2,),
+        per=(num_aie_columns,),
+    )
+    # Reduction steps per output tile, and output tiles per core.
+    k_div_k = Value(np.int32, derive=lambda op: op.K // op.tile_k)
+    n_tiles = Value(
+        np.int32,
+        derive=lambda op: (op.M // op.mem_tile_m_c) * (op.N // op.mem_tile_n),
+    )
 
     # -- derived geometry ---------------------------------------------------
 
@@ -110,7 +122,7 @@ class GEMMOverlay(Overlay):
             emulate_bf16_mmul_with_bfp16=self.emulate_bf16_mmul_with_bfp16,
         )
 
-    # -- construction-time checks -------------------------------------------
+    # -- checks ---------------------------------------------------------------
 
     def validate(self) -> None:
         # The kernel's own geometry rather than a second copy of it: mm.cc's
@@ -120,7 +132,7 @@ class GEMMOverlay(Overlay):
         # aie2p unconditionally, which is what these checks have always
         # assumed and what their messages name, because the source is
         # aie_kernels/aie2p/mm.cc. A device is not known here anyway: this
-        # runs at construction, before tuning picks one. design() asks for
+        # runs at construction, before resolution picks one. array() asks for
         # the geometry of the device it is actually building for, which on
         # npu1 is the looser (4, 8, 4).
         r, s, t = kernels.mm.mac_dims(
@@ -158,8 +170,17 @@ class GEMMOverlay(Overlay):
             raise ValueError(
                 f"Output dtype ({dout}) must be equal or larger to input dtype ({din})"
             )
+        # The extents at construction, so a bad shape is reported where it
+        # is written rather than at resolution.
+        for name, value, unit in (
+            ("M", self.M, self.tile_m * N_AIE_ROWS),
+            ("K", self.K, self.tile_k),
+            ("N", self.N, self.tile_n * self.num_aie_columns),
+        ):
+            if value % unit != 0:
+                raise ValueError(f"{name} ({value}) must be a multiple of {unit}")
 
-    def resolve(self, dev) -> "GEMMOverlay":
+    def resolve(self, dev):
         cols = self.num_aie_columns
         if dev is not None:
             name = dev.resolve().name
@@ -173,14 +194,34 @@ class GEMMOverlay(Overlay):
                 )
         return dataclasses.replace(
             self,
-            num_aie_columns=cols,
             n_shim_mem_a=min(cols, N_AIE_ROWS),
             a_l2=self.mem_tile_m_a * self.tile_k,
             b_l2=self.tile_k * self.tile_n,
             c_l2=self.mem_tile_m_c * self.tile_n,
         )
 
-    # -- kernels ------------------------------------------------------------
+    def compatible(self) -> None:
+        min_M = self.tile_m * N_AIE_ROWS
+        min_K = self.tile_k
+        min_N = self.tile_n * self.num_aie_columns
+        if self.M % min_M != 0:
+            raise Incompatible(f"M ({self.M}) must be a multiple of {min_M}")
+        if self.K % min_K != 0:
+            raise Incompatible(f"K ({self.K}) must be a multiple of {min_K}")
+        if self.N % min_N != 0:
+            raise Incompatible(f"N ({self.N}) must be a multiple of {min_N}")
+        if self.M % self.mem_tile_m_a != 0:
+            raise Incompatible(
+                "A must be tileable into (m * n_A_tiles_per_shim, k)-sized blocks"
+            )
+        if self.N % self.mem_tile_n != 0:
+            raise Incompatible(
+                "B must be tileable into (k, n * n_aie_cols)-sized blocks"
+            )
+        if self.M % self.mem_tile_m_c != 0:
+            raise Incompatible(
+                "C must be tileable into (m * n_aie_rows, n)-sized blocks"
+            )
 
     def device(self, target):
         from aie.iron.device import NPU1, NPU1Col1, NPU1Col2, NPU2
@@ -220,9 +261,9 @@ class GEMMOverlay(Overlay):
         # a big performance cost.
         fifo_depth = 2
 
-        A_l2_ty = self.a.tile
-        B_l2_ty = self.b.tile
-        C_l2_ty = self.c.tile
+        A_l2_ty = self.A.tile
+        B_l2_ty = self.B.tile
+        C_l2_ty = self.C.tile
         A_l1_ty = np.ndarray[(m, k), np.dtype[dtype_in]]
         B_l1_ty = np.ndarray[(k, n), np.dtype[dtype_in]]
         C_l1_ty = np.ndarray[(m, n), np.dtype[dtype_out]]
@@ -426,88 +467,17 @@ class GEMMOverlay(Overlay):
         # lowering rejects it with "Too many simultaneously active buffer
         # descriptors on tile (3,0), which supports up to 16".
         for c, f in enumerate(A_l3l2_fifos):
-            self.a[c].bind(f.prod(tile=Tile(2 * c if n_aie_cols == 8 else c, 0)))
+            self.A.lane(c).bind(f.prod(tile=Tile(2 * c if n_aie_cols == 8 else c, 0)))
         for c, f in enumerate(B_l3l2_fifos):
-            self.b[c].bind(f.prod(tile=Tile(c, 0)))
+            self.B.lane(c).bind(f.prod(tile=Tile(c, 0)))
         for c, f in enumerate(C_l2l3_fifos):
-            self.c[c].bind(f.cons(tile=Tile(c, 0)))
+            self.C.lane(c).bind(f.cons(tile=Tile(c, 0)))
         flat_rtps = [
             rtps[row][col] for row in range(n_aie_rows) for col in range(n_aie_cols)
         ]
         self.k_div_k.bind(flat_rtps, 0)
         self.n_tiles.bind(flat_rtps, 1)
         return workers
-
-
-# --------------------------------------------------------------------------
-# The operator: the host ABI, declared against the overlay.
-# --------------------------------------------------------------------------
-
-
-class GEMM(Operator[GEMMOverlay]):
-    """AIE-accelerated General Matrix Multiplication (GEMM) layer"""
-
-    M: int = param()
-    K: int = param()
-    N: int = param()
-    # A @ B = C, with either operand optionally stored column-major. The
-    # layout flags transpose a declared shape rather than resize it.
-    A = In(M, K, dtype=GEMMOverlay.dtype_in, to=GEMMOverlay.a)
-    B = In(
-        select(GEMMOverlay.b_col_maj, (N, K), (K, N)),
-        dtype=GEMMOverlay.dtype_in,
-        to=GEMMOverlay.b,
-    )
-    C = Out(
-        select(GEMMOverlay.c_col_maj, (N, M), (M, N)),
-        dtype=GEMMOverlay.dtype_out,
-        from_=GEMMOverlay.c,
-    )
-
-    # -- checks ----------------------------------------------------------------
-
-    def compatible(self) -> None:
-        ov = self.ov
-        min_M = ov.tile_m * N_AIE_ROWS
-        min_K = ov.tile_k
-        min_N = ov.tile_n * ov.num_aie_columns
-        if self.M % min_M != 0:
-            raise Incompatible(f"M ({self.M}) must be a multiple of {min_M}")
-        if self.K % min_K != 0:
-            raise Incompatible(f"K ({self.K}) must be a multiple of {min_K}")
-        if self.N % min_N != 0:
-            raise Incompatible(f"N ({self.N}) must be a multiple of {min_N}")
-        if self.M % ov.mem_tile_m_a != 0:
-            raise Incompatible(
-                "A must be tileable into (m * n_A_tiles_per_shim, k)-sized blocks"
-            )
-        if self.N % ov.mem_tile_n != 0:
-            raise Incompatible(
-                "B must be tileable into (k, n * n_aie_cols)-sized blocks"
-            )
-        if self.M % ov.mem_tile_m_c != 0:
-            raise Incompatible(
-                "C must be tileable into (m * n_aie_rows, n)-sized blocks"
-            )
-
-    def validate(self) -> None:
-        # The same checks at construction, so a bad shape is reported where it
-        # is written rather than at tune time.
-        ov = self.ov
-        for name, value, unit in (
-            ("M", self.M, ov.tile_m * N_AIE_ROWS),
-            ("K", self.K, ov.tile_k),
-            ("N", self.N, ov.tile_n * ov.num_aie_columns),
-        ):
-            if value % unit != 0:
-                raise ValueError(f"{name} ({value}) must be a multiple of {unit}")
-
-    def resident_values(self) -> dict[str, int]:
-        ov = self.ov
-        return {
-            "k_div_k": self.K // ov.tile_k,
-            "n_tiles": (self.M // ov.mem_tile_m_c) * (self.N // ov.mem_tile_n),
-        }
 
     # -- the runtime sequence --------------------------------------------------
 
@@ -524,18 +494,17 @@ class GEMM(Operator[GEMMOverlay]):
                 buffer.elements, tap.offset, tap.sizes, tap.strides, buffer.dtype
             )
 
-        ov = self.ov
         M, K, N = self.M, self.K, self.N
-        m, k, n = ov.tile_m, ov.tile_k, ov.tile_n
-        n_aie_cols, n_aie_rows = ov.num_aie_columns, N_AIE_ROWS
-        n_shim_mem_A = ov.n_shim_mem_a
+        m, k, n = self.tile_m, self.tile_k, self.tile_n
+        n_aie_cols, n_aie_rows = self.num_aie_columns, N_AIE_ROWS
+        n_shim_mem_A = self.n_shim_mem_a
         mem_tile_m_A, mem_tile_m_C, mem_tile_n = (
-            ov.mem_tile_m_a,
-            ov.mem_tile_m_c,
-            ov.mem_tile_n,
+            self.mem_tile_m_a,
+            self.mem_tile_m_c,
+            self.mem_tile_n,
         )
-        c_col_maj, b_col_maj = ov.c_col_maj, ov.b_col_maj
-        dtype_out = ov.dtype_out
+        c_col_maj, b_col_maj = self.c_col_maj, self.b_col_maj
+        dtype_out = self.dtype_out
 
         # A shim BD's outermost descriptor dimension lands in the ITERATION field,
         # whose step is 20 bits wide (AIETargetModel::getDmaBdStepBits for
@@ -605,12 +574,12 @@ class GEMM(Operator[GEMMOverlay]):
             # always equal to n_aie_rows since we have n_aie_rows row tiles for matrix A
             if col < n_aie_rows:
                 for acc in A_fills[tile_offset]:
-                    rt.fill(ov.a[col], (self.A, acc), group=tg)
+                    rt.fill(self.A.lane(col), acc, group=tg)
             # B input transfer: the first (n)-wide block of columns
             # of B, then the (n_aie_columns)-th such block, and so
             # on; each shim starts at a different column offset.
             for acc in B_fills[col]:
-                rt.fill(ov.b[col], (self.B, acc), group=tg)
+                rt.fill(self.B.lane(col), acc, group=tg)
 
         # Task groups determine when to sync, await and free DMA runtime ops.
         tg = rt.new_group()
@@ -681,7 +650,7 @@ class GEMM(Operator[GEMMOverlay]):
                             sizes=C_sizes,
                             strides=C_strides,
                         )
-                        rt.drain(ov.c[col], (self.C, C_tile), group=tg, wait=True)
+                        rt.drain(self.C.lane(col), C_tile, group=tg, wait=True)
                     if not b_unrolled:
                         for tile_row in range(current_tb_n_rows):
                             fill(col, row_base + tile_row, tg)
@@ -706,7 +675,7 @@ class GEMM(Operator[GEMMOverlay]):
 
     def reference(self, A, B):
         """CPU reference: ``C = A @ B`` honoring ``b_col_maj`` / ``c_col_maj``."""
-        return reference(A, B, self.ov.b_col_maj, self.ov.c_col_maj)
+        return reference(A, B, self.b_col_maj, self.c_col_maj)
 
 
 # --------------------------------------------------------------------------

@@ -181,15 +181,15 @@ class Sequence(Transfers):
     def _resolve(
         self, what, stream
     ) -> tuple[BoundBuffer, list[Access], BoundValue | None]:
-        if isinstance(what, Access):
-            # The buffer is the one the stream belongs to.
+        if not isinstance(what, (BoundBuffer, BufferView, tuple)):
+            # A descriptor alone: the buffer is the one the stream belongs to.
             buffer = stream if isinstance(stream, BoundBuffer) else _buffer_of(stream)
             if buffer is None:
                 raise TypeError(
-                    f"an Access alone names no buffer; {stream!r} is not an "
-                    f"operand's own stream, so give (buffer, Access)"
+                    f"{what!r} alone names no buffer; {stream!r} is not an "
+                    f"operand's own stream, so give (buffer, descriptor)"
                 )
-            return buffer, [what], None
+            what = (buffer, what)
         if isinstance(what, BoundBuffer):
             return (
                 what,
