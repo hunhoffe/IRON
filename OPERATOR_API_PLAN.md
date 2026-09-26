@@ -302,7 +302,7 @@ today**.
 
 ## Progress
 
-- `(this commit)` Before review. Copy's channel split is one function,
+- `7026f7f` Before review. Copy's channel split is one function,
   `_shares()`, read by the descriptors, the reference and the check; the
   split axis is the innermost, as it always was, and the prose now says
   so. MHA's array takes its shim columns from the operands' `via=` pins,
