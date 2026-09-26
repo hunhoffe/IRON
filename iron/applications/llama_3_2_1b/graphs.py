@@ -75,8 +75,11 @@ class LlamaGraph:
         H, G, D = config.n_heads, config.n_kv_groups, config.head_dim
         E, F = config.emb_dim, config.hidden_dim
         if num_aie_columns is None:
-            # The device's width: eight on NPU2, four on NPU1. The tile sizes
-            # below divide by it, so it is fixed when the graph is written.
+            # The device's width: eight on NPU2, four on NPU1. The GEMMs and
+            # the prompt norms span it and decode's tiles divide by it, so it
+            # is fixed when the graph is written; every other operator spans
+            # the device on its own, which agrees unless the model is too
+            # small to fill it (the test configuration).
             dev = aie_utils.get_current_device()
             num_aie_columns = dev.cols if dev is not None else 8
         L, cols = max_seq_len, num_aie_columns
@@ -101,7 +104,6 @@ class LlamaGraph:
             return GEMV(
                 weight,
                 x,
-                num_aie_columns=cols,
                 tile_size_input=tile_in,
                 tile_size_output=tile_out,
             )
@@ -120,36 +122,26 @@ class LlamaGraph:
             k_all = Repeat(keys[i].reshape(G, L * D), repeat=H // G, transfer_size=D)
             v_all = Repeat(values[i].reshape(G, L * D), repeat=H // G, transfer_size=D)
             scores = gemv(k_all.reshape(H, L, D), q, tile_out=L // cols)
-            scores = ElementwiseMul(
-                scores, scale, num_aie_columns=cols, tile_size=L // cols
-            )
+            scores = ElementwiseMul(scores, scale, tile_size=L // cols)
             # The valid row length is the context length: the kernel masks
             # every column from there on, so the cache's unwritten tail
             # contributes nothing.
             weights = Softmax(scores, vector_size=vector_size)
-            v_t = Transpose(
-                v_all.reshape(H, L, D),
-                num_aie_columns=2,
-                num_channels=1,
-                m=256,
-                n=32,
-                s=8,
-            )
-            ctx = gemv(v_t, weights, tile_out=4)
+            v_t = Transpose(v_all.reshape(H, L, D), num_aie_columns=2, m=256, n=32)
+            ctx = GEMV(v_t, weights, tile_size_input=4)  # the output tile follows
             o = gemv(lw.o, ctx.reshape(H * D), tile_out=E // cols)
             # </grouped query attention>
-            x = ElementwiseAdd(x, o, num_aie_columns=cols, tile_size=E // cols)
+            x = ElementwiseAdd(x, o, tile_size=E // cols)
             h = RMSNorm(x, lw.norm2)
             gate = gemv(lw.gate, h, tile_out=F // cols)
             up = gemv(lw.up, h, tile_out=F // cols)
             act = ElementwiseMul(
-                SiLU(gate, num_aie_columns=cols, tile_size=F // cols),
+                SiLU(gate, tile_size=F // cols),
                 up,
-                num_aie_columns=cols,
                 tile_size=F // cols,
             )
             down = gemv(lw.down, act, tile_in=1, tile_out=E // cols)
-            return ElementwiseAdd(x, down, num_aie_columns=cols, tile_size=E // cols)
+            return ElementwiseAdd(x, down, tile_size=E // cols)
 
         # -- many rows: a prompt ---------------------------------------------
 
@@ -162,12 +154,10 @@ class LlamaGraph:
                 b_col_maj=True,
                 num_aie_columns=cols,
                 tile_m=tile_m,
-                tile_k=64,
-                tile_n=64,
             )
 
         def norm(x, weight):
-            return RMSNorm(x, weight, num_aie_columns=cols, num_channels=1)
+            return RMSNorm(x, weight, num_aie_columns=cols)
 
         def prefill_block(i, lw, x, angles):
             n = x.shape[0]
@@ -177,8 +167,8 @@ class LlamaGraph:
             k = gemm(h, lw.k)  # (n, G*D)
             v = gemm(h, lw.v)
             # One angle row per position, applied to that position's heads.
-            q = RoPE(q.reshape(n * H, D), angles, num_aie_columns=cols)
-            k = RoPE(k.reshape(n * G, D), angles, num_aie_columns=cols)
+            q = RoPE(q.reshape(n * H, D), angles)
+            k = RoPE(k.reshape(n * G, D), angles)
             # (n, G, D), the heads interleaved per token as the projection
             # wrote them, into the first n rows of the cache's (G, L, D).
             Copy(
@@ -200,18 +190,17 @@ class LlamaGraph:
             )
             o = gemm(o.reshape(n, H * D), lw.o)
             # </grouped query attention>
-            x = ElementwiseAdd(x, o, num_aie_columns=cols, tile_size=E)
+            x = ElementwiseAdd(x, o, tile_size=E)
             h = norm(x, lw.norm2)
             gate = gemm(h, lw.gate)
             up = gemm(h, lw.up)
             act = ElementwiseMul(
-                SiLU(gate, num_aie_columns=cols, tile_size=F),
+                SiLU(gate, tile_size=F),
                 up,
-                num_aie_columns=cols,
                 tile_size=F,
             )
             down = gemm(act, lw.down)
-            return ElementwiseAdd(x, down, num_aie_columns=cols, tile_size=E)
+            return ElementwiseAdd(x, down, tile_size=E)
 
         @iron.graph(names_from=W)
         def forward(

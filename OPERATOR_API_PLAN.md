@@ -290,6 +290,26 @@ today**.
 
 ## Progress
 
+- (this commit) The llama graph names only the knobs that matter. A
+  device-free check traces the graph at the model's real shape with the
+  graph's own defaults (a decode step on NPU2 and NPU1, a 512-row prompt
+  on NPU2) and at the scaled-down shape the host tests use, drops each
+  keyword the graph passes one (class, name) at a time, and requires every
+  one to change some resolved operator or fail somewhere
+  (`tests/common/graph.py::test_llama_names_only_the_knobs_that_matter`,
+  0.2 s). What it found and what went: `num_aie_columns=cols` on every
+  GEMV, elementwise op and RoPE (their own resolution spans the device,
+  which is what `cols` is); `num_channels=1` and `s=8` on Transpose,
+  `tile_k=64`/`tile_n=64` on GEMM and `num_channels=1` on the prompt norm
+  (the defaults restated); the attention-context GEMV's `tile_out=4` (its
+  input tile). What stays, each proven load-bearing: the tile choices
+  decode ran with (`tile_out=`, `tile_size=`, Transpose's `m`/`n`),
+  Repeat's transfer size, and the graph's three parameters
+  (`num_aie_columns`, `num_of_pipelines`, `tile_m`), which the GEMMs and
+  the prompt norms take and the scaled-down shape needs. Knob keywords in
+  the graph 53 → 37 by count; the remaining tile choices retire only into
+  a measured profile, which needs the device. Both suites identical to
+  baseline.
 - `a50cbc7` Step 8: exports. `iron.common.declare` exports the sixteen
   names an operator is written with (`Operator`, `In`, `Out`, `Value`,
   `Scratchpad`, `DispatchTime`, `Shim`, `Xclbin`, `param`, `auto`,

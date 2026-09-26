@@ -9,6 +9,7 @@ checked here is the image: that is OperatorSequence's job and the
 hardware tests' job.
 """
 
+import dataclasses
 from typing import Any
 
 import aie.utils as aie_utils
@@ -18,7 +19,7 @@ from ml_dtypes import bfloat16
 
 import iron
 from iron.common import DispatchTime, Scratchpad
-from iron.common.graph import Handle, TracedGraph
+from iron.common.graph import Handle, TracedGraph, Tracer
 from iron.operators.copy import Copy
 from iron.operators.elementwise_add import ElementwiseAdd
 from iron.operators.elementwise_mul import ElementwiseMul
@@ -435,6 +436,92 @@ def test_llama_prompt_traces_over_the_same_caches():
     ]
     for op in t.operators:
         op.resolved(aie_utils.get_current_device())
+
+
+def _resolved_fields(settings):
+    """Every field of every step of every setting, resolved for its device.
+
+    A setting is ``(device, trace)``: ``trace`` builds the graph with that
+    device current and traces it. The device is restored afterwards.
+    """
+    previous = aie_utils.get_current_device()
+    try:
+        out = []
+        for dev, trace in settings:
+            aie_utils.set_current_device(dev)
+            out.append(
+                [
+                    tuple((f.name, getattr(op, f.name)) for f in dataclasses.fields(op))
+                    + (op.design_key(),)
+                    for op, *_ in trace().runlist
+                    for op in [op.resolved(dev)]
+                ]
+            )
+        return out
+    finally:
+        aie_utils.set_current_device(previous)
+
+
+def _every_keyword_is_load_bearing(monkeypatch, settings):
+    """Drop each keyword the graphs pass, one (class, name) at a time; each
+    must change some resolved step, or fail, in some setting. A keyword that
+    resolution would have picked anyway is noise a reader has to disprove.
+    """
+    construct = Tracer._construct
+    passed = set()
+
+    def recording(self, cls, inputs, outputs, kwargs):
+        passed.update((cls, name) for name in kwargs)
+        return construct(self, cls, inputs, outputs, kwargs)
+
+    monkeypatch.setattr(Tracer, "_construct", recording)
+    baseline = _resolved_fields(settings)
+    redundant = []
+    for cls, name in sorted(passed, key=lambda k: (k[0].__name__, k[1])):
+
+        def dropping(self, kls, inputs, outputs, kwargs, cls=cls, name=name):
+            if kls is cls:
+                kwargs = {k: v for k, v in kwargs.items() if k != name}
+            return construct(self, kls, inputs, outputs, kwargs)
+
+        monkeypatch.setattr(Tracer, "_construct", dropping)
+        try:
+            same = _resolved_fields(settings) == baseline
+        except Exception:
+            continue
+        if same:
+            redundant.append(f"{cls.__name__}({name}=)")
+    assert not redundant, f"resolution picks these anyway: {redundant}"
+
+
+def test_llama_names_only_the_knobs_that_matter(monkeypatch):
+    """Every keyword the llama graph passes is a choice resolution would not
+    have made in some setting the graph is written for: the model's real
+    shape at the graph's own defaults, on either NPU generation for a decode
+    step and on NPU2 (MHA's) for a prompt; and the scaled-down shape the
+    host tests trace, with the parameters that shape needs.
+    """
+    from aie.iron.device import from_name
+
+    from iron.applications.llama_3_2_1b.graphs import LlamaGraph
+    from iron.tests.common.llama_model import Config as _Config
+    from iron.tests.common.llama_model import Llama1B
+
+    npu2, npu1 = from_name("npu2", n_cols=8), from_name("npu1", n_cols=4)
+    real, small = Llama1B(n_layers=1), _Config()
+    L = small.context_length
+    settings = [
+        (npu2, lambda: LlamaGraph(real, 512).trace(real, 1)),
+        (npu1, lambda: LlamaGraph(real, 512).trace(real, 1)),
+        (npu2, lambda: LlamaGraph(real, 512).trace(real, 512)),
+        (
+            npu2,
+            lambda: LlamaGraph(
+                small, L, num_aie_columns=4, num_of_pipelines=1, tile_m=16
+            ).trace(small, L),
+        ),
+    ]
+    _every_keyword_is_load_bearing(monkeypatch, settings)
 
 
 def test_a_bound_value_survives_tuning():
