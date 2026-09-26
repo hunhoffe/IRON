@@ -290,7 +290,7 @@ today**.
 
 ## Progress
 
-- `(this commit)` Tests right-sized from coverage data. Per-test line
+- `3e2b5b1` Tests right-sized from coverage data. Per-test line
   coverage of `iron/tests/common` (161 tests, 4588 library lines reached)
   and per-file coverage of the toolchain suite, each test's reach compared
   with its siblings'. Coverage overlaps heavily by construction (every
