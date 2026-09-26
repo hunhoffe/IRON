@@ -179,9 +179,13 @@ def pytest_collection_modifyitems(config, items):
         return
 
     if aie_utils.DefaultNPURuntime is None:
-        # Most often an unsourced XRT, which otherwise surfaces as a pile of
-        # failures that look like a toolchain regression.
-        raise pytest.UsageError(f"No NPU runtime: {npu_unavailable_reason()}")
+        # A host without an NPU runs everything else: the device tests are
+        # skipped, each saying why (most often no NPU, or an unsourced XRT,
+        # which would otherwise look like a pile of toolchain regressions).
+        reason = f"No NPU runtime: {npu_unavailable_reason()}"
+        for item, _ in marked_items:
+            item.add_marker(pytest.mark.skip(reason=reason))
+        return
     device = aie_utils.DefaultNPURuntime.device().resolve().name
     for item, marker in marked_items:
         if device not in marker.args:
@@ -198,12 +202,15 @@ def pytest_sessionfinish(session, exitstatus):
         session.config._csv_reporter.write_csv()
 
 
-# Generate multiple iterations of each test
 def pytest_generate_tests(metafunc):
-    """Generate multiple iterations of each test for statistics gathering"""
+    """Repeat each device test ``--iterations`` times for statistics.
+
+    A test that measures takes the ``npu_runtime`` fixture; the rest of the
+    tree runs once, since a repeat of a device-free test records nothing.
+    """
     iterations = metafunc.config.getoption("--iterations")
 
-    if iterations > 1:
+    if iterations > 1 and "npu_runtime" in metafunc.fixturenames:
         metafunc.fixturenames.append("_iteration")
         metafunc.parametrize("_iteration", range(iterations), ids=lambda i: f"iter{i}")
 

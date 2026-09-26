@@ -31,6 +31,7 @@ import aie.utils as aie_utils
 from aie.utils.npukernel import NPUKernel
 from aie.utils.verify import Tolerance
 
+from ..device import device_name
 from ..kernels import kernels_dir
 from ..testing import Testing
 from .bound import BoundBuffer, BoundStream, BoundValue
@@ -74,6 +75,11 @@ class _OperatorMeta(type):
         tracer = _graph.current()
         if tracer is not None and args and all(_graph.is_operand(a) for a in args):
             return tracer.call(cls, args, kwargs)
+        if args:
+            raise TypeError(
+                f"{cls.__name__} is constructed by keyword ({cls.__name__}(M=..., "
+                f"K=...)); operands are given inside an @iron.graph function"
+            )
         profile = current_profile()
         if profile is not None:
             # The knobs this call leaves open, where the profile names them.
@@ -547,11 +553,12 @@ class Operator(metaclass=_OperatorMeta):
         operator's.
         """
         dev = aie_utils.get_current_device()
-        assert dev is not None, f"{type(self).__name__}.name needs a bound device"
+        if dev is None:
+            raise RuntimeError(f"{type(self).__name__}.name needs a bound device")
         own = label_parts(self.resolved(dev))
         base = type(self).__name__ + "_" + "_".join(own)
         # Upstream annotates Device.resolve() -> None; it returns the AIEDevice.
-        return f"{base}_{dev.resolve().name}"  # pyright: ignore[reportAttributeAccessIssue]
+        return f"{base}_{device_name(dev)}"
 
     def generator(self, image: str = "elf"):
         """The design generator :class:`CompilableDesign` runs for this operator.
@@ -617,7 +624,7 @@ class Operator(metaclass=_OperatorMeta):
         image = self.external
         if image is None:
             picture = None
-            design = xclbin_design(self.generator(), kernel_name="MLIR_AIE")
+            design = xclbin_design(self.generator("xclbin"), kernel_name="MLIR_AIE")
         else:
             picture = self.prebuilt()
             design = insts_design(self.generator())

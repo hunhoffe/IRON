@@ -525,7 +525,7 @@ class SequenceCompareCallable(SequenceXclbinCallable):
             self._read_to_cpu(name, spec) for name, spec in zip(in_names, in_specs)
         ]
 
-        kernel(*args)
+        super()._run_step(step_idx, kernel, args, step)
 
         npu_raw = self._read_to_cpu(out_name, out_spec)
         npu_out = npu_raw.astype(np.float32)

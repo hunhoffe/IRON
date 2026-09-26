@@ -97,12 +97,6 @@ def _specifier(
     kwargs: dict[str, Any] = {"metadata": metadata, "repr": repr_, "init": init}
     if default is not MISSING:
         kwargs["default"] = default
-    else:
-        # Keyword-only, so a field with no default may follow one with a
-        # default -- which is what a subclass does when it pins an inherited
-        # knob to a shape-bearing parameter of its own. Every declared field
-        # is passed by keyword anyway; only ``ov`` is positional.
-        kwargs["kw_only"] = True
     return dataclasses.field(**kwargs)
 
 

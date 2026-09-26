@@ -42,10 +42,12 @@ def test_a_graph_compiles_to_one_xclbin_per_operator_chained(device):
         x=(1, E),
     )
     assert net.plan.image == "xclbin" and net.plan.dispatch == "separate"
+    assert net.image is not None
     assert Path(net.image).suffix == ".xclbin" and Path(net.image).stat().st_size > 0
     assert net._callable is None, "the runtime is made on first call, not at compile"
     seq = net.sequence
     dispatch = seq._image
+    assert dispatch is not None
     ops = list(seq.unique_operators())
     assert len(ops) == 5 and len(seq.runlist) == 5
     # Five operators, four designs: the gate and up projections share one,

@@ -45,6 +45,8 @@ def shim_columns(cls, dev, num_channels: int = 1) -> int:
     cost = max(directions.count("in"), directions.count("out")) * num_channels
     fixed = len(shared) * num_channels
     limit = get_shim_dma_limit(dev)
+    if not cost:
+        return dev.cols  # replicated streams alone: a column costs nothing more
     return max(1, min(dev.cols, (limit - fixed) // cost))
 
 

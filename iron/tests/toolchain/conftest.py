@@ -17,16 +17,6 @@ import aie.utils as aie_utils  # noqa: E402
 from iron.tests.toolchain.tools import DEVICES  # noqa: E402
 
 
-def pytest_collection_modifyitems(config, items):
-    keep, dropped = [], []
-    for item in items:
-        params = getattr(getattr(item, "callspec", None), "params", {})
-        (dropped if params.get("_iteration", 0) else keep).append(item)
-    if dropped:
-        config.hook.pytest_deselected(items=dropped)
-        items[:] = keep
-
-
 @pytest.fixture(params=sorted(DEVICES))
 def device(request):
     """Each device width the gate builds for, made current."""

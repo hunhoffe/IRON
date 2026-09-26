@@ -56,6 +56,7 @@ def test_dump_writes_raw_words_and_perfetto_json(npu_runtime, tmp_path):
 
     written = dump_traces(run, "layer_norm", out_dir=tmp_path, summary=False)
 
+    assert run.trace_buffer is not None
     words = run.trace_buffer.numpy().view(np.uint32).reshape(-1)
     assert words.any(), "the traced dispatch captured no trace data"
     # The text reads back as the buffer's 32-bit words, unchanged by the int8

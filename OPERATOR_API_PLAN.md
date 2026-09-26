@@ -290,6 +290,25 @@ today**.
 
 ## Progress
 
+- (this commit) Audit, batch C: the rest of the verified items. A
+  profile's scope token lives in the context, not on the profile, so one
+  profile entered from several threads is safe. The top-level `iron`
+  module is typed (`TYPE_CHECKING` imports beside the lazy table, a
+  literal `__all__`), `iron.graph` is overloaded for both decorator forms
+  and a graph function's call returns `Any`, so a user's graph code is
+  checked; `Scratchpad`, `DispatchTime` and `Profile` are reachable as
+  `iron.X`. Construction is keyword-only at runtime as it is to the
+  checker (`MV(3, M=..)` bound a field by position), and a positional
+  call outside a graph says where operands go. Compare mode runs each
+  step as the xclbin path does, dispatch scalars included. A slice's
+  layout is `(type, offset, length)` as its docstring said, so a
+  full-ELF view of a slice is sized right. An operator whose streams are
+  all replicated spans the device. A host without an NPU skips the
+  device tests instead of aborting the session, and `--iterations`
+  repeats only the tests that take `npu_runtime` (the device-free tree
+  ran five times over). One `device_name()`; a standalone xclbin is built
+  for the xclbin image. Gates now compare failure sets with the iteration
+  ids stripped: identical.
 - `dd395e4` Audit, batch B: the newcomer bugs. One
   `Operator.resolve_columns(dev, given, num_channels, fits=)` is the
   column-budget rule everywhere: the count given, checked against the

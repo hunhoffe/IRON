@@ -617,7 +617,7 @@ def test_a_parent_reached_only_through_slices_lives_from_first_to_last_slice():
     assert seq.get_layout_for_buffer("big[2048:4096]") == (
         "scratch",
         big_at + 2048,
-        big_at + 4096,
+        2048,  # a length, as a full-ELF view takes it
     )
 
 

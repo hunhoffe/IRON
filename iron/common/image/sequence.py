@@ -522,8 +522,8 @@ class OperatorSequence:
         """
         if buffer_name in self.slice_info:
             buf_name, start, end = self.slice_info[buffer_name]
-            buf_type, parent_start, parent_end = self.get_layout_for_buffer(buf_name)
-            return buf_type, parent_start + start, parent_start + end
+            buf_type, parent_start, _ = self.get_layout_for_buffer(buf_name)
+            return buf_type, parent_start + start, end - start
 
         buf_type, offset, length = self.subbuffer_layout[buffer_name]
         return buf_type, offset, length

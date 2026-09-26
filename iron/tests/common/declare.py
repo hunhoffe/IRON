@@ -530,6 +530,38 @@ def test_a_profile_fills_the_knobs_a_call_leaves_open():
     assert len(p) == 2
 
 
+def test_a_profile_scope_is_per_thread():
+    """One profile entered from several threads at once: each thread's scope
+    is its own (the token lives in the context, not on the profile).
+    """
+    import threading
+
+    p = Profile()
+    p.add(MV, columns=2)
+    seen, errors = [], []
+
+    def work():
+        try:
+            for _ in range(50):
+                with p:
+                    seen.append(MV(M=64, K=64).columns)
+                seen.append(MV(M=64, K=64).columns)
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=work) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors and seen.count(2) == 200 and seen.count(None) == 200
+
+
+def test_construction_is_by_keyword():
+    with pytest.raises(TypeError, match="constructed by keyword"):
+        MV(3, M=64, K=64)  # pyright: ignore[reportCallIssue]
+
+
 def test_a_profile_is_checked_as_it_is_written_and_as_it_is_read():
     p = Profile()
     with pytest.raises(TypeError, match="declares no field"):

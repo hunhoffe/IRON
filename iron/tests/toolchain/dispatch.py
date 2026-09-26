@@ -59,6 +59,7 @@ def test_values_become_dispatch_time_kernels_at_each_step(device):
         "dispatch-time scalar" in kinds["n"] and "dispatch-time scalar" in kinds["pos"]
     )
     chain = net.sequence._image
+    assert chain is not None
     streams = {
         type(op).__name__: chain.op_insts_path_map[id(op)]
         for op in net.sequence.unique_operators()
@@ -71,5 +72,5 @@ def test_values_become_dispatch_time_kernels_at_each_step(device):
     # The graph's symbols are the kernels' parameter names.
     symbols = {symbol for _, symbol, _, _ in net.symbols}
     assert symbols == {s.params[0] for s in streams.values()}
-    assert Path(net.image).stat().st_size > 0
+    assert net.image is not None and Path(net.image).stat().st_size > 0
     assert net._callable is None

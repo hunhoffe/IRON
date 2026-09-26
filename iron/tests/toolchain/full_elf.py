@@ -66,6 +66,7 @@ def test_swiglu_decode_graph_compiles_to_a_full_elf():
     fn, E = swiglu_decode()
     net = fn.compile(DEVICES["npu2"](), image=iron.ELF, x=(1, E))
     assert net.plan.image == "elf" and net.plan.dispatch == "fused"
+    assert net.image is not None
     elf = Path(net.image)
     assert elf.suffix == ".elf" and elf.stat().st_size > 0
     assert net._callable is None, "the runtime is made on first call, not at compile"
@@ -75,6 +76,7 @@ def test_swiglu_decode_graph_compiles_to_a_full_elf():
     assert sum(len(d.operators) for d in artifacts.designs) == 5
     assert [s.index for s in artifacts.steps] == list(range(5))
     # No per-call values: an empty table, not a missing one.
+    assert artifacts.params is not None
     assert artifacts.params.read_text().split("\n", 1)[0].strip() == "0"
 
 

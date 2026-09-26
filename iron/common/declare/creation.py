@@ -163,7 +163,7 @@ def declare(cls: type) -> None:
                 f"init=False to pin it), or dataclass keeps the base's default"
             )
 
-    dataclasses.dataclass(cls, eq=False, repr=False)  # in place; the same object
+    dataclasses.dataclass(cls, eq=False, repr=False, kw_only=True)  # in place
 
     # dataclass keeps the Field objects the class body bound to bare names
     # and sets their .name, so a shape that captured one is resolved by

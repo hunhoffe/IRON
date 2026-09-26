@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextlib
 import inspect
 from collections.abc import Callable
+from typing import Any, overload
 
 import aie.utils as aie_utils
 import numpy as np
@@ -24,6 +25,8 @@ from aie.utils import bfp
 from ml_dtypes import bfloat16
 
 from ..declare.member import ValueSpec, _Value
+from ..declare.profile import Profile
+from ..device import device_name
 from ..image.allocator import ArenaPlan
 from ..image.callable import ScratchArena
 from ..image.packaging import Plan, plan
@@ -197,8 +200,7 @@ class GraphFunction:
         traced = self.trace(**shapes)
         bound = aie_utils.get_current_device()
         assert bound is not None, "compile() needs a bound device"
-        # Upstream annotates Device.resolve() -> None; it returns the AIEDevice.
-        npu = bound.resolve().name  # pyright: ignore[reportAttributeAccessIssue]
+        npu = device_name(bound)
         chosen = plan(npu, traced, boundaries, image)
         if verbose:
             print(chosen.report(self.__name__))
@@ -221,7 +223,7 @@ class GraphFunction:
         self._versions[signature] = version
         return version
 
-    def __call__(self, *tensors, **values):
+    def __call__(self, *tensors, **values) -> Any:
         if len(tensors) != len(self.params):
             raise TypeError(
                 f"{self.__name__} takes {len(self.params)} input(s), got "
@@ -377,7 +379,7 @@ class CompiledGraph:
 
     # -- calling ---------------------------------------------------------------
 
-    def __call__(self, *tensors, **values):
+    def __call__(self, *tensors, **values) -> Any:
         if len(tensors) != len(self.traced.inputs):
             raise TypeError(
                 f"{self.traced.name} takes {len(self.traced.inputs)} input(s), "
@@ -417,7 +419,18 @@ class CompiledGraph:
         )
 
 
-def graph(fn=None, *, names_from=None, profile=None):
+@overload
+def graph(fn: Callable[..., Any], /) -> GraphFunction: ...
+@overload
+def graph(
+    *, names_from: Any = None, profile: Profile | None = None
+) -> Callable[[Callable[..., Any]], GraphFunction]: ...
+def graph(
+    fn: Callable[..., Any] | None = None,
+    *,
+    names_from: Any = None,
+    profile: Profile | None = None,
+) -> Any:
     """Declare a graph function; see the module docstring.
 
     ``profile`` is a :class:`~iron.common.declare.Profile` applied whenever

@@ -24,6 +24,11 @@ from .field import _tier_of
 _active: contextvars.ContextVar[Profile | None] = contextvars.ContextVar(
     "iron.profile", default=None
 )
+# The tokens of the scopes entered in this context, innermost last: kept
+# here rather than on the profile, which threads may share.
+_entered: contextvars.ContextVar[tuple[contextvars.Token, ...]] = (
+    contextvars.ContextVar("iron.profile.entered", default=())
+)
 
 
 def current() -> Profile | None:
@@ -76,7 +81,6 @@ class Profile:
 
     def __init__(self) -> None:
         self._entries: list[Entry] = []
-        self._tokens: list[contextvars.Token] = []
 
     def add(self, cls: type, **fields: Any) -> None:
         """Add an entry for ``cls``: dimensions to match and knobs to give."""
@@ -130,8 +134,10 @@ class Profile:
         return len(self._entries)
 
     def __enter__(self) -> Profile:
-        self._tokens.append(_active.set(self))
+        _entered.set(_entered.get() + (_active.set(self),))
         return self
 
     def __exit__(self, *exc) -> None:
-        _active.reset(self._tokens.pop())
+        *outer, token = _entered.get()
+        _active.reset(token)
+        _entered.set(tuple(outer))
