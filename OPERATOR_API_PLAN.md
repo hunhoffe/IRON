@@ -288,7 +288,7 @@ today**.
 
 ## Progress
 
-- (this commit) Audit, batch E: docs and tests. README names the paths
+- `9d59de7` Audit, batch E: docs and tests. README names the paths
   that exist (`iron/operators/test.py -k AXPY`, the packages under
   `iron/common`); AGENTS states the elementwise rule with the channel
   count and the cap, and says how to bind a device on a host without one.
