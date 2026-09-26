@@ -295,7 +295,8 @@ def test_two_spellings_of_one_array_are_one_design():
     """Identity is taken after resolution: a knob left to resolve and the same
     knob given its resolved value name one array, and a sequence builds it
     once. Every operator of a traced graph goes through the same point, so
-    the design counts here are the gate on it."""
+    the design counts here are the gate on it.
+    """
     from iron.common.image import OperatorSequence
 
     a = GEMV(M=64, K=256, num_aie_columns=2, tile_size_input=2)

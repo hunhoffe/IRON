@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import dataclasses
+import math
 from dataclasses import field
 from typing import ClassVar
 
@@ -10,6 +11,7 @@ from aie.iron.kernels import activation, linalg
 from ml_dtypes import bfloat16
 
 from iron.common.declare import (
+    Unresolvable,
     Incompatible,
     In,
     Operator,
@@ -42,7 +44,8 @@ class GEMVOverlay(Overlay):
     """
 
     K: int = param()
-    num_aie_columns: int = auto(1)
+    # None: every column the device's shim budget allows.
+    num_aie_columns: int | None = auto()
     tile_size_input: int = auto(2)
     tile_size_output: int | None = auto()
     # None picks the widest legal size for K (see validate).
@@ -122,11 +125,19 @@ class GEMVOverlay(Overlay):
         return self.kernel_vector_size
 
     def resolve(self, dev) -> "GEMVOverlay":
-        # Device-independent today: the tunables that are None are derived from
-        # K and from each other, not from the device. (The column count is not
-        # defaulted from the device; every caller sets it.)
+        cols = self.num_aie_columns
+        if cols is None:
+            if dev is None:
+                raise Unresolvable(
+                    "num_aie_columns defaults from the device; none given"
+                )
+            cols = self.shim_columns(dev)
+        elif dev is not None:
+            self.check_shim_columns(dev, cols)
+        # The rest follows from K and from each other, not from the device.
         return dataclasses.replace(
             self,
+            num_aie_columns=cols,
             tile_size_output=self.tile_size_output or self.tile_size_input,
             kernel_vector_size=self._legal_kernel_vector_size(),
         )
@@ -257,6 +268,18 @@ class GEMV(Operator[GEMVOverlay]):
     A = In(optional(num_batches), M, GEMVOverlay.K, to=GEMVOverlay.a)  # matrix
     B = In(optional(num_batches), GEMVOverlay.K, to=GEMVOverlay.b)  # vector
     C = Out(optional(num_batches), M, from_=GEMVOverlay.c)  # output
+
+    def resolve(self, dev):
+        """Columns default to the most the device's shim budget allows that
+        leave each column a whole number of tiles of M."""
+        ov = self.ov
+        if ov.num_aie_columns is None and dev is not None:
+            tile = ov.tile_size_output or ov.tile_size_input
+            unit = tile * ov.tile_size_input // math.gcd(tile, ov.tile_size_input)
+            budget = ov.shim_columns(dev)
+            fits = [c for c in range(1, budget + 1) if self.M % (c * unit) == 0]
+            ov = dataclasses.replace(ov, num_aie_columns=max(fits, default=1))
+        return dataclasses.replace(self, ov=ov.resolved(dev).copy())
 
     def compatible(self):
         ov = self.ov

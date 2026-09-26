@@ -4,11 +4,14 @@
 
 import ml_dtypes
 from aie.iron.kernels import activation
+import dataclasses
+
 import numpy as np
 
 from aie.utils.verify import Tolerance
 
 from iron.common.declare import (
+    Unresolvable,
     BoundValue,
     Incompatible,
     In,
@@ -34,7 +37,8 @@ class SoftmaxOverlay(Overlay):
     """
 
     cols: int = param()
-    num_aie_columns: int = auto(1)
+    # None: every column the device's shim budget allows.
+    num_aie_columns: int | None = auto()
     num_channels: int = auto(1)
     rtp_vector_size: int | None = None
 
@@ -46,6 +50,18 @@ class SoftmaxOverlay(Overlay):
     def validate(self) -> None:
         if self.cols % 16 != 0:
             raise ValueError(f"cols ({self.cols}) must be a multiple of 16")
+
+    def resolve(self, dev) -> "SoftmaxOverlay":
+        cols = self.num_aie_columns
+        if cols is None:
+            if dev is None:
+                raise Unresolvable(
+                    "num_aie_columns defaults from the device; none given"
+                )
+            cols = self.shim_columns(dev, self.num_channels)
+        elif dev is not None:
+            self.check_shim_columns(dev, cols, self.num_channels)
+        return dataclasses.replace(self, num_aie_columns=cols)
 
     def _kernels(self, tile_ty):
         softmax_k = activation.softmax(self.cols)
@@ -187,6 +203,20 @@ class Softmax(Operator[SoftmaxOverlay]):
     def validate(self) -> None:
         if self.rows % 16 != 0:
             raise ValueError(f"rows ({self.rows}) must be a multiple of 16")
+
+    def resolve(self, dev):
+        """Columns default to the most the device's shim budget allows that
+        leave every core a whole number of rows."""
+        ov = self.ov
+        if ov.num_aie_columns is None and dev is not None:
+            budget = ov.shim_columns(dev, ov.num_channels)
+            fits = [
+                c
+                for c in range(1, budget + 1)
+                if self.rows % (c * ov.num_channels) == 0
+            ]
+            ov = dataclasses.replace(ov, num_aie_columns=max(fits))
+        return dataclasses.replace(self, ov=ov.resolved(dev).copy())
 
     def compatible(self) -> None:
         ov = self.ov

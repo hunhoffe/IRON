@@ -52,6 +52,8 @@ class GEMMOverlay(Overlay):
     tile_m: int = auto(64)
     tile_k: int = auto(64)
     tile_n: int = auto(64)
+    # Given, not resolved: the host buffers are padded by it (mem_tile_n), so
+    # a GEMM knows its column count before any device does.
     num_aie_columns: int = auto(8)
     b_col_maj: bool = False
     c_col_maj: bool = False
@@ -158,19 +160,21 @@ class GEMMOverlay(Overlay):
             )
 
     def resolve(self, dev) -> "GEMMOverlay":
+        cols = self.num_aie_columns
         if dev is not None:
             name = dev.resolve().name
-            if name == "npu1" and self.num_aie_columns > 4:
+            if name == "npu1" and cols > 4:
                 raise Unresolvable(
                     "Invalid configuration: NPU (Phoenix/Hawk) has 4 columns"
                 )
-            if name == "npu2" and self.num_aie_columns > 8:
+            if name == "npu2" and cols > 8:
                 raise Unresolvable(
                     "Invalid configuration: NPU2 (Strix/Strix Halo/Krackan) has 8 columns"
                 )
         return dataclasses.replace(
             self,
-            n_shim_mem_a=min(self.num_aie_columns, N_AIE_ROWS),
+            num_aie_columns=cols,
+            n_shim_mem_a=min(cols, N_AIE_ROWS),
             a_l2=self.mem_tile_m_a * self.tile_k,
             b_l2=self.tile_k * self.tile_n,
             c_l2=self.mem_tile_m_c * self.tile_n,

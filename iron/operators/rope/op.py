@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 
+import dataclasses
+
 import numpy as np
 from aie.iron import kernels
 from ml_dtypes import bfloat16
@@ -9,6 +11,7 @@ from ml_dtypes import bfloat16
 from aie.utils.verify import Tolerance
 
 from iron.common.declare import (
+    Unresolvable,
     Incompatible,
     In,
     Operator,
@@ -36,7 +39,8 @@ class RoPEOverlay(Overlay):
     """
 
     cols: int = param()
-    num_aie_columns: int = auto(1)
+    # None: every column the device's shim budget allows.
+    num_aie_columns: int | None = auto()
     method_type: int = 0
 
     x = StreamIn(1, cols, per=num_aie_columns)
@@ -50,6 +54,18 @@ class RoPEOverlay(Overlay):
             raise ValueError("cols must be multiple of 32 and >= 32")
         if self.method_type not in {0, 1}:
             raise ValueError(f"method_type must be 0 or 1, got {self.method_type}")
+
+    def resolve(self, dev) -> "RoPEOverlay":
+        cols = self.num_aie_columns
+        if cols is None:
+            if dev is None:
+                raise Unresolvable(
+                    "num_aie_columns defaults from the device; none given"
+                )
+            cols = self.shim_columns(dev)
+        elif dev is not None:
+            self.check_shim_columns(dev, cols)
+        return dataclasses.replace(self, num_aie_columns=cols)
 
     def design(self, target) -> list:
         from aie.iron import ObjectFifo, Worker
@@ -157,6 +173,21 @@ class RoPE(Operator[RoPEOverlay]):
             self.angle_rows = self.rows
         if not (self.angle_rows <= self.rows and self.rows % self.angle_rows == 0):
             raise ValueError("angle_rows must divide rows")
+
+    def resolve(self, dev):
+        """Columns default to the most the device's shim budget allows that
+        divide both the rows and the angle rows."""
+        ov = self.ov
+        if ov.num_aie_columns is None and dev is not None:
+            assert self.angle_rows is not None  # validate() filled it
+            budget = ov.shim_columns(dev)
+            fits = [
+                c
+                for c in range(1, budget + 1)
+                if self.rows % c == 0 and self.angle_rows % c == 0
+            ]
+            ov = dataclasses.replace(ov, num_aie_columns=max(fits))
+        return dataclasses.replace(self, ov=ov.resolved(dev).copy())
 
     def compatible(self) -> None:
         n = self.ov.num_aie_columns

@@ -265,7 +265,8 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
     def copy(self) -> Self:
         """A fresh instance for one build: its own copy of the overlay, so the
         streams a design binds are this build's alone; resolution state and
-        the per-call values a graph bound are kept."""
+        the per-call values a graph bound are kept.
+        """
         new = dataclasses.replace(self, ov=self.ov.copy())
         if self.used_values:
             vars(new)["_used_values"] = set(self.used_values)
@@ -386,15 +387,18 @@ class Operator(Generic[OV], metaclass=_OperatorMeta):
 
     @property
     def name(self) -> str:
-        """This instance's label: the class, every shown field of both layers,
-        the device. It names the per-call value symbols a host writes through
-        and the kernel instances a chained image carries; nothing on disk,
-        which the compile cache keys by content.
+        """This instance's label: the class, every shown field of both layers
+        as resolved for the device, the device. It names the per-call value
+        symbols a host writes through and the kernel instances a chained
+        image carries; nothing on disk, which the compile cache keys by
+        content. A name describes what is built, so it is the resolved
+        operator's.
         """
-        own = label_parts(self, skip=("ov",))
-        base = type(self).__name__ + "_" + "_".join(own + self.ov.name_parts())
         dev = aie_utils.get_current_device()
         assert dev is not None, f"{type(self).__name__}.name needs a bound device"
+        resolved = self.resolved(dev)
+        own = label_parts(resolved, skip=("ov",))
+        base = type(self).__name__ + "_" + "_".join(own + resolved.ov.name_parts())
         # Upstream annotates Device.resolve() -> None; it returns the AIEDevice.
         return f"{base}_{dev.resolve().name}"  # pyright: ignore[reportAttributeAccessIssue]
 

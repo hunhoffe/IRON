@@ -240,7 +240,15 @@ today**.
   (38 files, +390/−509). Failure set identical to baseline.
 - `610c926` Step 1: the bases are dataclasses to a checker; pyright in CI on
   the declare package. Members generic in their bound form; `Self` returns.
-- (this commit) Step 3a: one resolution point. `Operator.resolve(dev)` is
+- (this commit) Step 3b: the column knob defaults from the device on GEMV,
+  Softmax and RoPE (`auto()`; the operator's `resolve` picks the most
+  columns the shim budget allows that divide its extents; RMSNorm keeps one
+  core per row; GEMM keeps its given eight, since its host buffers are
+  padded by it). An operator's `name` is the resolved operator's, so the
+  per-call value symbols a graph names at trace time and the kernel
+  instances a build names agree. Every device test gives the knob, so
+  nothing measured changes. Failure set identical to baseline.
+- `4bb8f82` Step 3a: one resolution point. `Operator.resolve(dev)` is
   the hook that sees the device and the extents (`overlay_defaults` gone;
   StridedCopy's transfer size is its one override); `Overlay.resolve(dev)`
   (was `tuning`) sees the device and its own fields; `resolved(dev)` on
