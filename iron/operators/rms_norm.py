@@ -11,7 +11,7 @@ from aie.utils.verify import Tolerance
 from iron.common import Elementwise, In, Out, auto, param
 from iron.common.device import bound_device
 from iron.common.testing import Case, Testing
-from iron.common.tiling import bank_elements
+from iron.common.tiling import fifo_depth
 
 _I32 = np.ndarray[(1,), np.dtype[np.int32]]  # type: ignore[misc]
 
@@ -150,7 +150,7 @@ class WeightedRMSNorm(RMSNorm):
         tile_ty = self.x.tile
         weights_ty = self.w.tile
         cols, chans = self.num_aie_columns, self.num_channels
-        depth = 1 if self.tile_size > bank_elements(self.x.dtype) else 2
+        depth = fifo_depth(self.tile_size, self.x.dtype)
         rms_norm = norm.rms_norm_eps(self.tile_size)
         eltwise_mul = eltwise.mul_sized(self.tile_size)
         of_ins = [

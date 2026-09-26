@@ -85,7 +85,7 @@ def profile(config, max_seq_len) -> Profile:
     p.add(GEMV, M=E, K=F, tile_size_input=1, tile_size_output=E // cols)  # down
     p.add(GEMV, M=L, K=D, num_batches=H, tile_size_output=L // cols)  # scores
     p.add(GEMV, M=V, K=E, tile_size_output=32)  # the head
-    p.add(Transpose, M=L, N=D, num_batches=H, num_aie_columns=2, m=256, n=32)
+    p.add(Transpose, M=L, N=D, num_batches=H, num_aie_columns=2, m=min(256, L), n=32)
     p.add(ElementwiseAdd, size=E, tile_size=E // cols)
     p.add(ElementwiseMul, size=F, tile_size=F // cols)
     p.add(SiLU, size=F, tile_size=F // cols)

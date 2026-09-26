@@ -101,9 +101,9 @@ class Copy(Operator):
     )
 
     input_buffer_size: int = param(repr=False)
-    output_buffer_size: int | None = param(default=None, repr=False)
-    src: Walk | None = param(default=None)  # None: the whole input
-    dst: Walk | None = param(default=None)  # None: the whole output
+    src: Walk = param(default=lambda op: Walk.of((op.input_buffer_size,)))
+    output_buffer_size: int = param(default=lambda op: op.src.elements, repr=False)
+    dst: Walk = param(default=lambda op: Walk.of((op.output_buffer_size,)))
     transfer_size: int = auto()  # None: the per-channel share of the walk
     num_aie_channels: int = auto(1)
     dtype: Any = field(default=bfloat16, repr=False)
@@ -127,12 +127,6 @@ class Copy(Operator):
     out_offset = Scratchpad(np.int32)
 
     def validate(self) -> None:
-        if self.src is None:
-            self.src = Walk.of((self.input_buffer_size,))
-        if self.output_buffer_size is None:
-            self.output_buffer_size = self.src.elements
-        if self.dst is None:
-            self.dst = Walk.of((self.output_buffer_size,))
         if self.src.elements != self.dst.elements:
             raise ValueError(
                 f"a copy moves the same element count both ways: src {self.src} "
@@ -160,15 +154,9 @@ class Copy(Operator):
             self.y.lane(c).bind(fifo_out.cons())
         return []
 
-    @property
-    def walks(self) -> tuple[Walk, Walk]:
-        """The two walks, as :meth:`validate` filled them."""
-        assert self.src is not None and self.dst is not None
-        return self.src, self.dst
-
     def compatible(self) -> None:
         channels = self.num_aie_channels
-        src, dst = self.walks
+        src, dst = self.src, self.dst
         for label, walk in (("src", src), ("dst", dst)):
             sizes, _ = _pad4(walk.sizes, walk.strides)
             highest = max(i for i, sz in enumerate(sizes) if sz >= 1)
@@ -217,7 +205,7 @@ class Copy(Operator):
         of ``output_buffer_size``. The offsets are the per-call values, in
         elements.
         """
-        src, dst = self.walks
+        src, dst = self.src, self.dst
         out = reference(
             x.reshape(-1),
             src,
@@ -231,7 +219,7 @@ class Copy(Operator):
         return out if y is None else y
 
     def sequence(self, rt):
-        src, dst = self.walks
+        src, dst = self.src, self.dst
         ins = self._taps(self.x, src)
         outs = self._taps(self.y, dst)
         in_off = self.in_offset if self.uses_value("in_offset") else None

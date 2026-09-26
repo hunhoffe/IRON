@@ -27,7 +27,7 @@ from aie.utils.verify import Tolerance
 
 from iron.common import In, Operator, Out, Unresolvable, auto, param
 from iron.common.testing import Case, Testing, device_columns
-from iron.common.tiling import Access, bank_elements
+from iron.common.tiling import Access, fifo_depth
 
 # The maximum value the 4th dimension of DMA BD can be set
 TAP_REPEAT_MAX = 64
@@ -193,7 +193,7 @@ class MemCopy(Operator):
         line_size, num_cores = self.line_size, self.num_cores
         # A line spanning more than one bank cannot be double-buffered in
         # what is left of local memory.
-        fifodepth = 1 if line_size > bank_elements(self.x.dtype) else 2
+        fifodepth = fifo_depth(line_size, self.x.dtype)
 
         of_ins = [
             ObjectFifo(line_type, name=f"in{i}", depth=fifodepth)

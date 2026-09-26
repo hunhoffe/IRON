@@ -34,6 +34,7 @@ class DeclarationError(TypeError):
 
 
 _TIER = "iron.tier"  # dataclass Field.metadata key: "param" | "auto"
+_DERIVE = "iron.derive"  # a param()'s callable default: computed from the operator
 _CHOICES = "iron.choices"
 _LEGAL = "iron.legal"
 _ARRAY = "iron.array"  # the field is array-tier though no tile names it
@@ -45,6 +46,12 @@ def param(
     """Declare a compile-time parameter: given by the caller or inferred from
     the operands, and fixed from then on.
 
+    A callable ``default`` is computed from the operator at construction,
+    for a parameter its other fields determine when neither the caller nor
+    an operand's shape gives it (``default=lambda op: op.rows * op.repeat``);
+    :meth:`~.operator.Operator.check_derived` is the one-line check that a
+    value given as well agrees.
+
     A ``param()`` may appear in a shape. Which tier it is follows from use: a
     field named in an operand's ``tile=``/``per=``/``depth=`` configures the
     array (changing it rebuilds the array); any other rebuilds the
@@ -53,6 +60,8 @@ def param(
     itself. ``default`` is keyword-only so a checker reads it: a ``param()``
     without one is a required constructor argument.
     """
+    if callable(default):
+        return _specifier("param", None, repr, init, array=array, derive=default)
     return _specifier("param", default, repr, init, array=array)
 
 
@@ -94,6 +103,8 @@ def _specifier(
         metadata[_LEGAL] = extra["legal"]
     if extra.get("array"):
         metadata[_ARRAY] = True
+    if extra.get("derive") is not None:
+        metadata[_DERIVE] = extra["derive"]
     kwargs: dict[str, Any] = {"metadata": metadata, "repr": repr_, "init": init}
     if default is not MISSING:
         kwargs["default"] = default

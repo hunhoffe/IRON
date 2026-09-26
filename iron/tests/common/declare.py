@@ -618,6 +618,30 @@ def test_resolve_columns_is_the_count_given_or_the_most_that_fit():
         op.resolve_columns(None, None)
 
 
+def test_a_computed_default_is_inferred_from_a_shape_or_computed():
+    class Rep(Operator):
+        rows: int = param()
+        repeat: int = param()
+        out_rows: int = param(default=lambda op: op.rows * op.repeat)
+        x = In(rows, 8)
+        y = Out(out_rows, 8)
+
+        def validate(self):
+            self.check_derived("out_rows")  # a shape may bind it: it must agree
+
+    assert Rep(rows=2, repeat=3).out_rows == 6  # computed
+    assert Rep(rows=2, repeat=3, out_rows=6).out_rows == 6  # given, agrees
+    with pytest.raises(ValueError, match="out_rows=5 is not what its other fields"):
+        Rep(rows=2, repeat=3, out_rows=5)
+    assert infer(Rep, (2, 8), outputs=[(6, 8)]) == {"rows": 2, "out_rows": 6}
+
+
+def test_compatible_runs_at_construction_once_every_knob_is_known():
+    with pytest.raises(Incompatible, match="not a multiple"):
+        MV(M=1000, K=128, columns=8, tile_out=64, vec=64)  # nothing left to resolve
+    MV(M=1000, K=128)  # a knob is open: compatible() waits for resolution
+
+
 def test_inference_binds_the_fields_from_the_operands():
     op = MV.from_operands(
         (3, 1024, 128),

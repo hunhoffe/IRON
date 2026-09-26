@@ -120,6 +120,13 @@ def bank_elements(dtype) -> int:
     return L1_BANK_BYTES // np.dtype(dtype).itemsize
 
 
+def fifo_depth(elements: int, dtype) -> int:
+    """The depth a core-side fifo of ``elements``-long objects can have: two,
+    or one when an object spans more than a local-memory bank.
+    """
+    return 1 if elements > bank_elements(dtype) else 2
+
+
 def run_dims(run: int, max_wrap: int = DMA_BD_MAX_WRAP) -> list[tuple[int, int]]:
     """Encode a contiguous run of ``run`` elements as BD (size, stride) dims.
 

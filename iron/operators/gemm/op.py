@@ -196,13 +196,7 @@ class GEMM(Operator):
         )
 
     def compatible(self) -> None:
-        min_M = self.tile_m * N_AIE_ROWS
-        min_K = self.tile_k
         min_N = self.tile_n * self.num_aie_columns
-        if self.M % min_M != 0:
-            raise Incompatible(f"M ({self.M}) must be a multiple of {min_M}")
-        if self.K % min_K != 0:
-            raise Incompatible(f"K ({self.K}) must be a multiple of {min_K}")
         if self.N % min_N != 0:
             raise Incompatible(f"N ({self.N}) must be a multiple of {min_N}")
         if self.M % self.mem_tile_m_a != 0:

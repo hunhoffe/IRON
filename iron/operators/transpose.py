@@ -21,7 +21,7 @@ from iron.common import (
     param,
 )
 from iron.common.testing import Case, Testing, device_columns
-from iron.common.tiling import Access
+from iron.common.tiling import Access, fifo_depth
 
 
 def _transformation_dims(sizes, strides) -> list[Sequence[int]]:
@@ -188,7 +188,7 @@ class Transpose(Operator):
         cols, chans = self.num_aie_columns, self.num_channels
         n_cores = cols * chans
         tile_ty = np.ndarray[(m * n,), np.dtype[bfloat16]]
-        depth = 1 if m * n > 4096 else 2
+        depth = fifo_depth(m * n, self.x.dtype)
         # The memtile reshuffle: sizes/strides only, so it is extent-free.
         l2l1 = [m // s, s, n // s, s], [s, m, s * m, 1]
 

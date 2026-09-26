@@ -62,8 +62,10 @@ class Dequant(UnaryElementwise):
 
     group_size: int = param(default=32, repr=False, array=True)
     # The packed input's length: two 4-bit values per byte plus a bf16 scale
-    # and zero point per group. Derived from size unless given.
-    packed: int | None = param(default=None, repr=False)
+    # and zero point per group.
+    packed: int = param(
+        default=lambda op: op.size // 2 + (op.size // op.group_size) * 2, repr=False
+    )
     # The packed size of one line; filled by resolve from ``tile_size``.
     in_tile: int = auto(repr=False)
 
@@ -78,17 +80,10 @@ class Dequant(UnaryElementwise):
     )
 
     def validate(self) -> None:
+        self.check_derived("packed")
         if self.size % self.group_size:
             raise ValueError(
                 f"size={self.size} is not whole groups of {self.group_size}"
-            )
-        expected = (self.size // 2) + (self.size // self.group_size) * 2
-        if self.packed is None:
-            self.packed = expected
-        elif self.packed != expected:
-            raise ValueError(
-                f"packed={self.packed} does not match size={self.size} with "
-                f"group_size={self.group_size} (expected {expected})"
             )
 
     def resolve(self, dev):

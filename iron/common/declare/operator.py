@@ -171,6 +171,7 @@ class Operator(metaclass=_OperatorMeta):
 
     _members: ClassVar[tuple[_Member, ...]] = ()
     _param_fields: ClassVar[tuple[str, ...]] = ()
+    _derived_params: ClassVar[dict[str, Callable[[Any], Any]]] = {}
     _auto_fields: ClassVar[tuple[str, ...]] = ()
     _array_fields: ClassVar[tuple[str, ...]] = ()
     _external: ClassVar[Any] = None
@@ -191,8 +192,40 @@ class Operator(metaclass=_OperatorMeta):
 
     def __post_init__(self) -> None:
         self._resolved = False
+        self._derive_params()
         self.validate()
         self._bind()
+        # Every rule is answerable once every knob is known, so the extents
+        # are checked where the operator is written rather than at resolution.
+        if not any(getattr(self, n) is None for n in self._auto_fields):
+            self.compatible()
+
+    def _derive_params(self) -> None:
+        """Compute each ``param(default=<callable>)`` a shape or the caller
+        left open, in declaration order.
+        """
+        for name, derive in self._derived_params.items():
+            if getattr(self, name) is None:
+                value = derive(self)
+                if value is None:
+                    raise ValueError(
+                        f"{type(self).__name__}.{name}: not given, and nothing "
+                        f"to compute it from"
+                    )
+                setattr(self, name, value)
+
+    def check_derived(self, *names: str) -> None:
+        """Raise ``ValueError`` if a computed-default parameter was given a
+        value its rule disagrees with: for one a shape may bind that the
+        other fields nonetheless determine (``out_rows = rows * repeat``).
+        """
+        for name in names:
+            given, expected = getattr(self, name), self._derived_params[name](self)
+            if given != expected:
+                raise ValueError(
+                    f"{type(self).__name__}.{name}={given!r} is not what its "
+                    f"other fields make it ({expected!r})"
+                )
 
     # -- declared surface --------------------------------------------------
 

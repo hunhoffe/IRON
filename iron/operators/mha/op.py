@@ -24,7 +24,6 @@ from ml_dtypes import bfloat16
 
 from iron.common import (
     In,
-    Incompatible,
     Operator,
     Out,
     Shim,
@@ -53,14 +52,13 @@ class MHA(Operator):
     """
 
     num_heads: int = param()
-    # None takes the padded length inference binds from a shape (seq_pad).
-    seq_len: int | None = param(default=None)
-    # The K/V head count: fewer than num_heads is grouped-query attention.
-    # 0 or None means plain MHA (as many as num_heads); validate() fills it.
-    num_KV_heads: int | None = param(default=None)
-    # seq_len rounded up to a multiple of B_q * num_of_pipelines; filled by
-    # validate(), and checked against the value inference binds from a shape.
-    seq_pad: int | None = param(default=None, repr=False)
+    # The K/V head count: fewer than num_heads is grouped-query attention;
+    # left out, plain MHA.
+    num_KV_heads: int = param(default=lambda op: op.num_heads)
+    # seq_pad is seq_len rounded up to a multiple of B_q * num_of_pipelines;
+    # a shape gives seq_pad, from which seq_len follows when it is not given.
+    seq_len: int = param(default=lambda op: op.seq_pad)
+    seq_pad: int = param(default=lambda op: op.seq_padding(op.seq_len), repr=False)
     # The layout a projection GEMM produces, ``(seq, heads, d)`` with the
     # heads interleaved per token, read and written as it is: a head's block
     # is then a strided slice, and no copy reorders the heads to the front.
@@ -132,8 +130,8 @@ class MHA(Operator):
             raise ValueError(f"d must be divisible by s ({self.d} % {s} != 0)")
         if self.num_heads <= 0:
             raise ValueError("Number of num_heads must be greater than 0")
-        if not self.num_KV_heads:
-            self.num_KV_heads = self.num_heads
+        if self.num_KV_heads <= 0:
+            raise ValueError("Number of KV num_heads must be greater than 0")
         if self.num_KV_heads > self.num_heads:
             raise ValueError(
                 "Number of KV num_heads must be less than or equal to number of num_heads"
@@ -143,20 +141,9 @@ class MHA(Operator):
                 f"Number of num_heads ({self.num_heads}) must be divisible by "
                 f"number of KV num_heads ({self.num_KV_heads})"
             )
-        if self.seq_len is None:
-            if self.seq_pad is None:
-                raise ValueError("MHA needs seq_len (or seq_pad, from a shape)")
-            self.seq_len = self.seq_pad
         if self.seq_len <= 0:
             raise ValueError("seq_len must be greater than 0")
-        expected = self.seq_padding(self.seq_len)
-        if self.seq_pad is None:
-            self.seq_pad = expected
-        elif self.seq_pad != expected:
-            raise ValueError(
-                f"seq_pad={self.seq_pad} does not match seq_len={self.seq_len} "
-                f"padded to a multiple of B_q * num_of_pipelines ({expected})"
-            )
+        self.check_derived("seq_pad")
 
     def resolve(self, dev):
         if dev is not None and dev.resolve().name != "npu2":
@@ -171,22 +158,11 @@ class MHA(Operator):
             join_rows=self.B_q * (self.num_of_pipelines // q_shims),
         )
 
-    def compatible(self) -> None:
-        assert self.seq_len is not None  # validate() filled it
-        expected = self.seq_padding(self.seq_len)
-        if self.seq_pad != expected:
-            raise Incompatible(
-                f"seq_pad ({self.seq_pad}) is not seq_len ({self.seq_len}) padded "
-                f"to a multiple of B_q * num_of_pipelines ({expected})"
-            )
-
     # -- derived geometry ------------------------------------------------------
 
     @property
     def _lengths(self) -> tuple[int, int, int]:
-        """``(num_KV_heads, seq_len, seq_pad)``, as :meth:`validate` filled them."""
-        assert self.num_KV_heads is not None and self.seq_len is not None
-        assert self.seq_pad is not None
+        """``(num_KV_heads, seq_len, seq_pad)``."""
         return self.num_KV_heads, self.seq_len, self.seq_pad
 
     @property

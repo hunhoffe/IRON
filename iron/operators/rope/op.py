@@ -74,7 +74,7 @@ class RoPE(Operator):
 
     rows: int = param()
     cols: int = param()
-    angle_rows: int | None = param(default=None)  # None: rows
+    angle_rows: int = param(default=lambda op: op.rows)  # one row per position
     # None: every column the device's shim budget allows.
     num_aie_columns: int = auto()
     method_type: int = param(default=0, array=True)
@@ -92,8 +92,6 @@ class RoPE(Operator):
             raise ValueError("cols must be multiple of 32 and >= 32")
         if self.method_type not in {0, 1}:
             raise ValueError(f"method_type must be 0 or 1, got {self.method_type}")
-        if self.angle_rows is None:
-            self.angle_rows = self.rows
         if not (self.angle_rows <= self.rows and self.rows % self.angle_rows == 0):
             raise ValueError("angle_rows must divide rows")
 
@@ -101,18 +99,15 @@ class RoPE(Operator):
         """Columns default to the most the device's shim budget allows that
         divide both the rows and the angle rows.
         """
-        angle_rows = self.angle_rows
-        assert angle_rows is not None  # validate() filled it
         cols = self.resolve_columns(
             dev,
             self.num_aie_columns,
-            fits=lambda c: self.rows % c == 0 and angle_rows % c == 0,
+            fits=lambda c: self.rows % c == 0 and self.angle_rows % c == 0,
         )
         return dataclasses.replace(self, num_aie_columns=cols)
 
     def compatible(self) -> None:
         n = self.num_aie_columns
-        assert self.angle_rows is not None
         if self.rows % n:
             raise Incompatible("rows must be divisible by num_aie_columns")
         if not (self.angle_rows >= n and self.angle_rows % n == 0):

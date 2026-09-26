@@ -53,8 +53,7 @@ class Repeat(Operator):
     cols: int = param()
     repeat: int = param()
     seq: int = param(default=1)  # the stack's middle axis; absent when one
-    # rows * repeat; derived unless given, since a shape may not be an expression.
-    out_rows: int | None = param(default=None, repr=False)
+    out_rows: int = param(default=lambda op: op.rows * op.repeat, repr=False)
     transfer_size: int = auto(repr=False)  # None: cols
     dtype: Any = field(default=bfloat16, repr=False)
 
@@ -62,13 +61,7 @@ class Repeat(Operator):
     y = Out(out_rows, optional(seq), cols, dtype=dtype, tile=(transfer_size,))
 
     def validate(self) -> None:
-        expected = self.rows * self.repeat
-        if self.out_rows is None:
-            self.out_rows = expected
-        elif self.out_rows != expected:
-            raise ValueError(
-                f"out_rows={self.out_rows} is not rows * repeat ({expected})"
-            )
+        self.check_derived("out_rows")
         self._cols_split()  # reject an unsplittable cols at construction
 
     def resolve(self, dev):

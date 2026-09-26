@@ -69,8 +69,10 @@ class DequantBFP(Operator):
     # because that is what the drains index -- declaring it in its 9-byte
     # equivalent would make every offset and length address a ninth of what
     # it names. Filled by validate() from K, N and the interleave.
-    quantized_bytes: int | None = param(default=None, repr=False)
-    packed_blocks: int | None = param(default=None, repr=False)
+    quantized_bytes: int = param(default=lambda op: op.quantized_size(), repr=False)
+    packed_blocks: int = param(
+        default=lambda op: op.K * op.N // BFP16_GROUP, repr=False
+    )
     # The n tile width the packed output is written for. It has to match the
     # tile_n flm.GEMM reads B at, or the GEMM reads the right bytes in the
     # wrong order.
@@ -110,23 +112,11 @@ class DequantBFP(Operator):
                 f"flm.GEMM picks {self.tile_n} for some shapes, and the two must "
                 "agree or the GEMM reads B in the wrong order"
             )
-        self._check_shape(ValueError)
-        # Validates the pair and the multiples; the result is used below.
+        self.check_derived("quantized_bytes", "packed_blocks")
+        # Validates the pair and the multiples.
         run_geometry(
             self.run_out_features, self.run_period_out_features, self.N // N_TILE
         )
-        for name, computed in (
-            ("quantized_bytes", self.quantized_size()),
-            ("packed_blocks", self.K * self.N // BFP16_GROUP),
-        ):
-            declared = getattr(self, name)
-            if declared is None:
-                setattr(self, name, computed)
-            elif declared != computed:
-                raise ValueError(
-                    f"{name}={declared} does not match K={self.K}, N={self.N} "
-                    f"({computed})"
-                )
 
     def resolve(self, dev):
         if dev is None:
@@ -151,11 +141,8 @@ class DequantBFP(Operator):
         if N % N_TILE:
             raise error(f"N ({N}) must be a multiple of {N_TILE}")
 
-    def _check_shape(self, error) -> None:
-        self._check_extents(self.K, self.N, error)
-
     def compatible(self) -> None:
-        self._check_shape(Incompatible)
+        self._check_extents(self.K, self.N, Incompatible)
 
     # -- names -----------------------------------------------------------------
 

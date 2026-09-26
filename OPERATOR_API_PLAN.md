@@ -290,6 +290,25 @@ today**.
 
 ## Progress
 
+- (this commit) Audit, batch D, first half: structure. A `param()` may
+  have a callable default, computed from the operator when neither the
+  caller nor an operand's shape gives it (`out_rows = rows * repeat`), and
+  `check_derived(name)` is the one-line check that a value given as well
+  agrees: the seven None-then-fill-in-`validate()` blocks (Repeat, Dequant,
+  RoPE, Copy's two walks and output size, MHA's three lengths, flm's packed
+  sizes) are gone, their fields are plain `int`/`Walk` and the asserts that
+  guarded them with it (Copy's `walks`, MHA's `_lengths` asserts). A
+  callable default is what a checker reads as a default, which `derive=`
+  as a keyword would not have been. `compatible()` runs at construction
+  once every knob is given, so an operator states each extent rule once:
+  GEMM's M and K rules are `validate()`'s alone and N waits for the column
+  count; MHA's padding rule is one `check_derived`; flm's `_check_shape
+  (error)`, which parametrised over `ValueError` against `Incompatible`
+  (a `ValueError`), takes no argument. One `tiling.fifo_depth(elements,
+  dtype)` for the bank rule four operators spelled (Transpose's as a
+  literal 4096). The llama profile's transpose tile fits a context shorter
+  than 256. Both suites identical to baseline; real-shape equivalence
+  unchanged.
 - `aec8ed7` Audit, batch C: the rest of the verified items. A
   profile's scope token lives in the context, not on the profile, so one
   profile entered from several threads is safe. The top-level `iron`

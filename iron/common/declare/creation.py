@@ -20,6 +20,7 @@ from dataclasses import Field
 import numpy as np
 
 from .field import (
+    _DERIVE,
     DeclarationError,
     DimRef,
     _declares_array,
@@ -205,6 +206,9 @@ def declare(cls: type) -> None:
 
     cls._members = tuple(members)  # type: ignore[attr-defined]
     cls._param_fields = tuple(f.name for f in fields.values() if _tier_of(f) == "param")  # type: ignore[attr-defined]
+    cls._derived_params = {  # type: ignore[attr-defined]
+        f.name: f.metadata[_DERIVE] for f in fields.values() if _DERIVE in f.metadata
+    }
     cls._auto_fields = tuple(f.name for f in fields.values() if _tier_of(f) == "auto")  # type: ignore[attr-defined]
     # The array tier: what a stream's tile, its dtype or its replication
     # names, and what declares itself array=True.

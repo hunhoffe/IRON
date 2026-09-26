@@ -47,11 +47,8 @@ def test_transfer_size_not_dividing_the_per_channel_share_is_rejected():
     sends, and the drain's dma_await_task returns ERT_CMD_STATE_TIMEOUT with
     no diagnostic.
     """
-    operator = Copy(**_flat(1024, num_aie_channels=4, transfer_size=512))
-    with pytest.raises(
-        (AssertionError, ValueError), match="must divide the per-channel transfer"
-    ):
-        operator.compile()
+    with pytest.raises(Incompatible, match="must divide the per-channel transfer"):
+        Copy(**_flat(1024, num_aie_channels=4, transfer_size=512))  # every knob given
 
 
 # Shapes whose M*N is divisible by every factor while one per-dimension quotient is not
@@ -67,11 +64,10 @@ def test_transfer_size_not_dividing_the_per_channel_share_is_rejected():
 def test_transpose_dimension_that_does_not_tile_is_refused_by_name(
     M, N, aie_columns, channels, m, n, bad
 ):
-    op = Transpose(
-        M=M, N=N, num_aie_columns=aie_columns, num_channels=channels, m=m, n=n, s=8
-    )
-    with pytest.raises(Incompatible, match=bad):
-        op.resolved(from_name("npu2", n_cols=8))
+    with pytest.raises(Incompatible, match=bad):  # every knob given: at construction
+        Transpose(
+            M=M, N=N, num_aie_columns=aie_columns, num_channels=channels, m=m, n=n, s=8
+        )
 
 
 @pytest.mark.parametrize("aie_columns", [1, 2, 4])

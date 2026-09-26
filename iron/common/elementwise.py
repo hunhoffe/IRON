@@ -53,7 +53,7 @@ from aie.iron.kernel import ExternalFunction
 from aie.utils.verify import Tolerance
 
 from .declare import In, Incompatible, Operator, Out, Unresolvable, Value, auto, param
-from .tiling import bank_elements
+from .tiling import fifo_depth
 
 if TYPE_CHECKING:
     from .design.target import Target
@@ -167,7 +167,7 @@ class Elementwise(Operator):
         def fifos(stream, name):
             # A line spanning more than one bank cannot be double-buffered in
             # what is left of local memory.
-            depth = 1 if stream.elements > bank_elements(stream.dtype) else 2
+            depth = fifo_depth(stream.elements, stream.dtype)
             return [
                 ObjectFifo(stream.tile, name=f"{name}_{slot(k)}", depth=depth)
                 for k in range(cores)

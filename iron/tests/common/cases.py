@@ -92,9 +92,9 @@ CASES = [
         "mha.op",
         "MHA",
         [
-            # num_KV_heads == 0 means plain MHA; non-zero is grouped-query, and
+            # Left out, plain MHA; fewer KV heads is grouped-query, and
             # the two size the K/V buffers differently.
-            dict(num_heads=8, seq_len=128, d=64, num_KV_heads=0),
+            dict(num_heads=8, seq_len=128, d=64),  # plain MHA: as many KV heads
             dict(num_heads=8, seq_len=128, d=64, num_KV_heads=2),
             # The projections' layout, (seq, heads, d): a head is a strided slice.
             dict(

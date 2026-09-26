@@ -120,8 +120,12 @@ class GEMM(Operator):
     epilogue: Epilogue | str = param(default=Epilogue.NONE)
     # Optional (min, max) applied after the activation.
     clamp: tuple | None = param(default=None)
-    # B's packed block count on AIE2P; filled by validate() from K and N.
-    packed_blocks: int | None = param(default=None, repr=False)
+    # B's packed block count on AIE2P: blocks, not bytes, since B's
+    # declaration counts bfp16ebs8 blocks and bfp.itemsize turns that back
+    # into the byte count pack_B returns.
+    packed_blocks: int = param(
+        default=lambda op: op.K * op.N // BFP16_GROUP, repr=False
+    )
     # n tile width. 64 halves the mmul's accumulator traffic per mac; 128
     # halves A fetches instead. See README.md.
     tile_n: int = auto(array=True)
@@ -213,16 +217,7 @@ class GEMM(Operator):
         self.epilogue = Epilogue(self.epilogue)
         if self.K % MIN_K:
             raise ValueError(f"K ({self.K}) must be a multiple of {MIN_K}")
-        # Blocks, not bytes: B's declaration counts bfp16ebs8 blocks, and
-        # bfp.itemsize turns that back into the byte count pack_B returns.
-        expected = self.K * self.N // BFP16_GROUP
-        if self.packed_blocks is None:
-            self.packed_blocks = expected
-        elif self.packed_blocks != expected:
-            raise ValueError(
-                f"packed_blocks={self.packed_blocks} does not match K={self.K}, "
-                f"N={self.N} ({expected})"
-            )
+        self.check_derived("packed_blocks")
         # A mode the mask leaves out reaches the kernel's default arm, which
         # is NONE -- an unactivated result rather than an error. Refuse.
         if (
@@ -238,8 +233,6 @@ class GEMM(Operator):
             lo, hi = self.clamp
             if lo > hi:
                 raise ValueError(f"clamp min ({lo}) must be <= max ({hi})")
-        if self.rows is not None:
-            self._check_shape(ValueError)
 
     def resolve(self, dev):
         if dev is None:
@@ -277,7 +270,7 @@ class GEMM(Operator):
             c_l2=M_TILE * tile_n * rows,
         )
 
-    def _check_shape(self, error) -> None:
+    def _check_shape(self) -> None:
         # N only needs to tile to tile_n: a trailing group of fewer than
         # cols column-blocks is handled by per-column trip counts.
         for name, value, unit in (
@@ -286,18 +279,18 @@ class GEMM(Operator):
             ("N", self.N, self.tile_n),
         ):
             if value % unit != 0:
-                raise error(f"{name} ({value}) must be a multiple of {unit}")
+                raise Incompatible(f"{name} ({value}) must be a multiple of {unit}")
         m_row_blocks = self.M // (M_TILE * self.rows)
         if m_row_blocks % self.m_chunk:
             # A partial group is inexpressible: the object is m_chunk tiles
             # wide and the forward always drains that much.
-            raise error(
+            raise Incompatible(
                 f"m_row_blocks ({m_row_blocks}) must be a multiple of m_chunk "
                 f"({self.m_chunk}); pass m_chunk=1 for this shape"
             )
 
     def compatible(self) -> None:
-        self._check_shape(Incompatible)
+        self._check_shape()
         if (self._a_split or self._c_split) and _BDS_PER_BLOCK > self.shim_bds:
             raise Incompatible(
                 f"M={self.M} K={self.K} N={self.N} needs {_BDS_PER_BLOCK} shim "
