@@ -1,0 +1,142 @@
+<!--
+SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Length-free llama: one image for any prompt, any context
+
+Branch `claude/iron-pr221-length-free`, off `claude/iron-pr221-api-simplify`
+(`6f7cbb5`). The plan and its progress log; updated as steps land.
+
+## The assumption this branch is built on
+
+A scratchpad parameter can patch a DMA descriptor's **size** as well as its
+address. Today mlir-aie's `aiex.scratchpad_parameter` has two kinds: `addr`
+(the parameter offsets a BD's address, `offset_parameter=` on the DMA op)
+and `core` (a core reads it). This branch assumes a third:
+
+```
+kind = size    the BD's wrap for one dimension is replaced per call from the
+               scratchpad word; the host writes the element count.
+```
+
+with the upstream Python surface `Runtime.fill/drain(..., size_parameter=(dim,
+param))`. Nothing here needs more than that. IRON reaches it through one
+function, `Sequence._transfer`, so when the kind lands the change is one
+keyword. Until then a length-free operator lowers device-free (the sequence
+is planned and checked) and the toolchain tests that would compile one skip,
+naming the missing kind.
+
+## Why
+
+`npu.py` compiles the prompt at `max_seq_len` rows and pads every prompt to
+it, so a 100-token prompt runs 2048 rows of GEMM and 2048-squared of
+attention. Decode moves both caches in full every token. Buckets fix the
+first and cost an image per bucket; the user wants none. A per-call length
+under full ELF, which is the only packaging that shares the caches between
+the prompt and decode, fixes both.
+
+## The vocabulary
+
+Three additions to the operator model. Everything else is operators using
+them.
+
+**An extent that may be shorter per call.** An operator declares which of
+its shape fields a graph may bound:
+
+```python
+class Elementwise(Operator):
+    size: int = param()
+    valid: int = Extent(size)                # size, or fewer per call
+    count = Value(np.int32, derive=lambda op: op.valid // (op.cores * op.tile_size))
+```
+
+`Extent(field)` is a value member. Unbound it reads as the field, so nothing
+derived from it changes and no operator that declares one behaves
+differently until a graph bounds it. A value derived from a bound extent is
+per call: the host evaluates `derive` with the call's extent and writes the
+word. So the trip count above becomes per call the moment `valid` does,
+with no second declaration.
+
+**A bound on a handle.** `x[:n]`, with `n` a `Scratchpad` graph parameter,
+is the first `n` rows of `x`. The view carries the bound on its axis;
+`reshape` and `transpose` carry it through when the axis survives whole
+(`(n, H*D)` to `(n*H, D)` scales it by `H`, `(n, G, D).transpose(1, 0, 2)`
+moves it to axis 1). An operator taking a bounded operand on the axis its
+`Extent` field sizes binds the extent to `n`; on any other axis the call is
+an error naming the operator. An operator's outputs sized by the same field
+are bounded the same way, so `h = RMSNorm(x[:n], w)` bounds `h`, and a block
+of operators is bounded by one slice at its top.
+
+**A per-call size in a transfer.** `rt.fill(stream, access, size_by={dim:
+value})` patches dimension `dim` of the descriptor from the value, which must
+be a scratchpad-kind value (a `DispatchTime` regenerates the stream and needs
+no patch; the error says so). `Access` gains nothing; the patch is a property
+of the transfer.
+
+## What each operator does with it
+
+The derived sequence (elementwise, RoPE, Softmax, RMSNorm): with a bound
+leading axis the split across lanes is **round-robin by tile** instead of
+contiguous chunks. Lane `k` reads tiles `k, k + lanes, k + 2*lanes, ...`: a
+fixed offset, a fixed stride, and one patched iteration count shared by every
+lane. The contiguous split stays for an unbound extent, so today's
+instruction streams and the pinned descriptor tests do not move.
+
+GEMV: `M` bounded. A's tiles and C's rows round-robin over the columns the
+same way; `tiles` is derived from the extent and becomes the per-call trip
+count.
+
+Copy: a bound on any axis of either view patches that axis of the
+descriptors; the channel split is unchanged. The cache write
+`Copy(k.reshape(n, G, D).transpose(1, 0, 2), keys[i][:, :n])` needs nothing
+else.
+
+Repeat: the cache prefix `keys[i][:, :c]` for decode; the bound lands on the
+row axis of the `(G, L, D)` cache, the descriptor's chunk dimension.
+
+GEMM and MHA: their A and Q patterns already use all four descriptor
+dimensions, so no dimension is free to patch. They keep streaming `L` rows
+and bound the **compute** instead: the row-block and Q-block counts derive
+from the extent and are read by the cores per call, and a core past the
+bound drains its objects without calling the kernel. DMA traffic stays
+linear in `L`; the work, which is what dominates and is quadratic for MHA,
+follows the prompt.
+
+## The graph
+
+```python
+@iron.graph(names_from=W, profile=self.profile)
+def forward(x, angles, *, rows: Scratchpad[np.int32], cache_offset: ..., vector_size: ..., last: ...):
+    x = x[:rows]                       # bounds every operator below
+    ...
+```
+
+`npu.py` passes `rows=n` for a prompt and `rows=1` for a decode step; the
+prompt version is traced at `max_seq_len` rows as today. Decode's cache
+reads become `keys[i][:, :context]` with a fourth per-call value.
+
+Out of reach on this branch: the context GEMV's `K` is the cache length and
+array-tier (the kernel's reduction), so Transpose and that GEMV keep reading
+the full cache; only the key side and the scores follow the context.
+
+## Steps
+
+Each ends at both suites compared with their baselines (identical failure
+sets), pyright and ruff clean, and a Progress entry.
+
+1. **Vocabulary.** `Extent`, bounds on handles and views, `size_by` on
+   transfers with the one-site upstream contract, per-call evaluation of
+   derived values, `explain()` naming what is bounded. Device-free tests for
+   each rule.
+2. **Derived sequence.** Round-robin split under a bound; the elementwise
+   template, RMSNorm, RoPE and Softmax declare their extent. The lowering
+   tests for a bounded operator skip with the contract's name.
+3. **GEMV, Copy, Repeat.** Hand-written sequences take `size_by`.
+4. **GEMM and MHA.** Compute bounds read by the cores; arrays drain past
+   the bound.
+5. **llama.** `x[:rows]` at the top of `forward`; `npu.py` passes the
+   length; decode's cache prefix. The host-parity test checks the bounded
+   trace against the CPU reference at several prompt lengths.
+
+## Progress
