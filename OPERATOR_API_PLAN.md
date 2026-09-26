@@ -120,20 +120,29 @@ not listed, since it always has a default and gives it positionally, which
 pyright does not read. Both are compile-time; a `Value` bound to a
 `DispatchTime` graph parameter is the dispatch-time side.
 
-llama decode block (46 knob kwargs → 4, 18 stride fields → 0, 13 reshapes →
-3; `cols` and `get_current_device()` leave the graph):
+llama decode block as shipped (`iron/applications/llama_3_2_1b/graphs.py`;
+46 knob keywords at call sites → 8, with the tuned values in a `Profile`
+keyed by shape; 12 hand-written stride fields → 0; `cols` and
+`get_current_device()` leave the graph):
 
 ```python
-def decode_block(i, lw, x, angles, pos, n_keys):
+def decode_block(i, lw, x, angles, cache_offset, vector_size):
     h = RMSNorm(x, lw.norm1)
-    q, k, v = (GEMV(w, h, tile_in=4) for w in (lw.q, lw.k, lw.v))
-    q = RoPE(q.reshape(H, D), angles); k = RoPE(k.reshape(G, D), angles)
-    Copy(k, keys[i][:, pos]); Copy(v.reshape(G, D), values[i][:, pos])
-    k_all, v_all = Repeat(keys[i], H // G), Repeat(values[i], H // G)
-    w = Softmax(Mul(GEMV(k_all, q), scale), valid=n_keys)     # DispatchTime -> never baked
-    o = GEMV(lw.o, GEMV(Transpose(v_all), w).reshape(H * D))
-    x = Add(x, o); h = RMSNorm(x, lw.norm2)
-    return Add(x, GEMV(lw.down, Mul(SiLU(GEMV(lw.gate, h)), GEMV(lw.up, h)), tile_in=1))
+    q, k, v = (GEMV(w, h, tile_size_output=D // 2) for w in (lw.q, lw.k, lw.v))
+    q = RoPE(q.reshape(H, D), angles)
+    k = RoPE(k.reshape(G, D), angles)
+    Copy(k, keys[i][:, cache_offset])
+    Copy(v.reshape(G, D), values[i][:, cache_offset])
+    k_all = Repeat(keys[i], repeat=H // G)
+    v_all = Repeat(values[i], repeat=H // G)
+    scores = ElementwiseMul(GEMV(k_all, q), scale, tile_size=L // cols)
+    weights = Softmax(scores, vector_size=vector_size)   # per call: never baked
+    ctx = GEMV(Transpose(v_all), weights)
+    o = GEMV(lw.o, ctx.reshape(H * D))
+    x = ElementwiseAdd(x, o)
+    h = RMSNorm(x, lw.norm2)
+    act = ElementwiseMul(SiLU(GEMV(lw.gate, h)), GEMV(lw.up, h))
+    return ElementwiseAdd(x, GEMV(lw.down, act))
 ```
 
 flm (`iron/exports/flm`): `class Shipped(GEMM, image=Xclbin(...))` pins every
@@ -187,8 +196,11 @@ clean at every commit.
    psutil; `aie.extras` vendored from `llvm/eudsl` `4853bb0`; the mlir wheel's
    `_mlir/*.pyi` stubs copied into `install/python/aie/_mlir_libs/_mlir/`
    (the build leaves them out; pyright needs them). Notes for the PR:
-   `requirements.txt` pins `1d7b9ea`, which lacks `output_rows` and the
-   `trace_to_json(colshift=, kernel=)` signature `tracing.py` calls.
+   `requirements.txt` pins `1d7b9ea` (2026-09-23), which has `output_rows`
+   (#3624) but not the `trace_to_json(colshift=, kernel=)` signature that
+   `iron/common/tracing.py` calls (#3805, 2026-09-25): device runs need no
+   pin change unless tracing is on; the pin moves once a wheel past #3805
+   is published.
 1. **`@operator` → `__init_subclass__`** — done. Dead `pre_fields` gone; the
    nine jobs on the base hooks; `@dataclass_transform()` on both bases;
    `ABCMeta` dropped; pyright and ruff configured after mlir-aie's and run
@@ -289,6 +301,19 @@ test.py`. Headline: 46/18/13 → ~4/0/3 on the llama graph; concepts 27 → ~15;
 today**.
 
 ## Progress
+
+- `(this commit)` Before review. Copy's channel split is one function,
+  `_shares()`, read by the descriptors, the reference and the check; the
+  split axis is the innermost, as it always was, and the prose now says
+  so. MHA's array takes its shim columns from the operands' `via=` pins,
+  so the pins are load-bearing on a built image and the columns are
+  spelled once. `WeightedRMSNorm` and `MemCopy` keep their own arrays for
+  reasons their docstrings now give: a two-core pipeline, and a bypass
+  copy with no core. The toolchain note in Step 0 is corrected: the pinned
+  wheel `1d7b9ea` has `output_rows`; only `trace_to_json`'s new signature
+  (#3805) is past it, and only tracing calls it. This plan's decode block
+  is the shipped one, with the shipped counts. Both suites identical to
+  baseline.
 
 - `3e2b5b1` Tests right-sized from coverage data. Per-test line
   coverage of `iron/tests/common` (161 tests, 4588 library lines reached)

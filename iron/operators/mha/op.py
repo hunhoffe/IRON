@@ -599,16 +599,21 @@ class MHA(Operator):
                 )
             )
 
-        # The shim ends. Every coordinate in this design is load-bearing:
-        # relaxed to AnyShimTile/AnyMemTile/AnyComputeTile the router reports
-        # "Unable to find a legal routing", so the map here is not a
-        # performance preference. Q enters on column 4 and O leaves on 7,
-        # both slots sharing the tile's two channels; K and V take 5 and 6.
-        for shim in range(self.q_shims):
-            self.Q.lane(shim).bind(inQ[shim].prod(tile=Tile(col=4, row=0)))
-            self.O.lane(shim).bind(memO[shim].cons(tile=Tile(col=7, row=0)))
-        self.K.bind(inK.prod(tile=Tile(col=5, row=0)))
-        self.V.bind(inV.prod(tile=Tile(col=6, row=0)))
+        # The shim ends, on the columns the operands' via= pins declare.
+        # Every coordinate in this design is load-bearing: relaxed to
+        # AnyShimTile/AnyMemTile/AnyComputeTile the router reports "Unable
+        # to find a legal routing", so the map here is not a performance
+        # preference. Q's slots share column 4's two channels, O's column 7's.
+        def shim_of(operand) -> Tile:
+            lanes = operand.lanes
+            assert lanes is not None and isinstance(lanes.via, Shim)
+            return Tile(col=lanes.via.col, row=0)
+
+        for s in range(self.q_shims):
+            self.Q.lane(s).bind(inQ[s].prod(tile=shim_of(self.Q)))
+            self.O.lane(s).bind(memO[s].cons(tile=shim_of(self.O)))
+        self.K.bind(inK.prod(tile=shim_of(self.K)))
+        self.V.bind(inV.prod(tile=shim_of(self.V)))
 
         flat_rtps = [b for stage in mha_rtps_list for b in stage]
         self.q_blocks_per_pipeline.bind(flat_rtps, 0)

@@ -108,7 +108,8 @@ class WeightedRMSNorm(RMSNorm):
     Two cores per (column, channel), pipelined: one normalizes, the next
     multiplies by the weight. The weight fifo is one per channel, shared by
     every column in that channel, and each receives the whole weight row,
-    which halves the line a core holds.
+    which halves the line a core holds. The pipeline is why this class owns
+    its array: the elementwise template places one core per slot.
     """
 
     tile_cap: ClassVar[int] = 4096

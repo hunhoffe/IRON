@@ -4,8 +4,8 @@
 """A copy between two views: ``Copy(k, keys[i][:, pos])``.
 
 Each side is a walk over its buffer (offset, sizes, strides), the form a DMA
-takes; the shim channels split the walk on its highest non-unit axis
-and each share is legalized for the shim. A per-call value indexing a view
+takes; the shim channels split the walk's innermost axis and each share
+is legalized for the shim. A per-call value indexing a view
 reaches the copy as ``in_offset``/``out_offset``, an element offset.
 """
 
@@ -56,12 +56,33 @@ def _pad4(sizes, strides):
     return [1] * (4 - len(sizes)) + sizes, [0] * (4 - len(strides)) + strides
 
 
+def _shares(walk: Walk, num_channels: int) -> list[tuple[int, list[int], list[int]]]:
+    """Per channel, the (offset, sizes, strides) of its share of a walk.
+
+    The walk is padded to 4-D and its innermost axis split evenly; channel
+    ``c`` starts ``c`` shares along that axis. The one place the split is
+    defined: the descriptors, the reference and the check all read it.
+    """
+    sizes, strides = _pad4(walk.sizes, walk.strides)
+    share, remainder = divmod(sizes[-1], num_channels)
+    if remainder:
+        raise Incompatible(
+            f"the innermost axis of {walk} ({sizes[-1]}) must be divisible by "
+            f"num_channels ({num_channels})"
+        )
+    split = sizes[:-1] + [share]
+    return [
+        (walk.offset + c * share * strides[-1], split, strides)
+        for c in range(num_channels)
+    ]
+
+
 class Copy(Operator):
     """AIE-accelerated copy between two views of two buffers.
 
     Gathers by ``src`` and scatters by ``dst``, split across
-    ``num_channels`` memtile pass-throughs (no cores) on the highest
-    non-unit axis. In a graph the walks come from the operands: ``Copy(k,
+    ``num_channels`` memtile pass-throughs (no cores) on the innermost
+    axis. In a graph the walks come from the operands: ``Copy(k,
     keys[i][:, pos])``, ``Copy(x.transpose(1, 0, 2), y[:, :n])``; a per-call
     index on a view binds ``in_offset`` or ``out_offset``. Standalone,
     ``src``/``dst`` are given, or default to the whole of each buffer.
@@ -157,14 +178,8 @@ class Copy(Operator):
     def compatible(self) -> None:
         channels = self.num_channels
         src, dst = self.src, self.dst
-        for label, walk in (("src", src), ("dst", dst)):
-            sizes, _ = _pad4(walk.sizes, walk.strides)
-            highest = max(i for i, sz in enumerate(sizes) if sz >= 1)
-            if sizes[highest] % channels:
-                raise Incompatible(
-                    f"the highest axis of {label} {walk} must be divisible by "
-                    f"num_channels ({channels})"
-                )
+        for walk in (src, dst):
+            _shares(walk, channels)  # raises when the axis does not split
         per_channel = src.elements // channels
         if per_channel % self.tile_size:
             raise Incompatible(
@@ -175,25 +190,13 @@ class Copy(Operator):
     def _taps(self, buffer, walk: Walk, offset: int = 0):
         """Per channel, the descriptors of its share of the walk.
 
-        The highest non-unit axis is split across the channels; each share
-        is then legalized for the shim (an axis past its slot's wrap is
-        factored or unrolled, order preserved), so a wide reorder lowers
+        Each share is legalized for the shim (an axis past its slot's wrap
+        is factored or unrolled, order preserved), so a wide reorder lowers
         here instead of failing later in the toolchain.
         """
-        sizes, strides = _pad4(walk.sizes, walk.strides)
-        highest = max(i for i, sz in enumerate(sizes) if sz >= 1)
-        channels = self.num_channels
-        share = sizes[highest] // channels
-        split = sizes[:highest] + [share] + sizes[highest + 1 :]
         return [
-            legalize(
-                buffer.elements,
-                walk.offset + offset + c * share * strides[highest],
-                split,
-                strides,
-                buffer.dtype,
-            )
-            for c in range(channels)
+            legalize(buffer.elements, start + offset, sizes, strides, buffer.dtype)
+            for start, sizes, strides in _shares(walk, self.num_channels)
         ]
 
     def reference(self, x, y=None, *, in_offset=0, out_offset=0):
@@ -254,15 +257,9 @@ def _walk_offsets(sizes, strides, offset):
 
 def _channel_offsets(walk: Walk, addend: int, num_channels: int):
     """Per channel, the flat offsets of its share, split as the design splits it."""
-    sizes, strides = _pad4(walk.sizes, walk.strides)
-    highest = max(idx for idx, sz in enumerate(sizes) if sz >= 1)
-    per_channel = sizes[highest] // num_channels
-    split = sizes[:highest] + [per_channel] + sizes[highest + 1 :]
     return [
-        _walk_offsets(
-            split, strides, walk.offset + addend + c * per_channel * strides[highest]
-        )
-        for c in range(num_channels)
+        _walk_offsets(sizes, strides, start + addend)
+        for start, sizes, strides in _shares(walk, num_channels)
     ]
 
 

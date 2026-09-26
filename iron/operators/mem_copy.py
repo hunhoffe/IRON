@@ -159,6 +159,10 @@ def _cases(cls):
 class MemCopy(Operator):
     """AIE-accelerated memory copy operator: ``num_cores`` copy paths, at
     most ``num_channels`` per column.
+
+    Owns its array and sequence rather than using the elementwise template:
+    a ``bypass`` copy forwards through the memtile with no core at all, and
+    a size that is not a whole number of lines is padded by re-reading.
     """
 
     # A copy that alters a value is a broken copy, so gate it exactly.
