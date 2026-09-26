@@ -290,7 +290,7 @@ today**.
 
 ## Progress
 
-- (this commit) The llama graph names only the knobs that matter. A
+- `cb3a6f1` The llama graph names only the knobs that matter. A
   device-free check traces the graph at the model's real shape with the
   graph's own defaults (a decode step on NPU2 and NPU1, a 512-row prompt
   on NPU2) and at the scaled-down shape the host tests use, drops each
