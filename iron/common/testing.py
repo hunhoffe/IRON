@@ -38,7 +38,10 @@ __all__ = [
 
 def device_columns() -> int:
     """The bound device's width, for a declaration that sweeps it."""
-    return aie_utils.get_current_device().cols
+    dev = aie_utils.get_current_device()
+    if dev is None:
+        raise RuntimeError("device_columns() needs a bound device")
+    return dev.cols
 
 
 @dataclass(frozen=True)

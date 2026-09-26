@@ -31,10 +31,14 @@ from typing import Any
 
 import aie
 import aie.utils as aie_utils
-from aie.iron import DispatchTime
 from aie.ir import Module
+from aie.iron import DispatchTime
 from aie.utils.compile.jit._hash import _code_identity, _device_identity_key
-from aie.utils.compile.jit.compilabledesign import CompilableDesign, compile_context
+from aie.utils.compile.jit.compilabledesign import (
+    CacheEntry,
+    CompilableDesign,
+    compile_context,
+)
 from aie.utils.compile.jit.markers import CompileTime
 
 # Flags the fused full-ELF build needs. --expand-load-pdis is what makes a
@@ -120,12 +124,13 @@ def design_identity(generator) -> str:
 # What turns a design into MLIR text, beyond the design itself: IRON's
 # common tree (the declaration layer, the build, the fusion) and mlir-aie's
 # Python frontend and bindings.
+_AIE = Path(inspect.getfile(aie)).resolve().parent
 _GENERATOR_TREES = (
     Path(__file__).resolve().parents[1],
-    Path(aie.__file__).resolve().parent / "iron",
-    Path(aie.__file__).resolve().parent / "dialects",
+    _AIE / "iron",
+    _AIE / "dialects",
 )
-_BINDINGS = Path(aie.__file__).resolve().parent / "_mlir_libs"
+_BINDINGS = _AIE / "_mlir_libs"
 
 
 @functools.cache
@@ -185,7 +190,6 @@ def _design_generator(call_kwargs: dict):
     reaches it as "AttributeError: 'str' object has no attribute 'operation'",
     which names neither the design nor the cause.
     """
-
     # A design built for an xclbin declares its per-call values as dispatch-
     # time scalars: keyword-only DispatchTime[T] parameters of the generator,
     # which CompilableDesign hands in as dispatch parameters and the design
@@ -196,7 +200,7 @@ def _design_generator(call_kwargs: dict):
     def generate(*positional, **kw):
         # CompilableDesign passes the compile parameters positionally and the
         # dispatch parameters by name; bind both through the spelled signature.
-        kw = generate.__signature__.bind(*positional, **kw).arguments
+        kw = inspect.signature(generate).bind(*positional, **kw).arguments
         design = kw["design"]
         kwargs = dict(call_kwargs)
         bound = aie_utils.get_current_device()
@@ -223,7 +227,7 @@ def _design_generator(call_kwargs: dict):
         P(symbol, P.KEYWORD_ONLY, annotation=DispatchTime[dtype])
         for symbol, dtype in dispatch
     ]
-    generate.__signature__ = inspect.Signature(parameters)
+    setattr(generate, "__signature__", inspect.Signature(parameters))
     generate.__annotations__ = {p.name: p.annotation for p in parameters}
     return generate
 
@@ -341,7 +345,8 @@ def insts_design(generator, extra_flags=()) -> CompilableDesign:
 @dataclasses.dataclass(frozen=True)
 class DispatchStream:
     """What a dispatch-time design has instead of a static instruction stream:
-    the host library that generates one per call, and the scalars it takes."""
+    the host library that generates one per call, and the scalars it takes.
+    """
 
     lib_path: Path
     params: tuple
@@ -385,6 +390,14 @@ def dispatch_stream(design: CompilableDesign) -> "DispatchStream | None":
     """The per-call stream generator of a dispatch-time design, else ``None``."""
     if not design.dispatch_params:
         return None
-    return DispatchStream(
-        Path(design.get_dispatch_lib_path()), tuple(design.dispatch_params)
-    )
+    lib = design.get_dispatch_lib_path()
+    assert lib is not None, "a dispatch-time design compiles its stream library"
+    return DispatchStream(Path(lib), tuple(design.dispatch_params))
+
+
+def cache_entry(design: CompilableDesign) -> CacheEntry:
+    """What ``design``'s compile left in the cache; it has compiled."""
+    entry = design.get_cache_entry()
+    if entry is None:
+        raise RuntimeError(f"{design} has not compiled")
+    return entry

@@ -9,6 +9,7 @@ checked here is the image: that is OperatorSequence's job and the
 hardware tests' job.
 """
 
+import aie.utils as aie_utils
 import numpy as np
 import pytest
 from ml_dtypes import bfloat16
@@ -22,7 +23,6 @@ from iron.operators.gemv.op import GEMV, GEMVOverlay
 from iron.operators.rms_norm import RMSNorm, WeightedRMSNorm
 from iron.operators.silu import SiLU
 from iron.operators.strided_copy import StridedCopy
-import aie.utils as aie_utils
 
 E, H = 2048, 8192
 
@@ -310,9 +310,8 @@ def test_swiglu_prefill_traces_over_a_sequence():
 
 
 def test_llama_decode_traces_and_tunes():
-    from iron.tests.common.llama_model import Config as _Config
-
     from iron.applications.llama_3_2_1b.graphs import LlamaGraph
+    from iron.tests.common.llama_model import Config as _Config
 
     cfg = _Config()
     L = 256
@@ -376,9 +375,8 @@ def test_llama_decode_traces_and_tunes():
 
 
 def test_llama_prompt_traces_over_the_same_caches():
-    from iron.tests.common.llama_model import Config as _Config
-
     from iron.applications.llama_3_2_1b.graphs import LlamaGraph
+    from iron.tests.common.llama_model import Config as _Config
 
     cfg = _Config()
     L = cfg.context_length

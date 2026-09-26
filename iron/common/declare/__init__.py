@@ -60,7 +60,6 @@ from .bound import (
     BoundValue,
     BufferView,
 )
-from .spec import from_spec
 from .field import (
     DeclarationError,
     DimRef,
@@ -85,8 +84,9 @@ from .member import (
     ValueSpec,
     Xclbin,
 )
-from .operator import O, Operator
+from .operator import OV, Operator
 from .overlay import Overlay, get_shim_dma_limit
+from .spec import from_spec
 
 __all__ = [
     "BoundBuffer",
@@ -100,7 +100,7 @@ __all__ = [
     "In",
     "InOut",
     "Incompatible",
-    "O",
+    "OV",
     "Operator",
     "Out",
     "Overlay",

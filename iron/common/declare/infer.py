@@ -123,7 +123,8 @@ def infer(cls, *operand_shapes, outputs=(), **given) -> dict[str, Any]:
 
 def infer_kwargs(cls, kwargs) -> dict[str, Any]:
     """The part of ``kwargs`` that :func:`infer` takes: both layers' dimension
-    fields and the flags that select a buffer's shape."""
+    fields and the flags that select a buffer's shape.
+    """
     names = set(cls._dim_fields)
     if cls._overlay_class:
         names.update(cls._overlay_class._dim_fields)

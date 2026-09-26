@@ -8,36 +8,42 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Mapping
-
-import ml_dtypes
-import numpy as np
+from typing import TYPE_CHECKING
 
 import aie.utils as aie_utils
+import ml_dtypes
+import numpy as np
 from aie.utils.hostruntime.tensor_class import CPUOnlyTensor
 from aie.utils.npukernel import NPUKernel
 from aie.utils.trace import get_trace_buffer
 from aie.utils.verify import Tolerance, compare
 
 from ..declare import Operator
-
 from .allocator import ArenaPlan
 from .jit_compile import DispatchStream
 
-try:
+if TYPE_CHECKING:
     import pyxrt
     from aie.utils.hostruntime.xrtruntime.parameter_scratchpad import (
         ParameterScratchpad,
     )
     from aie.utils.hostruntime.xrtruntime.tensor import XRTTensor
-except ImportError:
-    # Host stacks without XRT (e.g. the HRX/amdxdna runtime) have no pyxrt. The
-    # on-device callables here are XRT-native (pyxrt.elf / hw_context / run,
-    # plus XRTTensor views), so they cannot run there; _require_xrt() makes
-    # that explicit at construction. The reference mode and the whole compile
-    # path do not care, and must keep importing.
-    pyxrt = None
-    ParameterScratchpad = None
-    XRTTensor = None
+else:
+    try:
+        import pyxrt
+        from aie.utils.hostruntime.xrtruntime.parameter_scratchpad import (
+            ParameterScratchpad,
+        )
+        from aie.utils.hostruntime.xrtruntime.tensor import XRTTensor
+    except ImportError:
+        # Host stacks without XRT (e.g. the HRX/amdxdna runtime) have no pyxrt.
+        # The on-device callables here are XRT-native (pyxrt.elf / hw_context /
+        # run, plus XRTTensor views), so they cannot run there; _require_xrt()
+        # makes that explicit at construction. The reference mode and the whole
+        # compile path do not care, and must keep importing.
+        pyxrt = None
+        ParameterScratchpad = None
+        XRTTensor = None
 
 logger = logging.getLogger(__name__)
 
@@ -298,9 +304,10 @@ class SequenceFullELFCallable(SequenceCallable):
 
     @property
     def lowered_mlir_path(self):
-        """aiecc's post-lowering module, which carries the trace configuration and
+        """Aiecc's post-lowering module, which carries the trace configuration and
         the trace buffer layout. A traced build asks aiecc to keep it, in the
-        build's cache entry."""
+        build's cache entry.
+        """
         path = self.op.artifacts.lowered_mlir
         if path is None:
             raise FileNotFoundError(
@@ -408,7 +415,8 @@ class SequenceXclbinCallable(SequenceCallable):
 
     def write_values(self, values: Mapping[str, np.generic]) -> None:
         """Each kernel takes its values as dispatch-time scalars and
-        regenerates its stream (§6)."""
+        regenerates its stream (§6).
+        """
         self.dispatch_values = dict(values)
 
     def _run(self):

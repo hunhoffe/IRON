@@ -126,6 +126,7 @@ def declare_kernel(
     digest composes with it rather than replacing it:
     "<digest>_mm128_64_64_matmul_bf16_bf16".
     """
+    assert source is not None, f"{name}: a kernel names its source"
     source = Path(source)
     # The aie_runtime_lib headers a kernel is compiled against.
     dirs = list([str(runtime_dir())] if include_dirs is None else include_dirs)

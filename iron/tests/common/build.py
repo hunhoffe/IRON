@@ -12,10 +12,8 @@ is the toolchain's job and the operator tests' job.
 
 import numpy as np
 import pytest
-
 from aie.helpers.util import v8bfp16ebs8
 
-from iron.common.design import Sequence, transfers
 from iron.common.declare import (
     In,
     Operator,
@@ -28,6 +26,7 @@ from iron.common.declare import (
     optional,
     tunable,
 )
+from iron.common.design import Sequence, transfers
 from iron.common.tiling import Access
 
 
@@ -515,9 +514,10 @@ def test_mem_copy_sequence_pads_a_remainder_to_a_full_line(monkeypatch):
         ).tuned(Dev())
         log = _record(op.ov)
         op.design(Sequence(op, op.ov, {"x": "dx", "y": "dy"}))
-        moved = lambda verb: sum(
-            s[0] * s[3] for v, _, _, s, _ in log if v == verb
-        )  # noqa: E731
+
+        def moved(verb):
+            return sum(s[0] * s[3] for v, _, _, s, _ in log if v == verb)
+
         return log, moved("fill"), moved("drain")
 
     log, filled, drained = run(1024)

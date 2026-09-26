@@ -17,11 +17,10 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable
 
-import numpy as np
-from ml_dtypes import bfloat16
-
 import aie.utils as aie_utils
+import numpy as np
 from aie.utils import bfp
+from ml_dtypes import bfloat16
 
 from ..declare import ValueSpec
 from ..declare.member import _Value
@@ -195,9 +194,11 @@ class GraphFunction:
         if dev is not None:
             aie_utils.set_current_device(dev)
         traced = self.trace(**shapes)
-        chosen = plan(
-            aie_utils.get_current_device().resolve().name, traced, boundaries, image
-        )
+        bound = aie_utils.get_current_device()
+        assert bound is not None, "compile() needs a bound device"
+        # Upstream annotates Device.resolve() -> None; it returns the AIEDevice.
+        npu = bound.resolve().name  # pyright: ignore[reportAttributeAccessIssue]
+        chosen = plan(npu, traced, boundaries, image)
         if verbose:
             print(chosen.report(self.__name__))
         signature = self._signature(traced.inputs)
@@ -236,12 +237,13 @@ class GraphFunction:
                 for name, t in zip(self.params, tensors)
             }
             print(f"{self.__name__}: compiling for {shapes}")
-            version = self.compile(**shapes)
+            # A checker matches **shapes against compile()'s named parameters.
+            version = self.compile(**shapes)  # pyright: ignore[reportArgumentType]
         return version(*tensors, **values)
 
     def reference(self, *tensors, **values):
         """The same function, each operator run through its ``reference()``."""
-        with _ReferenceTracer(self.__name__) as tracer:
+        with _ReferenceTracer(self.__name__):
             return self.fn(*tensors, **{k: values.get(k) for k in self.value_params})
 
 

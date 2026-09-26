@@ -1,19 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Temporal fusion of multiple MLIR modules into one module with multiple devices and a main runtime sequence that calls into them.
-"""
+"""Temporal fusion of multiple MLIR modules into one module with multiple devices and a main runtime sequence that calls into them."""
 
 from __future__ import annotations
 
+from typing import Any
+
+import ml_dtypes
 import numpy as np
 from aie import ir
 from aie.dialects import aie, aiex, memref
 from aie.extras.context import mlir_mod_ctx
-import ml_dtypes
-
-from typing import Any
 
 from ..design import DesignGenerator
 
@@ -169,16 +167,19 @@ def fuse_mlir(
         needs_reset = needs_additional_reset(runlist)
         if needs_reset:
 
-            @aie.device(device_ty)
+            @aie.device(device_ty)  # pyright: ignore[reportCallIssue]  # see main()
             def reset():
                 @aiex.runtime_sequence()
                 def sequence():
                     pass
 
-            reset.operation.attributes["sym_name"] = ir.StringAttr.get(RESET_DEVICE)
+            reset_op: Any = reset  # a DeviceOp; region_op types it as the function
+            reset_op.operation.attributes["sym_name"] = ir.StringAttr.get(RESET_DEVICE)
 
         # Create the main device -- this contains the runtime sequence calling into the other devices
-        @aie.device(device_ty)
+        # region_op annotates its decorator as the op it builds; a checker sees the
+        # decorated function as not callable.
+        @aie.device(device_ty)  # pyright: ignore[reportCallIssue]
         def main():
             buf_dtype = np.dtype[
                 ml_dtypes.bfloat16
@@ -186,11 +187,17 @@ def fuse_mlir(
             itemsize = np.dtype(ml_dtypes.bfloat16).itemsize
 
             # RuntimeSequenceOp
-            @aiex.runtime_sequence(
-                np.ndarray[(input_buffer_size // itemsize,), buf_dtype],
-                np.ndarray[(output_buffer_size // itemsize,), buf_dtype],
-                np.ndarray[(scratch_buffer_size // itemsize,), buf_dtype],
-            )
+            # numpy array types, which runtime_sequence converts to memrefs.
+            arg_types: list[Any] = [
+                np.ndarray[(nbytes // itemsize,), buf_dtype]
+                for nbytes in (
+                    input_buffer_size,
+                    output_buffer_size,
+                    scratch_buffer_size,
+                )
+            ]
+
+            @aiex.runtime_sequence(*arg_types)
             def sequence(input_buf, output_buf, scratch_buf):
                 consolidated_buffers = {
                     "input": input_buf,
@@ -200,6 +207,7 @@ def fuse_mlir(
 
                 # Execute operations in runlist order
                 configure_op = None
+                configure_body = None
                 last_op_name = None
                 for op_name, *buffer_names in runlist:
                     expected_arg_types = sequence_arg_types[op_name]
@@ -214,6 +222,7 @@ def fuse_mlir(
                         configure_body = configure_op.body.blocks.append()
                         last_op_name = op_name
 
+                    assert configure_body is not None
                     with ir.InsertionPoint(configure_body):
                         # For each buffer, add subview and reinterpret_cast ops
                         buffer_ssa_values = []
@@ -251,9 +260,10 @@ def fuse_mlir(
                                 for i in range(expected_memref.rank)
                             ]
                             expected_size = np.prod(target_shape)
-                            assert (
-                                expected_size == size_elements
-                            ), f"Size mismatch for buffer '{buf_name}': MLIR runtime sequence expected {expected_size}, Python fused operator provided {size_elements}"
+                            assert expected_size == size_elements, (
+                                f"Size mismatch for buffer '{buf_name}': MLIR runtime sequence "
+                                f"expected {expected_size}, Python fused operator provided {size_elements}"
+                            )
                             strides = []
                             stride = 1
                             for dim in reversed(target_shape):
@@ -276,7 +286,7 @@ def fuse_mlir(
 
                         # Run Op
                         sequence_sym_ref_attr = ir.FlatSymbolRefAttr.get("sequence")
-                        run_op = aiex.RunOp(sequence_sym_ref_attr, buffer_ssa_values)
+                        aiex.RunOp(sequence_sym_ref_attr, buffer_ssa_values)
 
                 if needs_reset:
                     reset_op = aiex.ConfigureOp(ir.FlatSymbolRefAttr.get(RESET_DEVICE))

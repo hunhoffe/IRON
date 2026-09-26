@@ -10,12 +10,12 @@ import itertools
 from collections.abc import Hashable
 
 import numpy as np
+from aie.utils import bfp
 from ml_dtypes import bfloat16
 
-from aie.utils import bfp
-
 from ..declare import BoundValue, Operator, Resident, infer, infer_kwargs
-from ..declare.member import _Buffer as _Buffer_, _Value
+from ..declare.member import _Buffer as _Buffer_
+from ..declare.member import _Value
 from ..design import device_symbol
 from ..image.sequence import OperatorSequence
 from .handle import Handle, State, Value, _tensor_dtype, is_operand
@@ -89,7 +89,9 @@ class TracedGraph:
         the same in every trace of the function, so each version compiled
         from it addresses one copy.
         """
-        found = {h.name: key for key, (_, h) in self.weights.items()}
+        found: dict[str, Hashable] = {
+            h.name: key for key, (_, h) in self.weights.items()
+        }
         found.update((h.name, key) for key, (_, h) in self.states.items())
         return found
 
@@ -217,8 +219,8 @@ class Tracer:
         return self._record(op, operands)
 
     @staticmethod
-    def _split_values(cls, kwargs) -> dict:
-        names = {m.name for m in cls._members if isinstance(m, _Value)}
+    def _split_values(op_cls, kwargs) -> dict:
+        names = {m.name for m in op_cls._members if isinstance(m, _Value)}
         return {k: kwargs.pop(k) for k in list(kwargs) if k in names}
 
     def _construct(self, cls, inputs, outputs, kwargs) -> Operator:

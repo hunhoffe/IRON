@@ -13,10 +13,8 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Any
 
-import numpy as np
-
 from aie.extras.dialects import arith
-from aie.helpers.util import np_dtype_to_mlir_type
+from aie.ir import IntegerType
 from aie.iron import TaskGroup, sync_parameters
 
 from ..declare import (
@@ -43,9 +41,22 @@ class Transfers:
     downloaded image.
     """
 
+    op: Operator
+    ov: Overlay
+
+    def fill(self, stream, source, *, group=None, wait: bool = False, offset_by=None):
+        raise NotImplementedError
+
+    def drain(self, stream, dest, *, group=None, wait: bool = True, offset_by=None):
+        raise NotImplementedError
+
+    def group(self):
+        raise NotImplementedError
+
     def run(self) -> None:
         """The transfers: the overlay's sequence when it owns one, else the
-        operator's override, else the one derived from the declarations."""
+        operator's override, else the one derived from the declarations.
+        """
         if self.ov.has_sequence():
             self.ov.sequence(self.op, self)
         elif self.op.has_design_override():
@@ -130,6 +141,7 @@ class Sequence(Transfers):
             if dynamic:
                 # The dispatch-time form: the same pattern, its offset the
                 # per-call scalar plus the static one, regenerated per call.
+                assert offset_by is not None
                 if not isinstance(acc, Access):
                     raise TypeError(
                         f"{offset_by.name}: a dispatch-time offset needs an Access, "
@@ -296,4 +308,4 @@ def _plus(ssa, constant: int):
     """``ssa + constant`` as a sequence value; the scalar alone when constant is 0."""
     if not constant:
         return ssa
-    return ssa + arith.constant(int(constant), np_dtype_to_mlir_type(np.int32))
+    return ssa + arith.constant(int(constant), IntegerType.get_signless(32))

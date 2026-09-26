@@ -115,7 +115,8 @@ L1_BANK_BYTES = 8192
 
 def bank_elements(dtype) -> int:
     """Elements of ``dtype`` in one local-memory bank: the largest line a core
-    holds at a fifo depth of two."""
+    holds at a fifo depth of two.
+    """
     return L1_BANK_BYTES // np.dtype(dtype).itemsize
 
 

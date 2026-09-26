@@ -3,8 +3,10 @@
 
 """Common utilities and base classes for IRON operators."""
 
-from .image.artifacts import Artifacts, Design, Step
-from .design import DesignGenerator
+# First: image.artifacts before design, or design's import of image completes
+# a cycle back into design before DesignGenerator exists.
+from .image.artifacts import Artifacts, Design, Step  # isort: skip
+
 from .declare import (
     DeclarationError,
     DispatchTime,
@@ -27,6 +29,7 @@ from .declare import (
     select,
     tunable,
 )
+from .design import DesignGenerator
 from .elementwise import (
     BinaryElementwiseOperator,
     BinaryElementwiseOverlay,

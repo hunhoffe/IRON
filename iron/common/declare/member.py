@@ -17,12 +17,14 @@ from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, overload
 import numpy as np
 from ml_dtypes import bfloat16
 
-from .field import DeclarationError, _DimSpec, _describe
+from .field import DeclarationError, _describe, _DimSpec
 
 if TYPE_CHECKING:
     from typing import Self
 
-    from .bound import BoundBuffer, BoundResident, BoundStream, BoundValue
+    # Named in the subclasses' base expressions as strings (bound imports member).
+    from .bound import BoundBuffer, BoundResident, BoundStream, BoundValue  # noqa: F401
+
 
 B = TypeVar("B")  # the bound form an instance serves
 

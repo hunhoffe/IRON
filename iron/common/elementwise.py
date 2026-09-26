@@ -43,19 +43,17 @@ line length (leaky_relu's alpha) or takes its arguments in another order
 from __future__ import annotations
 
 import dataclasses
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, TypeVar
 
 import numpy as np
-
 from aie.iron import ObjectFifo, Worker
-from aie.iron.kernel import ExternalFunction
 from aie.iron.controlflow import range_
+from aie.iron.kernel import ExternalFunction
 from aie.utils.verify import Tolerance
 
 from .declare import (
-    O,
-    Incompatible,
     In,
+    Incompatible,
     Operator,
     Out,
     Overlay,
@@ -123,6 +121,7 @@ class ElementwiseOverlay(Overlay):
 
     @property
     def cores(self) -> int:
+        assert self.num_aie_columns is not None, "cores of a tuned overlay"
         return self.num_aie_columns * self.num_channels
 
     # -- the kernel --------------------------------------------------------
@@ -137,13 +136,15 @@ class ElementwiseOverlay(Overlay):
 
     def tolerance(self, target: Target) -> Tolerance | None:
         """The contract of the one kernel every core runs; ``None`` for a
-        kernel declared without one."""
+        kernel declared without one.
+        """
         contract = self.kernel(target).contract
         return None if contract is None else contract.tolerance
 
     def kernel_call(self, kernel, *elements) -> None:
         """Call the kernel on this core's acquired elements: inputs, then the
-        output, then the line length."""
+        output, then the line length.
+        """
         kernel(*elements, self.line_size)
 
     # -- the array ----------------------------------------------------------
@@ -205,13 +206,18 @@ class ElementwiseOverlay(Overlay):
         return workers
 
 
-class ElementwiseOperator(Operator[O]):
+EO = TypeVar("EO", bound=ElementwiseOverlay)
+
+
+class ElementwiseOperator(Operator[EO]):
     """What every elementwise operator's buffers have in common."""
 
     size: int = dim()
 
     def compatible(self) -> None:
         ov = self.ov
+        assert ov.num_aie_columns is not None and ov.tile_size is not None
+        assert ov.line_size is not None, "compatible() sees a tuned overlay"
         unit = ov.num_aie_columns * ov.tile_size
         if self.size % unit:
             raise Incompatible(
@@ -228,6 +234,7 @@ class ElementwiseOperator(Operator[O]):
 
     def residents(self) -> dict[str, int]:
         ov = self.ov
+        assert ov.line_size is not None, "residents() sees a tuned overlay"
         return {"count": self.size // ov.cores // ov.line_size}
 
 
@@ -249,7 +256,7 @@ class ChanneledUnaryOverlay(ElementwiseOverlay):
     )
 
 
-class ChanneledUnaryOperator(ElementwiseOperator[O]):
+class ChanneledUnaryOperator(ElementwiseOperator[EO]):
     """A flat buffer in, a flat buffer of the same size out."""
 
     x = In(ElementwiseOperator.size, to=ChanneledUnaryOverlay.x)
@@ -258,7 +265,8 @@ class ChanneledUnaryOperator(ElementwiseOperator[O]):
 
 class BinaryElementwiseOverlay(ElementwiseOverlay):
     """Two lines in, one line out. Each core's two input channels halve the
-    columns the shim budget allows, so ``num_channels`` stays at one."""
+    columns the shim budget allows, so ``num_channels`` stays at one.
+    """
 
     a = StreamIn(
         ElementwiseOverlay.line_size,
@@ -274,7 +282,7 @@ class BinaryElementwiseOverlay(ElementwiseOverlay):
     )
 
 
-class BinaryElementwiseOperator(ElementwiseOperator[O]):
+class BinaryElementwiseOperator(ElementwiseOperator[EO]):
     """Two flat buffers in, one of the same size out."""
 
     a = In(ElementwiseOperator.size, to=BinaryElementwiseOverlay.a)

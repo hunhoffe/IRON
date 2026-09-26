@@ -13,6 +13,7 @@ import pytest
 from ml_dtypes import bfloat16
 
 from iron.common.tiling import (
+    DMA_BD_MAX_WRAP,
     Access,
     Block,
     contiguous,
@@ -24,7 +25,6 @@ from iron.common.tiling import (
     split_run,
     whole,
 )
-from iron.common.tiling import DMA_BD_MAX_WRAP
 
 
 def test_granularity_per_dtype():
@@ -83,7 +83,9 @@ def test_gemv_batched_coalesces_into_one_iterated_descriptor():
     blocks = split((nb, M, K), cols, axis=1)
     assert blocks[1].repeats == ((nb, M * K),)
     (acc,) = encode(blocks[1], nb * M * K, bfloat16)
-    hi, lo = split_run(run, gran=2)
+    hi_lo = split_run(run, gran=2)
+    assert hi_lo is not None
+    hi, lo = hi_lo
     assert acc.sizes == (1, nb, hi, lo) and acc.strides == (0, M * K, lo, 1)
     assert acc.offset == 1 * run
     assert acc.count == nb * run
@@ -105,10 +107,14 @@ def test_split_run_matches_gemv_rules():
     # granule, and maximal; hi is at most 1023.
     assert split_run(512, gran=2) == (1, 512)
     assert split_run(4096, gran=2) == (4, 1024)  # 2048 would exceed 2046
-    hi, lo = split_run(4096, gran=2)
+    hi_lo = split_run(4096, gran=2)
+    assert hi_lo is not None
+    hi, lo = hi_lo
     assert hi * lo == 4096 and lo <= DMA_BD_MAX_WRAP * 2 and lo % 2 == 0
     # gemv case (1026, 64, 1, 1, 2, 2): an odd-looking run that needs an even split
-    hi, lo = split_run(1026 * 64, gran=2)
+    hi_lo = split_run(1026 * 64, gran=2)
+    assert hi_lo is not None
+    hi, lo = hi_lo
     assert hi * lo == 1026 * 64 and lo % 2 == 0 and hi <= DMA_BD_MAX_WRAP
 
 
@@ -130,10 +136,12 @@ def test_repeated_zero_stride_rereads_the_run_from_the_iteration_slot():
     # repeat/op.py's input: the whole buffer re-read `repeat` times. Only the
     # iteration slot may carry a zero stride, and it holds at most 64.
     acc = repeated(64, 0, 64, [(3, 0)], bfloat16)
+    assert acc is not None
     assert acc.sizes == (3, 1, 1, 64) and acc.strides == (0, 0, 0, 1)
     assert repeated(64, 0, 64, [(65, 0)], bfloat16) is None  # past the iteration wrap
     # a strided repeat goes in d2 instead, where there is no wrap limit
     acc = repeated(64 * 100, 0, 64, [(100, 64)], bfloat16)
+    assert acc is not None
     assert acc.sizes == (1, 100, 1, 64) and acc.strides == (0, 64, 0, 1)
 
 
@@ -270,5 +278,7 @@ def test_view_then_legalize_round_trips_a_batched_block():
     nb, M, K = 100, 256, 128
     off, sizes, strides = view((nb, M, K), (slice(None), slice(0, 32), slice(None)))
     (acc,) = legalize(nb * M * K, off, sizes, strides, bfloat16)
-    hi, lo = split_run(32 * K, gran=2)
+    hi_lo = split_run(32 * K, gran=2)
+    assert hi_lo is not None
+    hi, lo = hi_lo
     assert acc.sizes == (1, nb, hi, lo) and acc.strides == (0, M * K, lo, 1)

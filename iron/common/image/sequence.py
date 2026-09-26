@@ -6,9 +6,8 @@
 import logging
 from collections.abc import Hashable, Mapping
 
-import numpy as np
-
 import aie.utils as aie_utils
+import numpy as np
 from aie.iron.device import NPU2
 from aie.utils import bfp
 from aie.utils.hostruntime.tensor_class import COHERENCE_GRANULE
@@ -24,6 +23,7 @@ from .callable import (
     SequenceXclbinCallable,
 )
 from .fused import FusedImage, XclbinChain
+from .jit_compile import cache_entry
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +234,7 @@ class OperatorSequence:
                 if b.direction in ("out", "inout"):
                     writes.append(name)
             steps.append((reads, writes))
+        assert self.arena is not None, "placed in an arena plan"
         self._arena_layout = self.arena.place_image(steps, sizes, self.residents)
         return self._arena_layout
 
@@ -404,7 +405,8 @@ class OperatorSequence:
 
     def link(self):
         """Build this sequence's image, once; sets ``self.image`` (``None`` for
-        the reference mode) and :attr:`artifacts`."""
+        the reference mode) and :attr:`artifacts`.
+        """
         if not hasattr(self, "subbuffer_layout"):
             self.prepare()
         self.image = self._image.link(self) if self._image is not None else None
@@ -433,19 +435,21 @@ class OperatorSequence:
             for i in range(len(designs))
         ]
         if isinstance(self._image, FusedImage):
-            entry = self._image.design.get_cache_entry()
+            assert self._image.design is not None, "link() built the image"
+            entry = cache_entry(self._image.design)
             records = tuple(
                 Design(name=labels[i], operators=sharing[i])
                 for i in range(len(designs))
             )
             kind, image, insts = "elf", entry.elf, None
+            by_design = {id(op): labels[design_of[id(op)]] for op in operators}
         else:
             chain = self._image
             entry = None
             records = []
             for i, op in enumerate(designs):
                 design = chain.op_design_map[id(op)]
-                own = design.get_cache_entry()
+                own = cache_entry(design)
                 entry = entry or own
                 records.append(
                     Design(
@@ -458,9 +462,8 @@ class OperatorSequence:
                 )
             records = tuple(records)
             kind, image, insts = "xclbin", chain.combined_xclbin_path, None
-        by_design = {id(op): labels[design_of[id(op)]] for op in operators}
-        if kind == "xclbin":
             by_design = {id(op): chain.op_kernel_name_map[id(op)] for op in operators}
+        assert image is not None, "the image has been built"
         steps = tuple(
             Step(i, op.name, by_design[id(op)], tuple(names))
             for i, (op, *names) in enumerate(self.runlist)
@@ -486,6 +489,7 @@ class OperatorSequence:
         if not hasattr(self, "subbuffer_layout"):
             self.compile()
         self.link()
+        assert self.mode is not None, "link() chose the mode"
         if self.mode != "fused":
             return _MODES[self.mode][1](self)
         if self.arena is not None and arena is None:

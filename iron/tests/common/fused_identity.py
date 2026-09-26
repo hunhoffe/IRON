@@ -18,9 +18,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 import aie.utils as aie_utils
+import pytest
 from aie.iron.device import from_name
 
 from iron.common.image import OperatorSequence, build_fused_mlir
@@ -83,7 +82,8 @@ def _objects_by_step(shapes):
 def test_equal_kernel_recipes_share_one_object_across_designs():
     """Two GEMVs that differ only in M compile mv.cc with the same flags,
     so their designs link one object; a different K is a different recipe,
-    and a different object."""
+    and a different object.
+    """
     (_, a), (_, b), (_, c) = _objects_by_step(SHAPES)
     assert a and a == b, f"M=512 links {a}, M=256 links {b}: one recipe, two objects"
     assert a.isdisjoint(c), f"K=1024 and K=2048 both link {a & c}"

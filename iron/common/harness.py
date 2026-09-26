@@ -14,8 +14,8 @@ from __future__ import annotations
 import dataclasses
 from typing import NamedTuple
 
-import numpy as np
 import aie.utils as aie_utils
+import numpy as np
 from aie.utils.benchmark import run_iters
 from aie.utils.verify import Tolerance, compare, nearly_equal
 from ml_dtypes import bfloat16
@@ -107,14 +107,15 @@ def verify_buffer(
     contract of the kernel the operator runs. It must be judgeable element by
     element: no ``range_frac`` and not a bound.
     """
-    if tolerance is None:
-        tolerance = Tolerance.relative(
-            rel_tol, abs_tol, max_mismatch_frac=max_error_rate
-        )
-    elif tolerance.kind == "bound" or tolerance.range_frac is not None:
+    judge = (
+        Tolerance.relative(rel_tol, abs_tol, max_mismatch_frac=max_error_rate)
+        if tolerance is None
+        else tolerance
+    )
+    if judge.kind == "bound" or judge.range_frac is not None:
         raise ValueError(
-            f"{buf_name}: a {tolerance.kind} tolerance with range_frac="
-            f"{tolerance.range_frac} depends on more than the element it judges"
+            f"{buf_name}: a {judge.kind} tolerance with range_frac="
+            f"{judge.range_frac} depends on more than the element it judges"
         )
     expected = np.asarray(reference).reshape(-1)
     got = np.asarray(output).reshape(-1)
@@ -125,8 +126,8 @@ def verify_buffer(
         return list(range(len(got), len(expected)))
     got = got[: len(expected)]
 
-    verdict = compare(got, expected, tolerance)
-    allowed = tolerance.max_mismatch_frac
+    verdict = compare(got, expected, judge)
+    allowed = judge.max_mismatch_frac
     if verdict.n_mismatch and allowed > 0.0:
         within = "within" if verdict else "exceeds"
         print(
@@ -140,16 +141,14 @@ def verify_buffer(
     print(f"{buf_name}: {verdict.detail}")
     # compare() judges; it does not list the elements.
     both_nan = np.isnan(got.astype(np.float32)) & np.isnan(expected.astype(np.float32))
-    if tolerance.kind == "relative":
+    if judge.kind == "relative":
         # nearly_equal is the same per-element test, except that it also
         # rejects a NaN that meets a NaN.
-        bad = ~nearly_equal(
-            got, expected, rtol=tolerance.rtol or 0.0, atol=tolerance.atol
-        )
-    elif tolerance.kind == "exact":
+        bad = ~nearly_equal(got, expected, rtol=judge.rtol or 0.0, atol=judge.atol)
+    elif judge.kind == "exact":
         bad = got != expected.astype(got.dtype)
     else:
-        each = dataclasses.replace(tolerance, max_mismatch_frac=0.0)
+        each = dataclasses.replace(judge, max_mismatch_frac=0.0)
         bad = np.array(
             [
                 not compare(got[i : i + 1], expected[i : i + 1], each)
@@ -228,6 +227,8 @@ def run_test(
     """
     if isinstance(inputs, Vectors):
         inputs, outputs = inputs.inputs, inputs.outputs
+    if outputs is None:
+        outputs = {}
     if not isinstance(operator, Operator):
         raise TypeError(f"run_test runs one declared Operator, not {operator!r}")
     operator.compile()

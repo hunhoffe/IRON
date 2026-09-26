@@ -30,11 +30,13 @@ class DesignGenerator:
     def resolve(self) -> tuple[Callable, tuple, dict]:
         if self.fn is not None:
             return self.fn, self.args, self.kwargs
+        assert self.source_path is not None and self.fn_name is not None
         import importlib.util
 
         spec = importlib.util.spec_from_file_location(
             self.source_path.name, self.source_path
         )
+        assert spec is not None and spec.loader is not None, self.source_path
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return getattr(module, self.fn_name), self.args, self.kwargs

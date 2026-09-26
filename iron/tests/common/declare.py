@@ -276,7 +276,8 @@ def test_buffers_carry_direction_shape_and_dtype():
 
 def test_buffers_carry_the_declared_dtype_and_size():
     """The sizing contract: the sequence layout and the test harness allocate
-    from ``b.dtype`` and ``b.nbytes`` of a declared buffer."""
+    from ``b.dtype`` and ``b.nbytes`` of a declared buffer.
+    """
     from iron.operators.repeat import Repeat
 
     # The flat-kwargs constructor is installed per class; a checker sees the

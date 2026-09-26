@@ -11,6 +11,7 @@ from aie.iron.device import NPU2
 
 from . import fusion
 from .jit_compile import (
+    cache_entry,
     design_identity,
     dispatch_stream,
     fused_design,
@@ -127,13 +128,14 @@ class FusedImage:
                 extra_flags=seq.extra_flags,
                 trace_size=seq.trace_size,
             )
-        return self.design.get_cache_entry().elf
+        return cache_entry(self.design).elf
 
 
 class XclbinChain:
     """One xclbin and instruction stream per design, each linked onto the
     previous (``--xclbin-input``); the last link carries every kernel. Holds
-    the per-operator designs the xclbin callable dispatches with."""
+    the per-operator designs the xclbin callable dispatches with.
+    """
 
     def __init__(self):
         self.combined_xclbin_path = None
@@ -167,7 +169,7 @@ class XclbinChain:
                     f"--xclbin-kernel-id={kernel_id}",
                 ],
             )
-            entry = design.get_cache_entry()
+            entry = cache_entry(design)
             stream = dispatch_stream(design) or entry.insts
             built.append((design, entry.xclbin, stream, op_label))
             prev_xclbin_path = entry.xclbin

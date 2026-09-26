@@ -21,12 +21,12 @@ sides compute in bfloat16 with different operation orders, so the logits
 agree to bf16 tolerance and the argmax exactly.
 """
 
-import pytest
 import numpy as np
+import pytest
 from ml_dtypes import bfloat16
 
-from iron.applications.llama_3_2_1b.graphs import LlamaGraph
 from iron.applications.llama_3_2_1b import harness
+from iron.applications.llama_3_2_1b.graphs import LlamaGraph
 from iron.applications.llama_3_2_1b.harness import LlamaModelState
 from iron.applications.llama_3_2_1b.npu import AIELlama
 from iron.tests.common.llama_model import Config as _Config
@@ -50,7 +50,8 @@ def _embed(config, tokens):
 
 def llama_graph(config):
     """The graph at the test's context length, four columns wide and with
-    small prompt tiles so they divide the scaled model."""
+    small prompt tiles so they divide the scaled model.
+    """
     return LlamaGraph(
         config,
         config.context_length,
@@ -64,7 +65,8 @@ def graph_prefill(config, graph, prompt):
     """Run the prompt through the graph's reference; the logits of its last token.
 
     The graph runs at the context length: the prompt fills the first rows
-    of ``x`` and the rest are zero; ``last`` picks the last prompt row."""
+    of ``x`` and the rest are zero; ``last`` picks the last prompt row.
+    """
     rows = config.context_length
     E = config.emb_dim
     n = prompt.shape[0]
@@ -78,7 +80,8 @@ def graph_prefill(config, graph, prompt):
 
 def graph_decode(config, graph, tokens, pos, *, vector_size=None):
     """Feed ``tokens`` one at a time through the graph's reference from
-    position ``pos``, its caches as they are; the logits after each."""
+    position ``pos``, its caches as they are; the logits after each.
+    """
     D = config.head_dim
     out = []
     for step, token in enumerate(tokens):
@@ -135,7 +138,8 @@ def _assert_close(got, expected):
 
 def test_decode_from_an_empty_cache_matches_the_forward_token_by_token(cpu):
     """One token at a time only: the prompt fed a token at a time from an
-    empty cache, then the generated tokens."""
+    empty cache, then the generated tokens.
+    """
     config, prompt, first, expected = cpu
     graph = llama_graph(config)
     over_prompt = graph_decode(config, graph, prompt, 0)
@@ -159,7 +163,8 @@ def test_the_cumulative_vector_size_is_not_the_context_length(cpu):
     length as a running sum of context lengths, so from the second token on
     the softmax saw stale zero columns beyond the context as real keys.
     Modelled here: it drifts from the forward where the correct context
-    length does not."""
+    length does not.
+    """
     config, prompt, first, expected = cpu
     graph = llama_graph(config)
     graph_prefill(config, graph, prompt)
@@ -189,7 +194,8 @@ class _Output:
 
 def application(config):
     """npu.py's AIELlama with its graph function stood in by its reference,
-    which runs at whatever shape it is called with."""
+    which runs at whatever shape it is called with.
+    """
     graph = llama_graph(config)
 
     def forward(*tensors, **values):
@@ -201,7 +207,8 @@ def application(config):
 def test_the_application_runs_both_phases_through_its_images(cpu):
     """npu.py's own forward pass, its graph stood in by the reference: the
     embedding, the prompt's padding and its last-row offset, the angles and
-    decode's values are the application's."""
+    decode's values are the application's.
+    """
     config, prompt, first, expected = cpu
     npu = application(config)
 
@@ -213,7 +220,10 @@ def test_the_application_runs_both_phases_through_its_images(cpu):
     # The images return numpy, and so does the forward pass: the harness
     # samples and scores in numpy.
     assert isinstance(logits, np.ndarray)
-    as_torch = lambda a: torch.from_numpy(a[0, -1].astype(np.float32))
+
+    def as_torch(a):
+        return torch.from_numpy(a[0, -1].astype(np.float32))
+
     _assert_close([as_torch(logits)], [first])
     got, token = [], int(logits[0, -1].argmax())
     for _ in range(len(expected)):
@@ -227,7 +237,8 @@ def test_the_application_runs_both_phases_through_its_images(cpu):
 def test_the_accuracy_check_scores_the_application_against_the_reference(cpu):
     """What ``python -m iron.applications.llama_3_2_1b.accuracy`` runs, with
     the graph references for the images: the numpy harness against the
-    float32 torch reference, teacher-forced."""
+    float32 torch reference, teacher-forced.
+    """
     config, prompt, _, expected = cpu
     npu = application(config)
     state = LlamaModelState(config)
@@ -249,7 +260,8 @@ def test_the_accuracy_check_scores_the_application_against_the_reference(cpu):
 
 def test_the_determinism_check_finds_the_references_deterministic(cpu):
     """What ``--check-determinism`` runs: two prompts, alternated, through
-    the application's forward pass; no run differs from the first."""
+    the application's forward pass; no run differs from the first.
+    """
     config, prompt, _, _ = cpu
     npu = application(config)
     prompts = [prompt.numpy().reshape(1, -1), prompt.numpy()[::-1].reshape(1, -1)]

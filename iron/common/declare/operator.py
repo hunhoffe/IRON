@@ -15,11 +15,9 @@ from __future__ import annotations
 import dataclasses
 from typing import Any, Callable, ClassVar, Generic, Self, TypeVar, dataclass_transform
 
-
 import aie.utils as aie_utils
 from aie.utils.npukernel import NPUKernel
 from aie.utils.verify import Tolerance
-
 
 from ..kernels import kernels_dir
 from ..testing import Testing
@@ -31,7 +29,7 @@ from .member import Resident, _Buffer, _Member, _Stream, _Value
 from .naming import label_parts
 from .overlay import Overlay
 
-O = TypeVar("O", bound=Overlay)
+OV = TypeVar("OV", bound=Overlay)
 
 
 class _OperatorMeta(type):
@@ -52,7 +50,7 @@ class _OperatorMeta(type):
 
 
 def _overlay_class_of(cls: type) -> type | None:
-    """The ``O`` in ``class X(Operator[O])``, searched up the bases."""
+    """The ``OV`` in ``class X(Operator[OV])``, searched up the bases."""
     for klass in cls.__mro__:
         for base in getattr(klass, "__orig_bases__", ()):
             args = getattr(base, "__args__", ())
@@ -64,7 +62,7 @@ def _overlay_class_of(cls: type) -> type | None:
 
 @dataclass_transform()  # no field_specifiers, for the reason given on Overlay
 @dataclasses.dataclass(eq=False, repr=True)
-class Operator(Generic[O], metaclass=_OperatorMeta):
+class Operator(Generic[OV], metaclass=_OperatorMeta):
     """A host ABI declared against an overlay. Subclass it.
 
     Declare ``dim()`` fields and buffers (``In``/``Out``/``InOut`` naming their
@@ -74,7 +72,7 @@ class Operator(Generic[O], metaclass=_OperatorMeta):
     its body finishes (:mod:`.creation`).
     """
 
-    ov: O
+    ov: OV
 
     _members: ClassVar[tuple[_Member, ...]] = ()
     _dim_fields: ClassVar[tuple[str, ...]] = ()
@@ -332,7 +330,8 @@ class Operator(Generic[O], metaclass=_OperatorMeta):
     def reference_tolerance(self) -> Tolerance | None:
         """How close the NPU output must come to :meth:`reference`: the
         tuned overlay's :meth:`~iron.common.declare.Overlay.tolerance` for
-        this device, ``None`` when it states none."""
+        this device, ``None`` when it states none.
+        """
         from ..design.target import (
             Target,
         )  # imports this package: a cycle at module scope
@@ -362,7 +361,8 @@ class Operator(Generic[O], metaclass=_OperatorMeta):
         """This instance's label: the class, every shown field of both layers,
         the device. It names the per-call value symbols a host writes through
         and the kernel instances a chained image carries; nothing on disk,
-        which the compile cache keys by content."""
+        which the compile cache keys by content.
+        """
         own = label_parts(self, skip=("ov",))
         base = type(self).__name__ + "_" + "_".join(own + self.ov.name_parts())
         dev = aie_utils.get_current_device()
@@ -419,11 +419,12 @@ class Operator(Generic[O], metaclass=_OperatorMeta):
 
     def _build(self):
         """Compile to an xclbin and an instruction stream, or, on an external
-        overlay, to the stream alone against the downloaded image."""
+        overlay, to the stream alone against the downloaded image.
+        """
         # image/ reads this package, so naming it at module scope would make
         # the two import each other.
         from ..image.artifacts import Artifacts, Design, Step
-        from ..image.jit_compile import insts_design, xclbin_design
+        from ..image.jit_compile import cache_entry, insts_design, xclbin_design
 
         image = self.ov.external
         if image is None:
@@ -432,9 +433,9 @@ class Operator(Generic[O], metaclass=_OperatorMeta):
         else:
             picture = self.ov.prebuilt()
             design = insts_design(self.generator())
-        entry = design.get_cache_entry()
-        assert entry is not None and entry.insts is not None, "no instruction stream"
+        entry = cache_entry(design)
         insts = entry.insts
+        assert insts is not None, "no instruction stream"
         if picture is None:
             picture = entry.xclbin
             assert picture is not None, "no xclbin"

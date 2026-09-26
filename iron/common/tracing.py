@@ -39,9 +39,8 @@ import os
 from pathlib import Path
 
 import numpy as np
-
-import aie.utils.trace as trace_utils
 from aie.utils.trace import TraceConfig, print_cycles_summary
+from aie.utils.trace import events as trace_events
 
 from .image.callable import SequenceCallable, SequenceFullELFCallable
 
@@ -67,7 +66,7 @@ def resolve_trace_size(trace_size=None):
 
 
 def _default_coretile_events():
-    ev = trace_utils.events
+    ev = trace_events
     return [
         ev.PortEvent(ev.CoreEvent.PORT_RUNNING_0, ev.WireBundle.DMA, 0, True),
         ev.PortEvent(ev.CoreEvent.PORT_RUNNING_1, ev.WireBundle.DMA, 1, True),

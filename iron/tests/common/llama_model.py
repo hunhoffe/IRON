@@ -70,7 +70,8 @@ class Llama1B(Config):
 
     Each array is ``np.empty``, so the 2.5 GB is reserved and never
     touched. ``n_layers`` below 16 builds a shallower model of the same
-    layer: the designs are the same at any depth."""
+    layer: the designs are the same at any depth.
+    """
 
     n_layers, n_heads, n_kv_groups, head_dim = 16, 32, 8, 64
     emb_dim, hidden_dim, vocab_size = 2048, 8192, 128256

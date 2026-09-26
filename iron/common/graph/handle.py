@@ -8,9 +8,8 @@ from __future__ import annotations
 from math import prod
 
 import numpy as np
-from ml_dtypes import bfloat16
-
 from aie.utils import bfp
+from ml_dtypes import bfloat16
 
 from ..declare import Operator, Overlay
 

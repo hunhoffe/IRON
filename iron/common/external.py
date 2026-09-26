@@ -32,17 +32,19 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from ml_dtypes import bfloat16
-
 from aie.dialects import aie, aiex
-from aie.dialects.aie import DMAChannelDir, get_target_model
+from aie.dialects.aie import (
+    DMAChannelDir,
+    get_target_model,  # pyright: ignore[reportAttributeAccessIssue]  # not in _aie.pyi
+)
 from aie.extras.context import mlir_mod_ctx
 from aie.ir import BF16Type, F32Type, IntegerType, MemRefType
 from aie.utils.compile import NPU_CACHE_HOME
+from ml_dtypes import bfloat16
 
-from .design import Transfers
 from .declare import BoundBuffer, BoundStream, Operator, Overlay
 from .declare.bound import _StreamSlot
+from .design import Transfers
 from .tiling import Access
 
 # Core-tile lock registers, 16 bytes apart from this base. A hardware fact
@@ -166,6 +168,7 @@ def write_residents(op: Operator, ov: Overlay, core_tiles, emit) -> None:
             words = values[res.name]
             if isinstance(words, (int, np.integer)):
                 words = [words]
+            assert res.address is not None, "a resident of an external overlay"
             for i, word in enumerate(words):
                 emit.write32(res.address + 4 * i, int(word), col, row)
     for col, row in core_tiles:
@@ -268,7 +271,11 @@ def build_external(dev, op: Operator):
     with mlir_mod_ctx() as ctx:
         types = [MemRefType.get((b.elements,), _elem_type(b.dtype)) for b in buffers]
 
-        @aie.device(dev.resolve())
+        npu: Any = dev.resolve()  # Device.resolve() is annotated -> None upstream
+
+        # region_op annotates its decorator as the op it builds; a checker sees the
+        # decorated function as not callable.
+        @aie.device(npu)  # pyright: ignore[reportCallIssue]
         def device_body():
             shim: dict[int, Any] = {}
             allocations: dict[tuple[str, int], str] = {}
@@ -307,6 +314,7 @@ class External:
     """
 
     def prebuilt(self) -> Path:
+        assert isinstance(self, Overlay), "External is mixed in beside an Overlay"
         return fetch(self.external)
 
     def build(self, dev, op: Operator):

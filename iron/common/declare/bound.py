@@ -14,11 +14,9 @@ from dataclasses import Field
 from typing import TYPE_CHECKING, Any, Iterator
 
 import numpy as np
-
 from aie.utils import bfp
 
 from ..tiling import view
-
 from .field import DeclarationError, DimRef, Incompatible, _Optional, _Select
 from .member import Resident, Shim, _Buffer, _Stream, _Value
 
@@ -305,7 +303,8 @@ class BoundValue:
 
     def bind(self, buffers, index: int = 0) -> None:
         """Bind to one runtime-parameter buffer, or one per worker; the preamble
-        writes ``[index]`` from the per-call value (an image without a scratchpad)."""
+        writes ``[index]`` from the per-call value (an image without a scratchpad).
+        """
         if not isinstance(buffers, (list, tuple)):
             buffers = [buffers]
         self.targets.extend((b, index) for b in buffers)

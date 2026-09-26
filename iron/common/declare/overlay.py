@@ -148,14 +148,16 @@ class Overlay:
 
     def prebuilt(self) -> Path:
         """The file the declared :class:`Xclbin` names, fetched if it is not
-        already in the cache."""
+        already in the cache.
+        """
         raise NotImplementedError(
             f"{type(self).__name__} declares an Xclbin but no prebuilt()"
         )
 
     def build(self, dev, op: "Operator"):
         """The MLIR module for ``op`` on this overlay, when ``design()`` does
-        not build the array: a runtime sequence against the prebuilt image."""
+        not build the array: a runtime sequence against the prebuilt image.
+        """
         raise NotImplementedError(
             f"{type(self).__name__} declares an Xclbin but no build()"
         )
@@ -166,7 +168,8 @@ class Overlay:
         """The runtime sequence for ``op`` on this overlay, when the overlay
         rather than the operator knows it: a external image consumes its
         transfers in the order it was built for, whatever operator drives it.
-        Takes precedence over the operator's ``design(rt)``."""
+        Takes precedence over the operator's ``design(rt)``.
+        """
         raise NotImplementedError
 
     @classmethod
@@ -176,7 +179,8 @@ class Overlay:
     def resident_values(self, op: "Operator") -> dict[str, Any]:
         """The words for this overlay's residents, from ``op``. By default the
         operator's own ``residents()``; an external overlay lays the operator's
-        values out into the block its image reads."""
+        values out into the block its image reads.
+        """
         return op.residents()
 
     def __post_init__(self) -> None:
@@ -330,5 +334,6 @@ class Overlay:
 
     def name_parts(self) -> list[str]:
         """This instance's fragments of an operator's name. Overridable: an
-        external overlay names the binary it was built as, not its fields."""
+        external overlay names the binary it was built as, not its fields.
+        """
         return label_parts(self)
