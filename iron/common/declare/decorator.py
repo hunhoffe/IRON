@@ -151,18 +151,15 @@ def operator(cls: type) -> type:
                 f"annotation; annotating one turns it into a constructor argument"
             )
 
-    # The Field objects the class body bound to bare names, before dataclass
-    # processing renames/replaces them.
-    pre_fields = {id(v): v for v in vars(cls).values() if isinstance(v, Field)}
-
     # Overlays get the generated repr; Operators define their own on the base.
     cls = dataclasses.dataclass(cls, eq=False, repr=issubclass(cls, Overlay))  # type: ignore[call-overload]
 
+    # dataclass keeps the Field objects the class body bound to bare names
+    # and sets their .name, so a shape that captured one is resolved by
+    # identity here. (A Field without an annotation never gets this far:
+    # dataclass rejects it.)
     fields = {f.name: f for f in dataclasses.fields(cls)}
-    fields_by_obj = {i: f for i, f in pre_fields.items()}
-    # dataclass reuses the same Field object and sets .name, so identity holds.
-    for f in fields.values():
-        fields_by_obj.setdefault(id(f), f)
+    fields_by_obj = {id(f): f for f in fields.values()}
 
     # Re-attach every field as a DimRef on the class.
     for f in fields.values():
