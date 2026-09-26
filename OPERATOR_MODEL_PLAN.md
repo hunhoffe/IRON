@@ -120,7 +120,6 @@ share a device is **unverified** (O5) and is not counted until it is.
 ## 4. Declaring an overlay
 
 ```python
-@operator
 class GEMVOverlay(Overlay):
     """Array configuration for C = A @ B. Row-blocks of A per column, B broadcast."""
 
@@ -170,7 +169,7 @@ def _core(of_a, of_b, of_c, matvec, K, tile_out):
 **`dim()` and `tunable()`** return dataclass field specifiers. Pyright sees
 `K: int` as a required constructor argument and `cols: int` as optional. In the
 class body the name `K` is bound to the specifier, so the stream declarations
-below it use the bare name. After the class is built, `@operator` re-attaches
+below it use the bare name. As the class is built, its base re-attaches
 each field as a class attribute, so `GEMVOverlay.K` names the dimension from
 outside and `ov.K` is the integer on an instance. A `tunable` is what the
 previous draft called `Tuning[T]`: a field `tuning()` may set, and pyright
@@ -209,7 +208,6 @@ hashing. Two overlays with equal keys are one build.
 ## 5. Declaring an operator
 
 ```python
-@operator
 class GEMV(Operator[GEMVOverlay]):
     """C = A @ B, optionally batched."""
 
@@ -294,7 +292,6 @@ upstream's marker.
 Two markers, author-named, declared in the class body beside the buffers:
 
 ```python
-@operator
 class StridedCopy(Operator[CopyOverlay]):
     n: int = dim()
     src = In(n, to=CopyOverlay.s)
@@ -569,7 +566,6 @@ tunable, and a buffer's dtype can reference a field the same way a dimension
 does. Its config-versus-shape split is what §3 was modelled on:
 
 ```python
-@operator
 class FLMGEMMOverlay(Overlay):
     K: int = dim()
     N: int = dim()
@@ -580,7 +576,6 @@ class FLMGEMMOverlay(Overlay):
     c = StreamOut(64, 64)
 
 
-@operator
 class FLMGEMM(Operator[FLMGEMMOverlay]):
     M: int = dim()
     A = In(M, FLMGEMMOverlay.K, to=FLMGEMMOverlay.a)
@@ -594,7 +589,6 @@ today are hand-matched in comments, and its runtime parameters are resident
 symbols:
 
 ```python
-@operator
 class MMPrebuiltOverlay(Overlay, source=Xclbin.download(URL)):
     a = StreamIn(128, 128, per_row=True,    via=[Shim(col=2 * r, channel=0) for r in range(4)])
     b = StreamIn(128, 128, per_column=True, via=[Shim(col=c, channel=1) for c in range(8)])
@@ -813,7 +807,7 @@ module (§8) and S4 become load-bearing.
 | step | what | needs |
 |---|---|---|
 | 0 | spikes S1–S3 | device |
-| 1 | `Overlay`, `Operator`, `dim`/`tunable`, streams, `In`/`Out`/`InOut`, `Scratchpad`/`DispatchTime`, `@operator`, the tiler, library-owned `Runtime`/`Program`; GEMV alone, byte-identical object to today's | — |
+| 1 | `Overlay`, `Operator`, `dim`/`tunable`, streams, `In`/`Out`/`InOut`, `Scratchpad`/`DispatchTime`, the tiler, library-owned `Runtime`/`Program`; GEMV alone, byte-identical object to today's | — |
 | 2 | the derivable operators: the two elementwise bases (eight operators), axpy, leaky_relu, dequant, rms_norm, rope, softmax; each finite core loop rewritten to read its count from a resident (§3) | 1 |
 | 3 | the overrides: strided_copy, transpose, mem_copy, repeat, gemm, mha, flm/gemm, mm_prebuilt (`from_xclbin`), swiglu_prefill_stream (`from_spec`); the two swiglu composites as graph functions | 1, 6 |
 | 4 | delete `arg_spec`, `bind()`, the snapshot test, `L3_*_ty`, `*_parameter=` | 2, 3 |

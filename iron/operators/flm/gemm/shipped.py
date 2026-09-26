@@ -41,7 +41,6 @@ from iron.common.declare import (
     StreamOut,
     Untunable,
     Xclbin,
-    operator,
     tunable,
 )
 from iron.common.tiling import Access
@@ -78,7 +77,6 @@ MIN_M = M_TILE * ROWS
 MIN_K = K_TILE
 
 
-@operator
 class Shipped(External, FLMGEMMOverlay):
     """The shipped 4x8 NPU2 ``mm`` binary: its pins and its parameter block."""
 

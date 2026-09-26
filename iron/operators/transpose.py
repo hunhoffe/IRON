@@ -21,7 +21,6 @@ from iron.common.declare import (
     StreamOut,
     Untunable,
     dim,
-    operator,
     optional,
     tunable,
 )
@@ -29,7 +28,6 @@ from iron.common.testing import Case, Testing, device_columns
 from iron.common.tiling import Access
 
 
-@operator
 class TransposeOverlay(Overlay):
     """The array for a shuffle transpose: one core per (column, channel).
 
@@ -203,7 +201,6 @@ def _cases():
     return out
 
 
-@operator
 class Transpose(Operator[TransposeOverlay]):
     """AIE-accelerated transpose operator.
 

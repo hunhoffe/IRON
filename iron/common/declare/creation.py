@@ -1,0 +1,174 @@
+# SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""What a declared class goes through once its body has run.
+
+Both layers' bases call :func:`declare` from ``__init_subclass__``, so every
+subclass is processed and none can forget to be. It applies ``dataclass``,
+resolves the field objects the class body captured in its shapes to names,
+re-attaches every field as a :class:`DimRef`, checks the shape rule, and
+records the members in declaration order. What it cannot prove then -- an
+operator's extents against a tuned overlay -- is left to
+:func:`~iron.common.declare.infer`.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+from dataclasses import Field
+
+import numpy as np
+
+from .field import DeclarationError, DimRef, _Optional, _Select, _tier_of
+from .member import _Buffer, _Member, _Stream
+
+
+def members_of(cls: type) -> list[_Member]:
+    """Members declared in this class body and its declared bases, in order.
+
+    The most derived class's body order wins for the members it declares;
+    inherited members it does not redeclare follow, in their own order. So a
+    subclass that inserts a buffer between two inherited ones (a weight
+    between an input and an output) gets the order it wrote. A member the
+    subclass sets to ``None`` is hidden.
+    """
+    ordered: dict[str, _Member] = {}
+    seen: set[str] = set()
+    for klass in cls.__mro__:
+        for name, value in vars(klass).items():
+            if name in seen:
+                continue
+            seen.add(name)
+            # A subclass hides an inherited member by assigning it None: a
+            # external overlay of a built one keeps its fields and streams but
+            # not its residents, whose block the image lays out differently.
+            if isinstance(value, _Member):
+                ordered[name] = value
+    return list(ordered.values())
+
+
+def _rewrite_refs(specs: tuple, cls: type, fields_by_obj: dict[int, Field]) -> tuple:
+    """Replace same-class Field objects in a member's dims with DimRefs."""
+    out = []
+    for spec in specs:
+        if isinstance(spec, _Optional):
+            out.append(_Optional(_rewrite_refs((spec.ref,), cls, fields_by_obj)[0]))
+        elif isinstance(spec, _Select):
+            out.append(
+                _Select(
+                    _rewrite_refs((spec.flag,), cls, fields_by_obj)[0],
+                    _rewrite_refs(spec.when_true, cls, fields_by_obj),
+                    _rewrite_refs(spec.when_false, cls, fields_by_obj),
+                )
+            )
+        elif isinstance(spec, Field):
+            f = fields_by_obj.get(id(spec))
+            if f is None:
+                raise DeclarationError(
+                    f"{cls.__name__}: a shape references a field object that is "
+                    f"not one of this class's fields"
+                )
+            out.append(getattr(cls, f.name))  # the DimRef re-attached to the class
+        else:
+            out.append(spec)
+    return tuple(out)
+
+
+def _check_dim_ref(
+    cls: type, member: _Member, spec, what: str, *, allow_tunable: bool
+) -> None:
+    """The shape rule.
+
+    A host buffer's dimension is a ``dim()`` field or an integer: never a
+    tunable (inference would cycle through tuning) and never an expression.
+    A stream's tile dimension may also be a tunable, since choosing the tile
+    is what tuning is for; inference never reads a stream.
+    """
+    if isinstance(spec, _Optional):
+        _check_dim_ref(cls, member, spec.ref, what, allow_tunable=allow_tunable)
+        return
+    if isinstance(spec, _Select):
+        for d in spec.when_true + spec.when_false:
+            _check_dim_ref(cls, member, d, what, allow_tunable=allow_tunable)
+        return
+    if isinstance(spec, bool):
+        raise DeclarationError(
+            f"{cls.__name__}.{member.name}: {spec!r} is not a {what}"
+        )
+    if isinstance(spec, (int, np.integer)):
+        return
+    if isinstance(spec, DimRef):
+        allowed = ("dim", "tunable") if allow_tunable else ("dim",)
+        if spec.tier not in allowed:
+            why = (
+                "a tunable; a host shape may not depend on tuning"
+                if spec.tier == "tunable"
+                else "not declared with dim()"
+            )
+            raise DeclarationError(
+                f"{cls.__name__}.{member.name}: {what} {spec!r} is {why}. A "
+                f"shape dimension is a dim() field or an integer literal"
+            )
+        return
+    raise DeclarationError(
+        f"{cls.__name__}.{member.name}: {what} {spec!r} is not a dim() field or an "
+        f"integer. Expressions are not allowed in shapes; declare the result as a field"
+    )
+
+
+def declare(cls: type, *, repr: bool) -> None:
+    """Process a freshly created :class:`Overlay` or :class:`Operator` subclass.
+
+    ``repr`` is whether ``dataclass`` generates one (overlays) or the base
+    defines its own (operators). Equality is identity on both; the base
+    supplies ``__eq__`` where it means more.
+    """
+    # Members must be unannotated, or dataclass would make them constructor args.
+    annotations = cls.__dict__.get("__annotations__", {})
+    for name, value in list(vars(cls).items()):
+        if isinstance(value, _Member) and name in annotations:
+            raise DeclarationError(
+                f"{cls.__name__}.{name}: members are declared without an "
+                f"annotation; annotating one turns it into a constructor argument"
+            )
+
+    dataclasses.dataclass(cls, eq=False, repr=repr)  # in place; the same object
+
+    # dataclass keeps the Field objects the class body bound to bare names
+    # and sets their .name, so a shape that captured one is resolved by
+    # identity here. (A Field without an annotation never gets this far:
+    # dataclass rejects it.)
+    fields = {f.name: f for f in dataclasses.fields(cls)}
+    fields_by_obj = {id(f): f for f in fields.values()}
+
+    # Re-attach every field as a DimRef on the class.
+    for f in fields.values():
+        setattr(cls, f.name, DimRef(cls, f.name, _tier_of(f), f.default))
+
+    members = members_of(cls)
+    for m in members:
+        if m.owner is not cls:
+            continue  # inherited; already processed on its own class
+        if isinstance(m, (_Buffer, _Stream)):
+            m.dims = _rewrite_refs(m.dims, cls, fields_by_obj)
+            if isinstance(m.dtype, Field):
+                m.dtype = getattr(cls, fields_by_obj[id(m.dtype)].name)
+            for d in m.dims:
+                _check_dim_ref(
+                    cls, m, d, "dimension", allow_tunable=isinstance(m, _Stream)
+                )
+        if isinstance(m, _Stream) and m.per is not None:
+            per = m.per if isinstance(m.per, tuple) else (m.per,)
+            per = _rewrite_refs(per, cls, fields_by_obj)
+            for ref in per:
+                if not isinstance(ref, DimRef) or ref.tier is None:
+                    raise DeclarationError(
+                        f"{cls.__name__}.{m.name}: per={ref!r} must be a dim() or tunable() field"
+                    )
+            m.per = per
+
+    cls._members = tuple(members)  # type: ignore[attr-defined]
+    cls._dim_fields = tuple(f.name for f in fields.values() if _tier_of(f) == "dim")  # type: ignore[attr-defined]
+    cls._tunable_fields = tuple(
+        f.name for f in fields.values() if _tier_of(f) == "tunable"
+    )  # type: ignore[attr-defined]

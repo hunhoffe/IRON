@@ -16,7 +16,6 @@ from iron.common.declare import (
     Out,
     StreamIn,
     dim,
-    operator,
     tunable,
 )
 import aie.utils as aie_utils
@@ -66,7 +65,6 @@ def _cases(weighted):
     return cases
 
 
-@operator
 class RMSNormOverlay(ChanneledUnaryOverlay):
     """The array for row-wise RMS normalization: the shared elementwise design.
 
@@ -90,7 +88,6 @@ class RMSNormOverlay(ChanneledUnaryOverlay):
         kernel(elem_in, elem_out, self.line_size, self.epsilon)
 
 
-@operator
 class WeightedRMSNormOverlay(RMSNormOverlay):
     """RMS normalization followed by an elementwise multiply with a weight row.
 
@@ -202,7 +199,6 @@ class WeightedRMSNormOverlay(RMSNormOverlay):
         return workers
 
 
-@operator
 class RMSNorm(Operator[RMSNormOverlay]):
     """AIE-accelerated RMS Normalization layer (unweighted).
 
@@ -256,7 +252,6 @@ class RMSNorm(Operator[RMSNormOverlay]):
         return reference(x, w=w, weighted=self.weighted, eps=self.epsilon)
 
 
-@operator
 class WeightedRMSNorm(RMSNorm, Operator[WeightedRMSNormOverlay]):
     """AIE-accelerated RMS Normalization layer with a learned weight row."""
 

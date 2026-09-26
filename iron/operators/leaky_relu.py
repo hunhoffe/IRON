@@ -5,11 +5,10 @@ from aie.iron.kernels import activation
 
 import numpy as np
 
-from iron.common import ChanneledUnaryOperator, ChanneledUnaryOverlay, operator
+from iron.common import ChanneledUnaryOperator, ChanneledUnaryOverlay
 from iron.common.testing import Case, Testing, channeled_unary_cases
 
 
-@operator
 class LeakyReLUOverlay(ChanneledUnaryOverlay):
     """The array for Leaky ReLU: the elementwise design with ``alpha`` as a kernel argument."""
 
@@ -24,7 +23,6 @@ class LeakyReLUOverlay(ChanneledUnaryOverlay):
         kernel(elem_in, elem_out, self.line_size, self.alpha)
 
 
-@operator
 class LeakyReLU(ChanneledUnaryOperator[LeakyReLUOverlay]):
     """AIE-accelerated Leaky ReLU operator"""
 

@@ -16,14 +16,15 @@ from __future__ import annotations
 
 import dataclasses
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, dataclass_transform
 
 from aie.dialects.aie import WireBundle, get_target_model
 from aie.utils.verify import Tolerance
 
 from .bound import BoundResident, BoundStream, BoundValue
-from .field import Untunable
-from .member import Resident, Xclbin, _Member, _Stream, _Value
+from .creation import declare
+from .field import DeclarationError, Untunable, dim, tunable
+from .member import DispatchTime, Resident, Xclbin, _Buffer, _Member, _Stream, _Value
 from .naming import label_parts
 
 if TYPE_CHECKING:
@@ -46,19 +47,56 @@ def get_shim_dma_limit(dev) -> int:
     )
 
 
+@dataclass_transform(field_specifiers=(dim, tunable))
 class Overlay:
-    """What configures the array. Subclass, decorate with ``@operator``.
+    """What configures the array. Subclass it.
 
     Declare ``dim()`` and ``tunable()`` fields, streams, and residents in the
     class body; implement :meth:`tuning` to fill tunables from the device and
     :meth:`design` to build the array and bind each stream to a fifo's shim
-    end. See the module docstring for the shape.
+    end. See the module docstring for the shape. Every subclass is a
+    dataclass and is checked as its body finishes (:mod:`.creation`).
     """
 
     _members: ClassVar[tuple[_Member, ...]] = ()
     _dim_fields: ClassVar[tuple[str, ...]] = ()
     _tunable_fields: ClassVar[tuple[str, ...]] = ()
     _external: ClassVar[Xclbin | None] = None
+
+    def __init_subclass__(cls, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)
+        declare(cls, repr=True)
+        images = [v for v in vars(cls).values() if isinstance(v, Xclbin)]
+        if len(images) > 1:
+            raise DeclarationError(f"{cls.__name__} declares more than one Xclbin")
+        if images:
+            cls._external = images[0]
+        for m in cls._members:
+            if isinstance(m, (_Buffer, DispatchTime)):
+                raise DeclarationError(
+                    f"{cls.__name__}.{m.name}: an Overlay declares streams, residents "
+                    f"and core-read Scratchpad values; buffers and DispatchTime values "
+                    f"belong on the Operator"
+                )
+            if images and isinstance(m, _Stream) and m.via is None:
+                raise DeclarationError(
+                    f"{cls.__name__}.{m.name}: a stream of an external overlay must be "
+                    f"pinned with via=; nothing else says which shim it uses"
+                )
+            if images and isinstance(m, Resident) and m.address is None:
+                raise DeclarationError(
+                    f"{cls.__name__}.{m.name}: a resident of an external overlay needs "
+                    f"an address; the sequence writes it there"
+                )
+        if not images:
+            return
+        for hook in ("prebuilt", "build"):
+            if getattr(cls, hook) is getattr(Overlay, hook):
+                raise DeclarationError(
+                    f"{cls.__name__} declares an Xclbin, so nothing builds its array: "
+                    f"it must supply {hook}() (iron.common.external.External "
+                    f"does, for a downloaded image)"
+                )
 
     @property
     def external(self) -> Xclbin | None:

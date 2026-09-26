@@ -171,7 +171,7 @@ reuse lint
    - Compiled to `.o` files and linked into operator `.xclbin`
 
 3. **Common Infrastructure** (`iron/common/`)
-   - `declare/`: the declaration layer (`Overlay`, `Operator`, `@operator`,
+   - `declare/`: the declaration layer (`Overlay`, `Operator`,
      `dim`/`tunable`, streams, buffers, `Scratchpad`/`DispatchTime`, `Resident`,
      `Xclbin`, inference)
    - `design/`, `tiling.py`, `external.py`: the library-owned build: the
@@ -294,7 +294,7 @@ Data movement pattern: L3 → Shim DMA → L2 → L1 (tile local) → Compute
 1. Create `iron/operators/<operator_name>.py` (a directory with `op.py` only
    if it needs more than one module: a hand-written design, its own
    reference, a README, a device test of its own)
-2. Declare the overlay (`@operator class XOverlay(Overlay)`):
+2. Declare the overlay (`class XOverlay(Overlay)`):
    - `tunable()` fields with device defaults in `tuning(dev)`; `dim()` fields
      only for what a host shape names
    - `StreamIn`/`StreamOut` members in tile units (`per=` a column count)
@@ -303,7 +303,7 @@ Data movement pattern: L3 → Shim DMA → L2 → L1 (tile local) → Compute
    - `design(target)`: build ObjectFIFOs and Workers (`target.kernel(...)`,
      `target.rtp(...)`, `target.barrier()`), `range_()` for loops, and
      `self.x[i].bind(fifo.prod())` / `self.count.bind(rtps)` for every member
-3. Declare the operator (`@operator class X(Operator[XOverlay])`):
+3. Declare the operator (`class X(Operator[XOverlay])`):
    - `dim()` fields; `In`/`Out` buffers with `to=`/`from_=` naming the stream
    - `compatible()` for divisibility against the tuned overlay, `residents()`
      for the counts

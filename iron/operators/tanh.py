@@ -9,11 +9,10 @@ import numpy as np
 
 from aie.utils.verify import Tolerance
 
-from iron.common import ChanneledUnaryOperator, ChanneledUnaryOverlay, operator
+from iron.common import ChanneledUnaryOperator, ChanneledUnaryOverlay
 from iron.common.testing import Testing, channeled_unary_cases
 
 
-@operator
 class TanhOverlay(ChanneledUnaryOverlay):
     """The array for Tanh: the shared elementwise design over its kernel."""
 
@@ -24,7 +23,6 @@ class TanhOverlay(ChanneledUnaryOverlay):
         return activation.tanh(self.line_size)
 
 
-@operator
 class Tanh(ChanneledUnaryOperator[TanhOverlay]):
     """AIE-accelerated Tanh activation function"""
 

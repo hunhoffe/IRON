@@ -38,7 +38,6 @@ from iron.common.declare import (
     StreamOut,
     Untunable,
     dim,
-    operator,
     select,
     tunable,
 )
@@ -102,7 +101,6 @@ def _clamp_bits(clamp) -> tuple[int, int]:
 # --------------------------------------------------------------------------
 
 
-@operator
 class FLMGEMMOverlay(Overlay):
     """The 4-row grid, as wide as the device, for one tiling configuration.
 
@@ -585,7 +583,6 @@ class FLMGEMMOverlay(Overlay):
 # --------------------------------------------------------------------------
 
 
-@operator
 class GEMM(Operator[FLMGEMMOverlay]):
     """AIE-accelerated bf16 GEMM on a 4-row grid, with a fused epilogue.
 

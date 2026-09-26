@@ -20,13 +20,11 @@ from iron.common.declare import (
     StreamIn,
     StreamOut,
     dim,
-    operator,
     tunable,
 )
 from iron.common.testing import Case, Testing, device_columns
 
 
-@operator
 class SoftmaxOverlay(Overlay):
     """The array for row-wise softmax: one core per (column, channel), one row per tile.
 
@@ -129,7 +127,6 @@ class SoftmaxOverlay(Overlay):
         return workers
 
 
-@operator
 class DynamicSoftmaxOverlay(SoftmaxOverlay):
     """Softmax whose valid row length is a per-call value (llama's decode mask)."""
 
@@ -161,7 +158,6 @@ def _cases():
     return out
 
 
-@operator
 class Softmax(Operator[SoftmaxOverlay]):
     """AIE-accelerated Softmax operation"""
 
@@ -229,7 +225,6 @@ class Softmax(Operator[SoftmaxOverlay]):
         return reference(x.reshape(self.rows, self.cols), int(vector_size))
 
 
-@operator
 class DynamicSoftmax(Softmax, Operator[DynamicSoftmaxOverlay]):
     """Softmax whose valid row length is a per-call value: ``Softmax(x,
     vector_size=n)`` in a graph with ``n`` a per-call handle."""

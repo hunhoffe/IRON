@@ -3,11 +3,10 @@
 
 from aie.iron.kernels import eltwise
 
-from iron.common import BinaryElementwiseOperator, BinaryElementwiseOverlay, operator
+from iron.common import BinaryElementwiseOperator, BinaryElementwiseOverlay
 from iron.common.testing import Testing, binary_elementwise_cases
 
 
-@operator
 class ElementwiseAddOverlay(BinaryElementwiseOverlay):
     """The array for ElementwiseAdd: the shared elementwise design over its kernel."""
 
@@ -15,7 +14,6 @@ class ElementwiseAddOverlay(BinaryElementwiseOverlay):
         return eltwise.add_sized(self.line_size)
 
 
-@operator
 class ElementwiseAdd(BinaryElementwiseOperator[ElementwiseAddOverlay]):
     """AIE-accelerated element-wise addition"""
 

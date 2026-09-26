@@ -10,11 +10,10 @@ import numpy as np
 
 from aie.utils.verify import Tolerance
 
-from iron.common import ChanneledUnaryOperator, ChanneledUnaryOverlay, operator
+from iron.common import ChanneledUnaryOperator, ChanneledUnaryOverlay
 from iron.common.testing import Testing, channeled_unary_cases
 
 
-@operator
 class LayerNormOverlay(ChanneledUnaryOverlay):
     """The array for LayerNorm: the shared elementwise design over its kernel."""
 
@@ -24,7 +23,6 @@ class LayerNormOverlay(ChanneledUnaryOverlay):
         return norm.layer_norm(self.line_size)
 
 
-@operator
 class LayerNorm(ChanneledUnaryOperator[LayerNormOverlay]):
     """AIE-accelerated Layer Normalization operator"""
 

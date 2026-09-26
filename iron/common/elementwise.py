@@ -26,12 +26,10 @@ library, which is what lets several operators fuse into one image.
 A concrete operator is two small subclasses, one per layer, and names the
 kernel each core calls::
 
-    @operator
     class ReLUOverlay(ChanneledUnaryOverlay):
         def kernel(self, target):
             return kernels.relu_sized(self.line_size)
 
-    @operator
     class ReLU(ChanneledUnaryOperator[ReLUOverlay]):
         def reference(self, x): ...
 
@@ -66,7 +64,6 @@ from .declare import (
     StreamOut,
     Untunable,
     dim,
-    operator,
     tunable,
 )
 from .declare.member import _Stream
@@ -83,7 +80,6 @@ DEFAULT_TILE = 256
 _I32 = np.ndarray[(1,), np.dtype[np.int32]]  # type: ignore[misc]
 
 
-@operator
 class ElementwiseOverlay(Overlay):
     """The array for an elementwise kernel over lines of ``line_size`` elements.
 
@@ -209,7 +205,6 @@ class ElementwiseOverlay(Overlay):
         return workers
 
 
-@operator
 class ElementwiseOperator(Operator[O]):
     """What every elementwise operator's buffers have in common."""
 
@@ -241,7 +236,6 @@ class ElementwiseOperator(Operator[O]):
 # --------------------------------------------------------------------------
 
 
-@operator
 class ChanneledUnaryOverlay(ElementwiseOverlay):
     """One line in, one line out, per (column, channel)."""
 
@@ -255,7 +249,6 @@ class ChanneledUnaryOverlay(ElementwiseOverlay):
     )
 
 
-@operator
 class ChanneledUnaryOperator(ElementwiseOperator[O]):
     """A flat buffer in, a flat buffer of the same size out."""
 
@@ -263,7 +256,6 @@ class ChanneledUnaryOperator(ElementwiseOperator[O]):
     y = Out(ElementwiseOperator.size, from_=ChanneledUnaryOverlay.y)
 
 
-@operator
 class BinaryElementwiseOverlay(ElementwiseOverlay):
     """Two lines in, one line out. Each core's two input channels halve the
     columns the shim budget allows, so ``num_channels`` stays at one."""
@@ -282,7 +274,6 @@ class BinaryElementwiseOverlay(ElementwiseOverlay):
     )
 
 
-@operator
 class BinaryElementwiseOperator(ElementwiseOperator[O]):
     """Two flat buffers in, one of the same size out."""
 

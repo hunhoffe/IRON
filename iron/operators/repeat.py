@@ -17,7 +17,6 @@ from iron.common.declare import (
     StreamIn,
     StreamOut,
     dim,
-    operator,
     tunable,
 )
 from iron.common.tiling import Access, granule_elements
@@ -25,7 +24,6 @@ from iron.common.testing import Case, Testing
 from iron.common.tiling import DMA_BD_MAX_WRAP
 
 
-@operator
 class RepeatOverlay(Overlay):
     """A memtile pass-through of ``transfer_size`` elements; no cores.
 
@@ -54,7 +52,6 @@ class RepeatOverlay(Overlay):
         return []
 
 
-@operator
 class Repeat(Operator[RepeatOverlay]):
     """AIE-accelerated repeat-interleave operator"""
 

@@ -18,13 +18,11 @@ from iron.common.declare import (
     StreamIn,
     StreamOut,
     dim,
-    operator,
     tunable,
 )
 from iron.common.testing import Case, Testing, device_columns
 
 
-@operator
 class RoPEOverlay(Overlay):
     """The array for RoPE: one core per column, each rotating rows of ``cols``.
 
@@ -142,7 +140,6 @@ def _angles(op):
     return dict(angles=angle_table(op.angle_rows, op.cols, op.method_type))
 
 
-@operator
 class RoPE(Operator[RoPEOverlay]):
     """AIE-accelerated RoPE (Rotary Position Embedding) operator"""
 

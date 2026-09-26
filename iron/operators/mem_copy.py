@@ -35,7 +35,6 @@ from iron.common.declare import (
     StreamOut,
     Untunable,
     dim,
-    operator,
     tunable,
 )
 from iron.common.testing import Case, Testing, device_columns
@@ -53,7 +52,6 @@ TASK_GROUP_SIZE = 4
 # --------------------------------------------------------------------------
 
 
-@operator
 class MemCopyOverlay(Overlay):
     """``num_cores`` copy paths, at most ``num_channels`` per column."""
 
@@ -248,7 +246,6 @@ def _cases():
     return out
 
 
-@operator
 class MemCopy(Operator[MemCopyOverlay]):
     """AIE-accelerated memory copy operator."""
 

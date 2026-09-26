@@ -5,11 +5,10 @@ from aie.iron.kernels import datamovement
 
 import numpy as np
 
-from iron.common import BinaryElementwiseOperator, BinaryElementwiseOverlay, operator
+from iron.common import BinaryElementwiseOperator, BinaryElementwiseOverlay
 from iron.common.testing import Case, Testing, device_columns
 
 
-@operator
 class AXPYOverlay(BinaryElementwiseOverlay):
     """The array for aX + Y: the elementwise design with the scalar as a kernel argument."""
 
@@ -47,7 +46,6 @@ def _cases():
     return out
 
 
-@operator
 class AXPY(BinaryElementwiseOperator[AXPYOverlay]):
     """AIE-accelerated aX + Y operator"""
 

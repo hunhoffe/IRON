@@ -9,11 +9,10 @@ import numpy as np
 
 from aie.utils.verify import Tolerance
 
-from iron.common import ChanneledUnaryOperator, ChanneledUnaryOverlay, operator
+from iron.common import ChanneledUnaryOperator, ChanneledUnaryOverlay
 from iron.common.testing import Testing, channeled_unary_cases
 
 
-@operator
 class SigmoidOverlay(ChanneledUnaryOverlay):
     """The array for Sigmoid: the shared elementwise design over its kernel."""
 
@@ -24,7 +23,6 @@ class SigmoidOverlay(ChanneledUnaryOverlay):
         return activation.sigmoid(self.line_size)
 
 
-@operator
 class Sigmoid(ChanneledUnaryOperator[SigmoidOverlay]):
     """AIE-accelerated Sigmoid activation function"""
 

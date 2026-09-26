@@ -25,7 +25,6 @@ from iron.common.declare import (
     StreamIn,
     StreamOut,
     dim,
-    operator,
     optional,
     tunable,
 )
@@ -64,7 +63,6 @@ class FakeDev:
         return 4
 
 
-@operator
 class UnaryOverlay(Overlay):
     tile: int = tunable(1024)
     cols: int = tunable(None)
@@ -79,14 +77,12 @@ class UnaryOverlay(Overlay):
         return dataclasses.replace(self, cols=self.cols or dev.columns())
 
 
-@operator
 class Unary(Operator[UnaryOverlay]):
     size: int = dim()
     A = In(size, to=UnaryOverlay.x)
     B = Out(size, from_=UnaryOverlay.y)
 
 
-@operator
 class MVOverlay(Overlay):
     K: int = dim()
     cols: int = tunable(2)
@@ -96,7 +92,6 @@ class MVOverlay(Overlay):
     c = StreamOut(tile_out, per=cols)
 
 
-@operator
 class MV(Operator[MVOverlay]):
     M: int = dim()
     num_batches: int = dim(1)
@@ -154,7 +149,6 @@ def test_derived_sequence_issues_fills_then_waited_drains():
 
 
 def test_derived_sequence_names_a_buffer_without_a_stream():
-    @operator
     class NoStream(Operator[MVOverlay]):
         M: int = dim()
         A = In(M, MVOverlay.K)
@@ -169,7 +163,6 @@ def test_derived_sequence_names_a_buffer_without_a_stream():
 
 
 def test_override_slices_and_issues_through_the_same_sequence():
-    @operator
     class Custom(Operator[MVOverlay]):
         M: int = dim()
         A = In(M, MVOverlay.K, to=MVOverlay.a)
@@ -200,13 +193,11 @@ def test_override_slices_and_issues_through_the_same_sequence():
 
 
 def test_preamble_writes_residents_and_rejects_missing_ones():
-    @operator
     class Counted(Overlay):
         tile: int = tunable(64)
         count = Resident(np.int32)
         s = StreamIn(tile)
 
-    @operator
     class Op(Operator[Counted]):
         n: int = dim()
         A = In(n, to=Counted.s)
@@ -229,7 +220,6 @@ def test_preamble_writes_residents_and_rejects_missing_ones():
     Sequence(op, ov, {}).preamble(FakeTarget())
     assert rtps == [{0: 10}, {0: 10}]
 
-    @operator
     class Forgetful(Operator[Counted]):
         n: int = dim()
         A = In(n, to=Counted.s)
@@ -584,7 +574,6 @@ def test_external_overlay_declares_its_pins_and_parameter_block():
 
     with pytest.raises(DeclarationError, match="pinned with via="):
 
-        @operator
         class Unpinned(Overlay):
             image = Xclbin(url="u", sha256="s", filename="f")
             s = StreamIn(64)
@@ -594,7 +583,6 @@ def test_external_overlay_declares_its_pins_and_parameter_block():
     # answers both; an overlay without it is rejected at declaration.
     with pytest.raises(DeclarationError, match="must supply prebuilt"):
 
-        @operator
         class Unhooked(Overlay):
             image = Xclbin(url="u", sha256="s", filename="f")
 

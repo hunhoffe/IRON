@@ -16,7 +16,6 @@ Declarations are class-level. A dimension is a dataclass field declared with
 :func:`dim`, a tuning knob is one declared with :func:`tunable`, and a shape is
 written in the class body using the field's bare name::
 
-    @operator
     class GEMVOverlay(Overlay):
         K: int = dim()
         num_aie_columns: int = tunable(8)
@@ -26,7 +25,6 @@ written in the class body using the field's bare name::
         b = StreamIn(K, broadcast=True)
         c = StreamOut(tile_size_output, per=num_aie_columns)
 
-    @operator
     class GEMV(Operator[GEMVOverlay]):
         M: int = dim()
         num_batches: int = dim(1)
@@ -38,7 +36,7 @@ written in the class body using the field's bare name::
 The shape rule: a host buffer's dimension is a ``dim()`` field or an integer
 literal, nothing else. Not a tunable, not a per-call value, not an
 expression. That is what makes inference a lookup (:mod:`.infer`)
-and what lets the checks in :mod:`.decorator` run once, at class creation.
+and what lets the checks in :mod:`.creation` run once, as a class body finishes.
 A stream's tile dimension may also be a tunable: choosing the tile is what
 tuning is for, and inference never reads a stream.
 
@@ -51,8 +49,8 @@ The package reads bottom-up: :mod:`.field` is what a class body writes,
 :mod:`.member` what it declares alongside its fields, :mod:`.bound` what an
 instance's attribute gives back, :mod:`.infer` how operand shapes reach a
 declaration's dimension fields, :mod:`.overlay` and :mod:`.operator` the two
-layers themselves, and :mod:`.decorator` the checks both go through at class
-creation. :mod:`.naming` is how either one spells its own label.
+layers themselves, and :mod:`.creation` the checks both go through as their
+bodies finish. :mod:`.naming` is how either one spells its own label.
 """
 
 from .bound import (
@@ -62,7 +60,7 @@ from .bound import (
     BoundValue,
     BufferView,
 )
-from .decorator import from_spec, operator
+from .spec import from_spec
 from .field import (
     DeclarationError,
     DimRef,
@@ -119,7 +117,6 @@ __all__ = [
     "get_shim_dma_limit",
     "infer",
     "infer_kwargs",
-    "operator",
     "optional",
     "select",
     "tunable",

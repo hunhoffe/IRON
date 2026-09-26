@@ -17,14 +17,12 @@ from iron.common.declare import (
     StreamIn,
     StreamOut,
     dim,
-    operator,
     tunable,
 )
 from iron.common.testing import Case, Testing
 from iron.common.tiling import legalize
 
 
-@operator
 class StridedCopyOverlay(Overlay):
     """A memtile pass-through, one channel per fifo; no cores.
 
@@ -98,7 +96,6 @@ def _pad4(sizes, strides):
     return [1] * (4 - len(sizes)) + sizes, [0] * (4 - len(strides)) + strides
 
 
-@operator
 class StridedCopy(Operator[StridedCopyOverlay]):
     """AIE-accelerated strided copy operator.
 

@@ -21,7 +21,6 @@ from iron.common.declare import (
     StreamOut,
     Untunable,
     dim,
-    operator,
     select,
     tunable,
 )
@@ -39,7 +38,6 @@ N_AIE_ROWS = 4
 # --------------------------------------------------------------------------
 
 
-@operator
 class GEMMOverlay(Overlay):
     """The array for C = A @ B: a 4-row grid of cores, one column of B per AIE column.
 
@@ -442,7 +440,6 @@ class GEMMOverlay(Overlay):
 # --------------------------------------------------------------------------
 
 
-@operator
 class GEMM(Operator[GEMMOverlay]):
     """AIE-accelerated General Matrix Multiplication (GEMM) layer"""
 

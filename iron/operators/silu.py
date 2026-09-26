@@ -7,11 +7,10 @@ import numpy as np
 
 from aie.utils.verify import Tolerance
 
-from iron.common import ChanneledUnaryOperator, ChanneledUnaryOverlay, operator, tunable
+from iron.common import ChanneledUnaryOperator, ChanneledUnaryOverlay, tunable
 from iron.common.testing import Testing, channeled_unary_cases
 
 
-@operator
 class SiLUOverlay(ChanneledUnaryOverlay):
     """The array for SiLU: the shared elementwise design over its kernel."""
 
@@ -22,7 +21,6 @@ class SiLUOverlay(ChanneledUnaryOverlay):
         return activation.silu_sized(self.line_size)
 
 
-@operator
 class SiLU(ChanneledUnaryOperator[SiLUOverlay]):
     """AIE-accelerated SiLU activation function"""
 

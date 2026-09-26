@@ -20,7 +20,6 @@ from iron.common.declare import (
     StreamOut,
     Untunable,
     dim,
-    operator,
     tunable,
 )
 from iron.common.image.artifacts import Artifacts, Design, Step
@@ -53,7 +52,6 @@ from iron.operators.flm.dequant.design import (
 BFP16_GROUP_BYTES = 9
 
 
-@operator
 class FLMDequantOverlay(Overlay):
     """The 4-row grid, as wide as the device, for one q4nx tiling.
 
@@ -162,7 +160,6 @@ class FLMDequantOverlay(Overlay):
         return workers
 
 
-@operator
 class DequantBFP(Operator[FLMDequantOverlay]):
     """q4nx weights to bfp16, packed the way ``flm.GEMM`` reads B.
 

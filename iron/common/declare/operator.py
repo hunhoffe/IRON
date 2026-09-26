@@ -13,8 +13,7 @@ extents, and the instance's buffer attributes answer in elements.
 from __future__ import annotations
 
 import dataclasses
-from abc import ABCMeta
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import Any, ClassVar, Generic, TypeVar, dataclass_transform
 
 
 import aie.utils as aie_utils
@@ -25,15 +24,17 @@ from aie.utils.verify import Tolerance
 from ..kernels import kernels_dir
 from ..testing import Testing
 from .bound import BoundBuffer, BoundValue
+from .creation import declare
+from .field import DeclarationError, DimRef, _Optional, dim, tunable
 from .infer import infer, infer_kwargs
-from .member import _Buffer, _Member, _Value
+from .member import Resident, _Buffer, _Member, _Stream, _Value
 from .naming import label_parts
 from .overlay import Overlay
 
 O = TypeVar("O", bound=Overlay)
 
 
-class _OperatorMeta(ABCMeta):
+class _OperatorMeta(type):
     """``GEMV(w, h)`` inside a graph function records a step; anything else constructs.
 
     The class tells the two apart by whether it received graph handles (or
@@ -50,14 +51,27 @@ class _OperatorMeta(ABCMeta):
         return super().__call__(*args, **kwargs)
 
 
+def _overlay_class_of(cls: type) -> type | None:
+    """The ``O`` in ``class X(Operator[O])``, searched up the bases."""
+    for klass in cls.__mro__:
+        for base in getattr(klass, "__orig_bases__", ()):
+            args = getattr(base, "__args__", ())
+            for a in args:
+                if isinstance(a, type) and issubclass(a, Overlay):
+                    return a
+    return None
+
+
+@dataclass_transform(field_specifiers=(dim, tunable))
 @dataclasses.dataclass(eq=False, repr=True)
 class Operator(Generic[O], metaclass=_OperatorMeta):
-    """A host ABI declared against an overlay. Subclass, decorate with ``@operator``.
+    """A host ABI declared against an overlay. Subclass it.
 
     Declare ``dim()`` fields and buffers (``In``/``Out``/``InOut`` naming their
     streams) in the class body. Implement :meth:`reference`; optionally
     :meth:`compatible` and :meth:`design` (an override for a sequence the
-    library cannot derive).
+    library cannot derive). Every subclass is a dataclass and is checked as
+    its body finishes (:mod:`.creation`).
     """
 
     ov: O
@@ -69,6 +83,72 @@ class Operator(Generic[O], metaclass=_OperatorMeta):
     # The cases iron/operators/test.py runs this operator at; None for an
     # operator tested by its own test.py, or not on its own.
     test: ClassVar[Testing | None] = None
+
+    def __init_subclass__(cls, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)  # Generic's, first: it sets __parameters__
+        declare(cls, repr=False)
+        overlay_cls = _overlay_class_of(cls)
+        cls._overlay_class = overlay_cls
+        for m in cls._members:
+            if isinstance(m, (_Stream, Resident)):
+                raise DeclarationError(
+                    f"{cls.__name__}.{m.name}: an Operator declares buffers and per-call "
+                    f"values; streams and residents belong on the Overlay"
+                )
+            if not isinstance(m, _Buffer):
+                continue
+            target = m.to if m.direction == "in" else m.from_
+            if m.direction == "inout":
+                target = m.to or m.from_
+            if target is not None and not isinstance(target, _Stream):
+                raise DeclarationError(
+                    f"{cls.__name__}.{m.name}: to=/from_= must name a stream, got {target!r}"
+                )
+            if (
+                target is not None
+                and overlay_cls is not None
+                and not issubclass(overlay_cls, target.owner)  # type: ignore[arg-type]
+            ):
+                raise DeclarationError(
+                    f"{cls.__name__}.{m.name}: stream {target!r} belongs to "
+                    f"{target.owner.__name__}, not to {overlay_cls.__name__}"  # type: ignore[union-attr]
+                )
+            if m.to is not None and m.to.direction != "in":
+                raise DeclarationError(
+                    f"{cls.__name__}.{m.name}: to= must be a StreamIn"
+                )
+            if m.from_ is not None and m.from_.direction != "out":
+                raise DeclarationError(
+                    f"{cls.__name__}.{m.name}: from_= must be a StreamOut"
+                )
+            for d in m.dims:
+                ref = d.ref if isinstance(d, _Optional) else d
+                if (
+                    isinstance(ref, DimRef)
+                    and not issubclass(cls, ref.owner)
+                    and overlay_cls is not None
+                    and not issubclass(overlay_cls, ref.owner)
+                ):
+                    raise DeclarationError(
+                        f"{cls.__name__}.{m.name}: {ref!r} is neither a field of "
+                        f"{cls.__name__} nor of its overlay {overlay_cls.__name__}"
+                    )
+
+        # Classic construction: overlay fields as keyword arguments. The operator
+        # builds the overlay itself. dataclass writes a fresh __init__ into
+        # every subclass, so the wrap is reapplied on each.
+        if overlay_cls is not None:
+            generated_init = cls.__init__
+
+            def __init__(self, ov=None, *args, **kwargs):
+                if ov is None or not isinstance(ov, Overlay):
+                    if ov is not None:
+                        args = (ov,) + args
+                    ov, kwargs = type(self)._split_kwargs(dict(kwargs))
+                generated_init(self, ov, *args, **kwargs)
+
+            __init__.__wrapped__ = generated_init  # type: ignore[attr-defined]
+            cls.__init__ = __init__  # type: ignore[misc]
 
     def __post_init__(self) -> None:
         if self._overlay_class is not None and not isinstance(

@@ -37,7 +37,6 @@ from iron.common.declare import (
     StreamOut,
     Untunable,
     dim,
-    operator,
     tunable,
 )
 
@@ -53,7 +52,6 @@ MAC_DIMS = (8, 8, 8)
 # --------------------------------------------------------------------------
 
 
-@operator
 class MHAOverlay(Overlay):
     """The array for fused attention over ``(B_q, d)`` Q blocks and ``(d, B_kv)`` K/V blocks.
 
@@ -577,7 +575,6 @@ class MHAOverlay(Overlay):
 # --------------------------------------------------------------------------
 
 
-@operator
 class MHA(Operator[MHAOverlay]):
     """AIE-accelerated Multi-Head Attention operator"""
 

@@ -18,13 +18,11 @@ from iron.common.declare import (
     Out,
     StreamIn,
     dim,
-    operator,
     tunable,
 )
 from iron.common.testing import Case, Testing, device_columns
 
 
-@operator
 class DequantOverlay(ChanneledUnaryOverlay):
     """The array for int4 -> bf16 dequantization: the shared elementwise design.
 
@@ -97,7 +95,6 @@ def _packed(op):
     return dict(x=op.pack(values, scales))
 
 
-@operator
 class Dequant(Operator[DequantOverlay]):
     """AIE-accelerated dequantization operator"""
 

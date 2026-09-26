@@ -18,7 +18,6 @@ from iron.common.declare import (
     StreamIn,
     StreamOut,
     dim,
-    operator,
     optional,
     tunable,
 )
@@ -30,7 +29,6 @@ from iron.common.tiling import DMA_BD_MAX_WRAP
 # --------------------------------------------------------------------------
 
 
-@operator
 class GEMVOverlay(Overlay):
     """The array configuration for ``C = A @ B``: row-blocks of A per column.
 
@@ -248,7 +246,6 @@ class GEMVOverlay(Overlay):
 # --------------------------------------------------------------------------
 
 
-@operator
 class GEMV(Operator[GEMVOverlay]):
     """AIE-accelerated General Matrix-Vector/Vector-Matrix Multiplication layer"""
 

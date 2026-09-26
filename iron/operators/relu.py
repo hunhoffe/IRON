@@ -5,11 +5,10 @@ from aie.iron.kernels import eltwise
 
 import numpy as np
 
-from iron.common import ChanneledUnaryOperator, ChanneledUnaryOverlay, operator
+from iron.common import ChanneledUnaryOperator, ChanneledUnaryOverlay
 from iron.common.testing import Testing, channeled_unary_cases
 
 
-@operator
 class ReLUOverlay(ChanneledUnaryOverlay):
     """The array for ReLU: the shared elementwise design over its kernel."""
 
@@ -17,7 +16,6 @@ class ReLUOverlay(ChanneledUnaryOverlay):
         return eltwise.relu_sized(self.line_size)
 
 
-@operator
 class ReLU(ChanneledUnaryOperator[ReLUOverlay]):
     """AIE-accelerated ReLU activation function"""
 

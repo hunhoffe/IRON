@@ -55,11 +55,11 @@ class Xclbin:
 
 
 class _Member:
-    """Base of everything declared unannotated in an ``@operator`` class body.
+    """Base of everything declared unannotated in an Overlay or Operator body.
 
     ``__set_name__`` gives the member its name from the language, and the
     class body gives it its order. On an instance, ``__get__`` returns the
-    bound form built by ``@operator`` (a :class:`BoundBuffer`,
+    bound form built as the class is created (a :class:`BoundBuffer`,
     :class:`BoundStream` or :class:`BoundValue`).
     """
 
