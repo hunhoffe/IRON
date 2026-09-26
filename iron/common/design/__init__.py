@@ -22,12 +22,7 @@ receives, :mod:`.runtime` what an operator's ``sequence(rt)`` receives,
 function that puts the three together.
 """
 
-from .build import (
-    build_design,
-    device_symbol,
-    dispatch_parameters,
-    generator_for,
-)
+from .build import device_symbol, generator_for
 from .generator import DesignGenerator
 from .runtime import Sequence, Transfers, transfers
 from .target import Target
@@ -37,9 +32,7 @@ __all__ = [
     "Sequence",
     "Target",
     "Transfers",
-    "build_design",
     "device_symbol",
-    "dispatch_parameters",
     "generator_for",
     "transfers",
 ]

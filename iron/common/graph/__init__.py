@@ -31,15 +31,13 @@ tensors compiles for their shapes, says so once, and dispatches.
 """
 
 from .compiled import CompiledGraph, GraphFunction, graph
-from .handle import Handle, State, Value, is_operand, state
-from .trace import TracedGraph, TracedStep, Tracer, current
+from .handle import Handle, Value, is_operand, state
+from .trace import TracedGraph, Tracer, current
 
 __all__ = [
     "CompiledGraph",
     "GraphFunction",
     "Handle",
-    "State",
-    "TracedStep",
     "TracedGraph",
     "Tracer",
     "Value",

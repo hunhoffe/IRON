@@ -290,6 +290,10 @@ today**.
 
 ## Progress
 
+- (this commit) Step 8, last: `iron.common.image`, `.design` and `.graph`
+  re-export what something imports through them and nothing else (image 29
+  → 6, design 9 → 7, graph 12 → 10); everything else is imported from its
+  module. Both suites identical to baseline.
 - `cb3a6f1` The llama graph names only the knobs that matter. A
   device-free check traces the graph at the model's real shape with the
   graph's own defaults (a decode step on NPU2 and NPU1, a 512-row prompt
