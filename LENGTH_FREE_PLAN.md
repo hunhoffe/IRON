@@ -141,7 +141,7 @@ sets), pyright and ruff clean, and a Progress entry.
 
 ## Progress
 
-- `(this commit)` Step 2, the derived sequence under a bound. For each
+- `b2b5b01` Step 2, the derived sequence under a bound. For each
   Extent and each operand its field sizes, the operator makes one word of
   tiles per lane (`valid_x`, `valid_y`), derived from the extent like any
   `Value`, so it is per call the moment the extent is and a build finds it
