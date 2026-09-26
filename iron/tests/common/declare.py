@@ -99,6 +99,7 @@ class MV(Operator[MVOverlay]):
 def test_fields_are_reattached_as_dim_refs():
     assert isinstance(MVOverlay.K, DimRef)
     assert MVOverlay.K.name == "K" and MVOverlay.K.tier == "dim"
+    assert isinstance(MVOverlay.tile_size_output, DimRef)
     assert MVOverlay.tile_size_output.tier == "tunable"
     assert isinstance(MV.M, DimRef) and MV.M.owner is MV
 
@@ -278,7 +279,9 @@ def test_buffers_carry_the_declared_dtype_and_size():
     from ``b.dtype`` and ``b.nbytes`` of a declared buffer."""
     from iron.operators.repeat import Repeat
 
-    x, y = Repeat(rows=8, cols=64, repeat=4, dtype=np.int32).buffers
+    # The flat-kwargs constructor is installed per class; a checker sees the
+    # dataclass one, whose overlay fields ride on ``ov``.
+    x, y = Repeat(rows=8, cols=64, repeat=4, dtype=np.int32).buffers  # pyright: ignore
     assert x.dtype == np.int32 and y.dtype == np.int32
     assert (x.direction, y.direction) == ("in", "out")
     assert y.nbytes == 8 * 64 * 4 * 4
@@ -287,7 +290,7 @@ def test_buffers_carry_the_declared_dtype_and_size():
 def test_instance_values_shadow_dim_refs():
     ov = MVOverlay(K=256, num_aie_columns=2)
     assert ov.K == 256 and ov.num_aie_columns == 2
-    assert MVOverlay.K.name == "K"
+    assert isinstance(MVOverlay.K, DimRef) and MVOverlay.K.name == "K"
 
 
 def test_stream_binding_slots():
@@ -394,7 +397,9 @@ def test_from_operands_constructs_overlay_and_operator():
 
 
 def test_classic_construction_splits_overlay_fields():
-    op = MV(M=1024, K=256, num_aie_columns=2, tile_size_output=32)
+    # The flat-kwargs constructor is installed per class; a checker sees the
+    # dataclass one, whose overlay fields ride on ``ov``.
+    op = MV(M=1024, K=256, num_aie_columns=2, tile_size_output=32)  # pyright: ignore
     assert op.ov == MVOverlay(K=256, num_aie_columns=2, tile_size_output=32)
     assert op.M == 1024
     op2 = MV(op.ov, M=64)
@@ -407,7 +412,7 @@ def test_wrong_overlay_type_is_rejected():
         s = StreamIn(n)
 
     with pytest.raises(TypeError, match="declared against MVOverlay"):
-        MV(Other(n=4), M=64)
+        MV(Other(n=4), M=64)  # pyright: ignore[reportArgumentType]
 
 
 def test_inout_and_shim_pins_declare():
@@ -421,7 +426,8 @@ def test_inout_and_shim_pins_declare():
         x = InOut(n, to=Pinned.s, from_=Pinned.d)
 
     ov = Pinned(n=2)
-    assert ov.s.via.col == 1 and len(ov.d.via) == 2 and ov.d.count == 2
+    assert isinstance(ov.s.via, Shim) and ov.s.via.col == 1
+    assert isinstance(ov.d.via, list) and len(ov.d.via) == 2 and ov.d.count == 2
     op = Inplace(ov, n=2)
     assert op.x.direction == "inout" and op.inputs == op.outputs
 

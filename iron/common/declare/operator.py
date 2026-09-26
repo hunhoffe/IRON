@@ -13,7 +13,7 @@ extents, and the instance's buffer attributes answer in elements.
 from __future__ import annotations
 
 import dataclasses
-from typing import Any, ClassVar, Generic, TypeVar, dataclass_transform
+from typing import Any, Callable, ClassVar, Generic, Self, TypeVar, dataclass_transform
 
 
 import aie.utils as aie_utils
@@ -25,7 +25,7 @@ from ..kernels import kernels_dir
 from ..testing import Testing
 from .bound import BoundBuffer, BoundValue
 from .creation import declare
-from .field import DeclarationError, DimRef, _Optional, dim, tunable
+from .field import DeclarationError, DimRef, _Optional
 from .infer import infer, infer_kwargs
 from .member import Resident, _Buffer, _Member, _Stream, _Value
 from .naming import label_parts
@@ -62,7 +62,7 @@ def _overlay_class_of(cls: type) -> type | None:
     return None
 
 
-@dataclass_transform(field_specifiers=(dim, tunable))
+@dataclass_transform()  # no field_specifiers, for the reason given on Overlay
 @dataclasses.dataclass(eq=False, repr=True)
 class Operator(Generic[O], metaclass=_OperatorMeta):
     """A host ABI declared against an overlay. Subclass it.
@@ -138,7 +138,7 @@ class Operator(Generic[O], metaclass=_OperatorMeta):
         # builds the overlay itself. dataclass writes a fresh __init__ into
         # every subclass, so the wrap is reapplied on each.
         if overlay_cls is not None:
-            generated_init = cls.__init__
+            generated_init: Callable[..., None] = cls.__init__
 
             def __init__(self, ov=None, *args, **kwargs):
                 if ov is None or not isinstance(ov, Overlay):
@@ -241,7 +241,7 @@ class Operator(Generic[O], metaclass=_OperatorMeta):
         # the build works on the copy, and a copy that forgot would silently
         # drop the per-call value from the sequence.
         if self.used_values:
-            new.__dict__["_used_values"] = set(self.used_values)
+            vars(new)["_used_values"] = set(self.used_values)
         new.compatible()
         return new
 
@@ -282,7 +282,7 @@ class Operator(Generic[O], metaclass=_OperatorMeta):
             raise TypeError(
                 f"{type(self).__name__} declares no per-call value {name!r}"
             )
-        self.__dict__.setdefault("_used_values", set()).add(name)
+        vars(self).setdefault("_used_values", set()).add(name)
 
     @property
     def used_values(self) -> frozenset:
@@ -323,7 +323,7 @@ class Operator(Generic[O], metaclass=_OperatorMeta):
     # -- construction from operand shapes ----------------------------------
 
     @classmethod
-    def from_operands(cls, *operand_shapes, **overrides) -> "Operator":
+    def from_operands(cls, *operand_shapes, **overrides) -> Self:
         """Construct an operator (and its overlay) from operand shapes."""
         values = infer(cls, *operand_shapes, **infer_kwargs(cls, overrides))
         kwargs = {**overrides, **values}
@@ -366,7 +366,9 @@ class Operator(Generic[O], metaclass=_OperatorMeta):
         own = label_parts(self, skip=("ov",))
         base = type(self).__name__ + "_" + "_".join(own + self.ov.name_parts())
         dev = aie_utils.get_current_device()
-        return f"{base}_{dev.resolve().name}"
+        assert dev is not None, f"{type(self).__name__}.name needs a bound device"
+        # Upstream annotates Device.resolve() -> None; it returns the AIEDevice.
+        return f"{base}_{dev.resolve().name}"  # pyright: ignore[reportAttributeAccessIssue]
 
     def generator(self, image: str = "elf"):
         """The design generator :class:`CompilableDesign` runs for this operator.
@@ -425,14 +427,17 @@ class Operator(Generic[O], metaclass=_OperatorMeta):
 
         image = self.ov.external
         if image is None:
+            picture = None
             design = xclbin_design(self.generator(), kernel_name="MLIR_AIE")
-            entry = design.get_cache_entry()
-            picture, insts = entry.xclbin, entry.insts
         else:
             picture = self.ov.prebuilt()
             design = insts_design(self.generator())
-            entry = design.get_cache_entry()
-            insts = entry.insts
+        entry = design.get_cache_entry()
+        assert entry is not None and entry.insts is not None, "no instruction stream"
+        insts = entry.insts
+        if picture is None:
+            picture = entry.xclbin
+            assert picture is not None, "no xclbin"
         self._design = design
         return Artifacts(
             kind="xclbin",
@@ -454,12 +459,12 @@ class Operator(Generic[O], metaclass=_OperatorMeta):
 
     def get_callable(self):
         """The loaded image, ready to call on device tensors."""
-        self.compile()
+        artifacts = self.compile()._artifacts
         image = self.ov.external
         npu_kernel = NPUKernel(
-            xclbin_path=str(self.artifacts.image),
+            xclbin_path=str(artifacts.image),
             kernel_name="MLIR_AIE" if image is None else image.kernel_name,
-            insts_path=str(self.artifacts.insts),
+            insts_path=str(artifacts.insts),
         )
         handle = aie_utils.DefaultNPURuntime.load(npu_kernel)
 

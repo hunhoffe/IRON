@@ -12,12 +12,19 @@ before the first DMA.
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, overload
 
 import numpy as np
 from ml_dtypes import bfloat16
 
 from .field import DeclarationError, _DimSpec, _describe
+
+if TYPE_CHECKING:
+    from typing import Self
+
+    from .bound import BoundBuffer, BoundResident, BoundStream, BoundValue
+
+B = TypeVar("B")  # the bound form an instance serves
 
 
 class Shim:
@@ -54,13 +61,14 @@ class Xclbin:
         return f"Xclbin({self.filename})"
 
 
-class _Member:
+class _Member(Generic[B]):
     """Base of everything declared unannotated in an Overlay or Operator body.
 
     ``__set_name__`` gives the member its name from the language, and the
     class body gives it its order. On an instance, ``__get__`` returns the
     bound form built as the class is created (a :class:`BoundBuffer`,
-    :class:`BoundStream` or :class:`BoundValue`).
+    :class:`BoundStream` or :class:`BoundValue`), which is ``B``: what a
+    checker sees ``op.A`` as.
     """
 
     name: str = ""
@@ -70,6 +78,10 @@ class _Member:
         self.name = name
         self.owner = owner
 
+    @overload
+    def __get__(self, instance: None, owner: type | None = None) -> Self: ...
+    @overload
+    def __get__(self, instance: object, owner: type | None = None) -> B: ...
     def __get__(self, instance, owner=None):
         if instance is None:
             return self
@@ -81,7 +93,7 @@ class _Member:
             ) from None
 
 
-class _Buffer(_Member):
+class _Buffer(_Member["BoundBuffer"]):
     """A host buffer: shape in extents, a dtype, and the stream it moves through."""
 
     direction: ClassVar[str] = ""
@@ -126,7 +138,7 @@ class InOut(_Buffer):
     direction = "inout"
 
 
-class _Stream(_Member):
+class _Stream(_Member["BoundStream"]):
     """A stream into or out of the array, in tile units.
 
     ``per=`` names the overlay dimension the stream is replicated over (one
@@ -193,7 +205,7 @@ class ValueSpec:
         return f"{self.kind}[{np.dtype(self.dtype).name}]"
 
 
-class _Value(_Member):
+class _Value(_Member["BoundValue"]):
     """A per-call scalar. See :class:`Scratchpad` and :class:`DispatchTime`."""
 
     kind: ClassVar[str] = ""
@@ -237,7 +249,7 @@ class DispatchTime(_Value):
     kind = "dispatch"
 
 
-class Resident(_Member):
+class Resident(_Member["BoundResident"]):
     """A value the sequence writes into the array before the first DMA.
 
     Overlay-side: a runtime parameter (trip count, RTP) a core reads. The

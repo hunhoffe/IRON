@@ -100,6 +100,16 @@ black --check .
 black .
 ```
 
+### Python types (pyright)
+
+```bash
+# Check the typed part of the tree (the set is [tool.pyright] in pyproject.toml)
+pyright
+```
+
+A declared class is a dataclass to a checker, so a call that names a field it
+does not declare, or passes the wrong type, is an error before anything runs.
+
 ### C++ (clang-format)
 
 ```bash

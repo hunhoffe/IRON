@@ -19,3 +19,16 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 include = ["iron*"]
+
+[tool.pyright]
+# What the checker holds today: the declared operator model and its tests. The
+# set grows as the rest is typed; an operator's constructor becomes visible to
+# a checker once overlay and operator are one class.
+include = ["iron/common/declare", "iron/tests/common/declare.py"]
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
+# mlir-aie is not installed on the lint runner; its names check as Unknown.
+reportMissingImports = false
+reportMissingModuleSource = false
+# reference(self, *inputs) is implemented per operator with its operands named.
+reportIncompatibleMethodOverride = false

@@ -16,14 +16,17 @@ from __future__ import annotations
 
 import dataclasses
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, dataclass_transform
+from typing import TYPE_CHECKING, Any, ClassVar, Self, dataclass_transform
 
-from aie.dialects.aie import WireBundle, get_target_model
+from aie.dialects.aie import (
+    WireBundle,
+    get_target_model,  # pyright: ignore[reportAttributeAccessIssue]  # not in _aie.pyi
+)
 from aie.utils.verify import Tolerance
 
 from .bound import BoundResident, BoundStream, BoundValue
 from .creation import declare
-from .field import DeclarationError, Untunable, dim, tunable
+from .field import DeclarationError, Untunable
 from .member import DispatchTime, Resident, Xclbin, _Buffer, _Member, _Stream, _Value
 from .naming import label_parts
 
@@ -47,7 +50,14 @@ def get_shim_dma_limit(dev) -> int:
     )
 
 
-@dataclass_transform(field_specifiers=(dim, tunable))
+# ``field_specifiers`` is empty on purpose: pyright reads a specifier's default
+# only from a ``default=`` keyword, and ``dim(1)``/``tunable(1)`` pass it
+# positionally, so listing them would make every defaulted field look required.
+# Unlisted, a checker sees each ``dim()``/``tunable()`` as a field with a default
+# of type Any: a call passing an unknown field is still an error; a missing
+# extent is not.
+@dataclass_transform()
+@dataclasses.dataclass(eq=False)
 class Overlay:
     """What configures the array. Subclass it.
 
@@ -180,7 +190,7 @@ class Overlay:
     def validate(self) -> None:
         """Check the compile-time fields. Runs at construction and after tuning."""
 
-    def tuning(self, dev) -> "Overlay":
+    def tuning(self, dev) -> Self:
         """Return a copy with every tunable filled for ``dev``; raise :class:`Untunable`.
 
         Sees the device and nothing else, so a tuned overlay serves every
@@ -221,7 +231,7 @@ class Overlay:
 
     # -- library surface ---------------------------------------------------
 
-    def tuned(self, dev) -> "Overlay":
+    def tuned(self, dev) -> Self:
         if self._tuned:
             return self
         new = self.tuning(dev)
@@ -241,7 +251,7 @@ class Overlay:
         new._bind()
         return new
 
-    def for_extent(self, **overrides) -> "Overlay":
+    def for_extent(self, **overrides) -> Self:
         """A specialised copy: tunables set for one extent, at the cost of sharing."""
         bad = [k for k in overrides if k not in self._tunable_fields]
         if bad:
@@ -268,7 +278,7 @@ class Overlay:
             if f.compare
         )
 
-    def copy(self) -> "Overlay":
+    def copy(self) -> Self:
         """A fresh instance with the same fields and tuning state.
 
         A build works on a copy, so anything ``compatible()`` records on the

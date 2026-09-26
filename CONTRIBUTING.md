@@ -44,6 +44,8 @@ black --check .
 black .
 ```
 
+**Type Checking:** `pyright` (its scope is `[tool.pyright]` in `pyproject.toml`).
+
 **Best Practices:**
 - Use type annotations for function parameters and return values
 - Follow PEP 8 naming conventions
