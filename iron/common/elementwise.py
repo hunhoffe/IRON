@@ -14,7 +14,7 @@ A concrete operator is one small subclass naming the kernel on its
 class ReLU(UnaryElementwise):
     class Array(UnaryElementwise.Array):
         def kernel(self):
-            return eltwise.relu_sized(self.tile_size)
+            return eltwise.relu(self.tile_size)
 ```
 
 A core calls the kernel in its contract's argument order, with the scalars

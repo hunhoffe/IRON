@@ -19,4 +19,4 @@ class GELU(UnaryElementwise):
 
     class Array(UnaryElementwise.Array):
         def kernel(self):
-            return activation.gelu_sized(self.tile_size)
+            return activation.gelu(self.tile_size)

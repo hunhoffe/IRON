@@ -101,6 +101,11 @@ public API adds its entry under Unreleased.
 
 ### Changed
 
+- `ReLU`, `SiLU` and `GELU` build mlir-aie's `relu`, `silu` and `gelu`,
+  which now take their size at run time, in place of `relu_sized`,
+  `silu_sized` and `gelu_sized`.
+- `field()` and `Auto()` take their default positionally: `field(64)`, not
+  `field(default=64)`.
 - An operand of an `Elementwise` or `Rowwise` operator that gives no `per=`
   is split over every core, `per=(num_aie_columns, num_channels)`.
 - A `field(derive=...)` field is held to its formula: a value given that
