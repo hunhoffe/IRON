@@ -98,6 +98,11 @@ public API adds its entry under Unreleased.
 - `repr` of a graph names its traced shapes; of a compiled version, its
   inputs, packaging and build directory; of a `Profile`, its operators; of
   a model, its `max_seq_len` and whether it is loaded.
+- flm.DequantBFP and flm.LMHead declare `Testing` cases, so the catalog runs
+  them; `DecodeLayer.reference()` and `DecodeLayer.dims`, a typed `LayerDims`
+  with the layer type's dimensions, weight blob and KV rows; and
+  `python -m iron.operators.flm.goldens record|check`, bitwise NPU2 goldens
+  of the flm operators.
 
 ### Changed
 
@@ -218,6 +223,10 @@ public API adds its entry under Unreleased.
 
 ### Removed
 
+- flm's `layer_dims` and `weight_layout`, replaced by `LayerDims`;
+  `dequant.op.dequantize` and `qw_bytes_for`, replaced by
+  `q4nx.dequantize(DequantBFP.grid(qw))` and `DequantBFP.quantized_size()`;
+  and `q4nx.parts`, folded into `q4nx.unpack`.
 - `iron.common`'s `In`, `Out`, `InOut` and `DispatchTime`; import the
   markers from `aie.iron`.
 - `F.linear(accurate=)`, `Attention(accurate=)`, `MLP(accurate=)` and
