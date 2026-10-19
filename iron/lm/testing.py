@@ -9,16 +9,15 @@ model's files.
 
 import dataclasses
 import functools
-import hashlib
 import os
 import time
-import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
 from aie.utils.compile import NPU_CACHE_HOME
 
+from iron.common.declare.xclbin import fetch
 from iron.common.graph.compiled import walk
 
 from .blocks import KVCache
@@ -67,24 +66,7 @@ class Download:
             ValueError: ``url`` is not https.
             RuntimeError: What ``url`` serves is not the pinned content.
         """
-        target = cache_dir() / self.url.rsplit("/", 1)[-1]
-        if target.exists():
-            with open(target, "rb") as f:
-                if hashlib.file_digest(f, "sha256").hexdigest() == self.sha256:
-                    return target
-        if not self.url.startswith("https://"):
-            raise ValueError(f"refusing to download over {self.url!r}")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        # Beside the target and renamed, so an interrupted fetch leaves no
-        # truncated file behind; by process, so concurrent workers share none.
-        partial = target.with_name(f".{target.name}.{os.getpid()}.part")
-        with urllib.request.urlopen(self.url, timeout=60) as response:
-            data = response.read()
-        if (got := hashlib.sha256(data).hexdigest()) != self.sha256:
-            raise RuntimeError(f"{self.url} has SHA-256 {got}, expected {self.sha256}")
-        partial.write_bytes(data)
-        partial.replace(target)
-        return target
+        return fetch(self.url, self.sha256, cache_dir() / self.url.rsplit("/", 1)[-1])
 
 
 def require(*files: Path, staged: bool = True) -> None:

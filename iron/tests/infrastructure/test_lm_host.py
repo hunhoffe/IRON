@@ -14,7 +14,6 @@ file and skips when it is absent. No NPU.
 
 import dataclasses
 import hashlib
-import io
 import json
 import os
 import pickle
@@ -32,7 +31,6 @@ from safetensors.numpy import load_file, save_file
 
 from iron.lm import Checkpoint, Sampler, TokenizerJson
 from iron.applications.llama.model import LlamaConfig
-from iron.lm import testing
 from iron.lm.checkpoint import renamed
 from iron.lm.testing import require, weights_dir
 from iron.operators import sample
@@ -749,22 +747,6 @@ def test_download_fetches_into_the_cache_not_the_read_only_weights_dir(tmp_path)
         assert Path(second.stdout.strip()) == fetched
     finally:
         weights.chmod(0o755)
-
-
-def test_download_shares_no_partial_file_with_a_concurrent_fetch(tmp_path, monkeypatch):
-    """Another worker fetching the same file holds its own partial file,
-    here one it never finished at the old shared name.
-    """
-    data = b"pinned"
-    monkeypatch.setattr(testing, "cache_dir", lambda: tmp_path)
-    monkeypatch.setattr(
-        testing.urllib.request, "urlopen", lambda url, timeout: io.BytesIO(data)
-    )
-    (tmp_path / "file.part").mkdir()
-    download = testing.Download(
-        "https://example.com/file", hashlib.sha256(data).hexdigest()
-    )
-    assert download.fetch().read_bytes() == data
 
 
 def test_the_lm_testing_helpers_import_without_pytest():
