@@ -30,6 +30,12 @@ public API adds its entry under Unreleased.
   `F.gelu`'s default and `hidden_act` `"gelu"`. `Whisper.load` builds
   large-v3-turbo from its checkpoint (`Whisper.config`, `WhisperConfig`'s
   `decoder_start_token_id` its `bos`).
+- Qwen3-VL (`Qwen3VL`, its text model `Qwen3VLText`), one square image:
+  the host writes each position's three-part RoPE row into a table the
+  decoder reads (`Qwen3VLText.place`), and the vision tower's DeepStack
+  rows are added to the image's rows after the first layers, with a toy
+  golden. `Multimodal.from_placed` runs a placed chunk's merged rows
+  through the text model, for a model that adds its own.
 - Qwen3-Reranker (`Qwen3Reranker.score`: "yes" over "no" after its model
   card's prompt) and Qwen3-Embedding (`Qwen3Embedding.embed`: the last
   token's unit-length final hidden state, one compile up to a prompt

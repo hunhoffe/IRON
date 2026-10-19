@@ -122,6 +122,13 @@ class Multimodal(Model):
         merge = Merge.step(placed, placeholders=tuple(self.at.items()), **counted)
         self.merged[: x.shape[0]] = x
         rows = Copy.step(self.merged[merge])[:n]
+        return self.from_placed(rows, placed, counted, text)
+
+    def from_placed(self, rows, placed, counted: dict, text: dict):
+        """The text model on a placed chunk's merged ``rows``, of the ids
+        ``placed`` and ``counted``, Merge's ``before`` where given, with the
+        text model's per-call values ``text``.
+        """
         return self.text.inline(self.text.from_rows, rows, **text)
 
     def shapes(self) -> list[dict]:

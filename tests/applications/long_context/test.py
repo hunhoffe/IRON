@@ -33,6 +33,7 @@ from iron.applications.qwen2 import Qwen2
 from iron.applications.qwen3 import Qwen3
 from iron.applications.qwen3_5 import Qwen35
 from iron.applications.qwen3_reranker import Qwen3Reranker
+from iron.applications.qwen3_vl import Qwen3VLText
 from iron.applications.smollm2 import SmolLM2
 from iron.applications.smollm3 import SmolLM3
 from iron.lm import CausalLM, Checkpoint, EncoderDecoder
@@ -138,6 +139,13 @@ APPLICATIONS = {
     ),
     "qwen3.5_0.8b": Application(
         Qwen35, "qwen3.5-0.8b", INDEX, "tokenizer.json", staged=False
+    ),
+    "qwen3_vl_2b": Application(
+        Qwen3VLText,
+        "qwen3-vl-2b-instruct",
+        "model.safetensors",
+        "tokenizer.json",
+        staged=False,
     ),
     "qwen3_reranker_0.6b": Application(
         Qwen3Reranker,
