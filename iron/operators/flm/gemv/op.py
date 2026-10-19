@@ -73,9 +73,9 @@ class Q4nxGEMV(Operator):
         [
             Case(dict(K=512, N=256)),
             # More out-feature tiles than a round takes, unevenly.
-            Case(dict(K=1024, N=320)),
+            Case(dict(K=1024, N=320), bench=True),
             # Llama 3.2 1B's MLP down projection.
-            Case(dict(K=8192, N=2048), extensive=True, bench=True),
+            Case(dict(K=8192, N=2048), extensive=True),
         ],
         draw=_draw,
     )
@@ -108,11 +108,15 @@ class Q4nxGEMV(Operator):
         cols = min(dev.cols, self.N // M_TILE)
         return self.replace(cols=cols if self.cols is None else self.cols)
 
+    def lane_tiles(self, lane: int) -> range:
+        """The 32-out-feature tiles lane ``lane``'s core takes, in order."""
+        return range(lane, self.N // M_TILE, self.cols)
+
     def ops(self) -> int:
         return 2 * self.N * self.K
 
     def build(self) -> Built:
-        K, tiles = self.K, self.N // M_TILE
+        K = self.K
         x_ty = self.x.obj_type
         y_ty = self.y.obj_type
         w_ty = self.w.obj_type
@@ -151,7 +155,8 @@ class Q4nxGEMV(Operator):
 
             return core_fn
 
-        of_x = ObjectFifo(x_ty)
+        # Acquired once a call, so one buffer: a second would cap K.
+        of_x = ObjectFifo(x_ty, depth=1)
         self.x.bind(of_x.prod())
         workers, ws, ys = [], [], []
         for c in range(self.cols):
@@ -160,7 +165,7 @@ class Q4nxGEMV(Operator):
             ys.append(of_y.cons())
             workers.append(
                 Worker(
-                    core(len(range(c, tiles, self.cols))),
+                    core(len(self.lane_tiles(c))),
                     [
                         of_x.cons(),
                         of_w.cons(),
@@ -177,11 +182,14 @@ class Q4nxGEMV(Operator):
 
     def sequence(self, rt):
         x = self.x.fill(managed=False)
-        tiles, k_tiles = self.N // M_TILE, self.K // K_TILE
+        k_tiles = self.K // K_TILE
         window = []
-        for first in range(0, tiles, self.cols):
+        for r in range(len(self.lane_tiles(0))):
             tg = TaskGroup()
-            for col, t in enumerate(range(first, min(first + self.cols, tiles))):
+            for col in range(self.cols):
+                if r >= len(self.lane_tiles(col)):
+                    break
+                t = self.lane_tiles(col)[r]
                 self.y.drain(
                     TensorAccessPattern((self.N,), t * M_TILE, [M_TILE], [1]),
                     lane=col,

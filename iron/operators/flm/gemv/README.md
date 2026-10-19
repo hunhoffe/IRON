@@ -16,10 +16,11 @@ from iron.operators.flm import Q4nxGEMV, q4nx
 Q4nxGEMV(K=2048, N=512)(y, q4nx.quantize(w).reshape(-1), x)
 ```
 
-Each column's core takes 32 out-features a round: it sums each 32 values of
-`x` once, then streams those out-features' blocks past `x` through
-mlir-aie's q4nx block product, the one the [LM head](../lm_head) runs,
-without its RMS norm and softcap.
+This is IRON's own operator, not a FastFlowLM port. Each column's core
+takes 32 out-features a round: it sums each 32 values of `x` once, then
+streams those out-features' blocks past `x` through mlir-aie's q4nx block
+product, the one the [LM head](../lm_head) runs, without its RMS norm and
+softcap.
 
 ## Numerics
 

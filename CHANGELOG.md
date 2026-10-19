@@ -30,6 +30,11 @@ public API adds its entry under Unreleased.
   `F.gelu`'s default and `hidden_act` `"gelu"`. `Whisper.load` builds
   large-v3-turbo from its checkpoint (`Whisper.config`, `WhisperConfig`'s
   `decoder_start_token_id` its `bos`).
+- `flm.Q4nxGEMV`: one bf16 row times a q4nx weight, each core streaming
+  32 out-features' blocks past it, for a decode step that reads 5 bits a
+  weight. `flm.q4nx.quantize` lays a float weight out as it and
+  `DequantBFP` read it, and `flm.q4nx.grid` reads that layout back as
+  blocks.
 - A BERT cross-encoder (`BertCrossEncoder.score`): a query and a passage
   as one sequence, post-norm layers with learned position and segment
   embeddings, scored by `BertForSequenceClassification`'s head, with a toy
