@@ -257,7 +257,13 @@ class DequantBFP(Operator):
         # The factory declares both operands in bytes; the output FIFO carries
         # bfp16ebs8 blocks.
         kernel = quant.q4nx_dequant(
-            m_tile=M_TILE, k_tile=K_TILE, group=GROUP, ct_k=CT_K, s=S, t=T
+            m_tile=M_TILE,
+            k_tile=K_TILE,
+            group=GROUP,
+            ct_k=CT_K,
+            s=S,
+            t=T,
+            rounding="conv_even",
         ).object_file.bind("q4nx_dequant_bfp", [qw_blk_ty, out_blk_ty])
 
         def core_body(qw_in, out_of, k):
@@ -388,8 +394,8 @@ class DequantBFP(Operator):
     def reference(self, qw):
         """The bytes the operator must produce from the blob ``qw``, as a flat
         uint8 array: bit-exact against the device, as the cores round to bf16
-        toward negative infinity. See README.md for the layout and the
-        rounding.
+        and then to bfp16, to nearest even. See README.md for the layout and
+        the rounding.
         """
         K, N = self.K, self.N
         grid = self.grid(qw)
@@ -401,6 +407,7 @@ class DequantBFP(Operator):
             ct_k=CT_K,
             s=S,
             t=T,
+            rounding="conv_even",
         )
         # Each block's bytes are indexed [k slice, n // T, k // S in the slice,
         # n % T, 9]. Lay the grid's blocks out as one such array for the whole

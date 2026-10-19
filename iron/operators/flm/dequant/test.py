@@ -5,14 +5,17 @@
 import os
 from typing import Any
 
+import numpy as np
 import pytest
+from aie.utils import bfp
 from aie.utils.verify import Tolerance
 
 from iron.common.testing import run_test, vectors
 from iron.operators.flm import q4nx
 from iron.operators.flm.aie2p_math_emulation import rb
 from iron.operators.flm.dequant.op import DequantBFP
-from iron.operators.flm.gemm.op import ProjectionGEMM
+from iron.operators.flm.gemm.op import S, T, ProjectionGEMM
+from iron.operators.flm.packing import pack_b
 
 
 def _check(op, inputs, outputs=None):
@@ -22,15 +25,21 @@ def _check(op, inputs, outputs=None):
 
 @pytest.mark.supported_devices("npu2")
 def test_output_feeds_gemm_unchanged():
-    """The output must equal what ProjectionGEMM.pack_B produces, which is the contract
-    that makes it a drop-in. Comparing against pack_B catches a drift in either
-    operator's tiling that a self-consistent reference would not.
+    """The output must be ProjectionGEMM's B order, which is the contract
+    that makes it a drop-in. Comparing against pack_b's order catches a drift
+    in either operator's tiling that a self-consistent reference would not.
+
+    pack_b's own conversion saturates a mantissa that rounds to +128, where a
+    core takes the next exponent, so the bf16 order is converted here as a
+    core does: each 8 consecutive k of one n make a block.
     """
     op = DequantBFP(K=1024, N=128)
     v = vectors(op, **op.test.draw(op))
-    gemm = ProjectionGEMM(M=256, K=op.K, N=op.N, tile_n=64, rounding="floor")
-    packed = gemm.pack_B(rb(q4nx.dequantize(op.grid(v["qw"]))).T.copy())
-    _check(op, v.inputs, {"out": packed})
+    t = ProjectionGEMM(M=256, K=op.K, N=op.N, tile_n=64).resolved()
+    B = rb(q4nx.dequantize(op.grid(v["qw"])), "rne").T.copy()
+    plain = pack_b(B, t.k_tile, t.tile_n, S, T, t.ct_max_k).astype(np.float32)
+    packed = bfp.encode_core_even(plain.reshape(-1, S, T).transpose(0, 2, 1))
+    _check(op, v.inputs, {"out": packed.reshape(-1)})
 
 
 @pytest.mark.supported_devices("npu2")
