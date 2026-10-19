@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 from aie.utils.compile import NPU_CACHE_HOME
 
-from iron.common.declare.xclbin import fetch
+from iron.common.fetch import fetch
 from iron.common.graph.compiled import walk
 
 from .blocks import KVCache
