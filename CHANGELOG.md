@@ -277,6 +277,10 @@ public API adds its entry under Unreleased.
 
 ### Changed
 
+- An operator's tunables and the values they range over are public:
+  `Operator.domains(dev)` and `Operator.with_tunables(**tunables)`.
+  `autotune.settings` keeps only settings the placer takes, so
+  `time_shape` filters no further.
 - A projection's precision is its model config's (`Config.precision`; Llama's
   is `HIGH` from 3B's width), not a tunable a profile sets or the tuner tries.
 - EmbeddingGemma 2's audio and vision towers, `AudioTower` and
@@ -570,7 +574,8 @@ public API adds its entry under Unreleased.
 ### Removed
 
 - `AdjacentPacking(max_members=)`: a pack grows while the placer takes it.
-  `time_shape(fit_cache=)`: it reads the default `FIT_CACHE`.
+  `time_shape(fit_cache=)` and `autotune.FIT_CACHE`: a placer verdict
+  is kept for the process.
 - `iron.lm.EncodeStep`: an encoder's layers are called with a `Call`, one
   prompt of `rows` from position 0, its `ropes` and `embeddings` as before.
 - A graph body's `aie.iron.DispatchTime[T]` per-call value, which no view
