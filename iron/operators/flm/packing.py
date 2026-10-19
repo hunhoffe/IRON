@@ -76,15 +76,6 @@ def pack_b(
     return bfp.encode(blocked.reshape(-1).astype(np.float32), rounding=rounding)
 
 
-def unpack_b(packed, K, N, k_tile, n_tile, s, t, ct_k):
-    """The ``(K, N)`` float32 values of ``pack_b``'s bfp16 result."""
-    blocked = bfp.decode(np.asarray(packed).view(np.uint8).reshape(-1))
-    blocked = blocked.reshape(
-        N // n_tile, K // k_tile, k_tile // ct_k, n_tile // t, ct_k // s, t, s
-    )
-    return blocked.transpose(1, 2, 4, 6, 0, 3, 5).reshape(K, N)
-
-
 def packed_b_size(K, N, bfp16):
     """Elements (bf16) or bytes (bfp16ebs8) that ``pack_b`` returns."""
     return K * N // 8 * 9 if bfp16 else K * N

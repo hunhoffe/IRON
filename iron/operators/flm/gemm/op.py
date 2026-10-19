@@ -63,7 +63,7 @@ from iron.operators.flm.gemm.design import (
     compute_rows,
     l1_tiles,
 )
-from iron.operators.flm.packing import pack_b, unpack_b
+from iron.operators.flm.packing import pack_b
 
 
 class _BPool(NamedTuple):
@@ -1281,13 +1281,6 @@ class ProjectionGEMM(Operator):
             round_conv_even=t.rounding is Rounding.CONV_EVEN,
         )
 
-    def _unpacked(self, B):
-        """``B`` as ``(K, N)``, from ``pack_B``'s bfp16 bytes if it is those."""
-        if B.ndim == 2:
-            return B
-        t = self.resolved()
-        return unpack_b(B, self.K, self.N, t.k_tile, t.tile_n, S, T, t.ct_max_k)
-
     def ops(self) -> int:
         return 2 * self.M * self.K * self.N
 
@@ -1300,10 +1293,9 @@ class ProjectionGEMM(Operator):
 
         Not bit-exact, and cannot be: the hardware's activation is a LUT on
         aie2 and a native instruction on aie2p, worth up to ~0.02 absolute,
-        which the tolerance absorbs. ``B`` is ``(N, K)`` under ``b_col_maj``,
-        and may be given packed, as ``pack_B`` returns it.
+        which the tolerance absorbs. ``B`` is ``(N, K)`` under ``b_col_maj``.
         """
-        b = B.T if self.b_col_maj else self._unpacked(B)
+        b = B.T if self.b_col_maj else B
         C = np.matmul(A.astype(np.float32), b.astype(np.float32)).astype(A.dtype)
         return self.epilogue.apply(C)
 
@@ -1324,7 +1316,7 @@ class ProjectionGEMM(Operator):
             units += 2.0 if self.rounding is Rounding.CONV_EVEN else 8.0
 
         def bound(A, B):
-            b = B.T if self.b_col_maj else self._unpacked(B)
+            b = B.T if self.b_col_maj else B
             return (
                 units
                 * 2.0**-8
