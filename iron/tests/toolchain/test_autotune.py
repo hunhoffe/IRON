@@ -307,6 +307,18 @@ def test_cache_keys_follow_the_build_the_values_and_the_inputs(npu2):
     assert len({key, *others}) == 1 + len(others)
 
 
+def test_a_placer_verdict_is_kept_per_device(monkeypatch, tmp_path, npu1, npu2):
+    """One recipe's verdict, placed once on each device and read back after."""
+    placed = []
+    monkeypatch.setattr(tuning, "FIT_CACHE", tmp_path)
+    monkeypatch.setattr(tuning, "fits", lambda designs: placed.append(designs))
+    add = ElementwiseAdd(size=SIZE, tile_size=TILE, num_aie_columns=1)
+    for dev in (npu2, npu2, npu1, npu1):
+        with aie_utils.set_current_device(dev):
+            assert tuning.refusal(add) is None
+    assert len(placed) == 2
+
+
 def test_cache_entries_round_trip_per_platform_and_mode(tmp_path):
     m = Measurement(
         4.0, (4.1, 3.9), "ab" * 32, "run", "turbo", 50, (4.0, 4.2), "2026-10-06"
