@@ -32,7 +32,13 @@ from iron.common.graph.handle import Handle, State
 from iron.common.image.packaging import require_device
 from iron.operators.copy import Copy
 from iron.operators.flm.dequant.op import DequantBFP
-from iron.operators.flm.gemm.design import M_TILE, Epilogue, compute_rows
+from iron.operators.flm.gemm.design import (
+    K_TILE,
+    M_TILE,
+    N_TILE_DEFAULT,
+    Epilogue,
+    compute_rows,
+)
 from iron.operators.flm.gemm.op import ProjectionGEMM
 from iron.operators.flm.gemv.op import Q4nxGEMV
 from iron.operators.gelu import GELU
@@ -92,8 +98,8 @@ def linear(x: Handle | State, weight, bias=None, *, precision=None, **gemv) -> H
                 K=K,
                 N=N,
                 epilogue_modes=(Epilogue.NONE,),
-                tile_n=64,
-                k_tile=512,
+                tile_n=N_TILE_DEFAULT,
+                k_tile=K_TILE,
             )
             y = gemm.resolved(require_device())(x, B)
     elif one_row:
