@@ -608,6 +608,11 @@ def test_flm_q4nx_gemv_rejects_shapes_off_the_layout(K, N, npu2):
         Q4nxGEMV(K=K, N=N).resolved(npu2)
 
 
+def test_flm_q4nx_gemv_is_aie2p_only(npu1):
+    with pytest.raises(Unresolvable, match="AIE2P only"):
+        Q4nxGEMV(K=512, N=64).resolved(npu1)
+
+
 @pytest.mark.parametrize(
     "kwargs, match",
     [
