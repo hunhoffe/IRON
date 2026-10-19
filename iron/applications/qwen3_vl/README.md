@@ -16,8 +16,8 @@ library is [AGENTS.md](../../../AGENTS.md#language-models).
 ## Scope: one square image, toy shape
 
 The port takes one square image, resized and normalized on the host, and
-is checked at a toy shape over drawn weights; the released checkpoint has
-not run yet.
+is checked at a toy shape over drawn weights; the released checkpoint is
+not loaded.
 
 ## Testing
 

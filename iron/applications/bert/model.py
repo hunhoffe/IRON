@@ -39,9 +39,6 @@ RENAMES = {
     "output.LayerNorm": "post_attention_layernorm",
 }
 
-#: The ``[SEP]`` of BERT's WordPiece vocabularies, after each segment.
-SEP = 102
-
 
 @dataclasses.dataclass(frozen=True)
 class BertConfig(Config):
@@ -90,8 +87,6 @@ class BertCrossEncoder(Encoder):
 
     layer_class = BertLayer
     renames = RENAMES
-    #: ``[CLS]``, every sequence's first token.
-    bos = 101
 
     def __init__(self, config: BertConfig, weights):
         c, e = config, weights.bert.embeddings
@@ -135,7 +130,9 @@ class BertCrossEncoder(Encoder):
 
     def inputs(self, tokens, segments=()) -> tuple[np.ndarray, dict]:
         """A call's ``ids``: ``tokens`` and their ``segments`` (0 for
-        each one left out), each padded to ``max_tokens``.
+        each one left out), each padded to ``max_tokens``. Tokens past
+        ``max_tokens`` are refused (``Encoder.inputs``), where transformers'
+        tokenizer would truncate them.
         """
         ids, values = super().inputs(tokens)
         types = np.zeros_like(ids)
@@ -150,10 +147,12 @@ class BertCrossEncoder(Encoder):
 
     def score(self, query: str, passage: str) -> float:
         """The relevance logit of ``passage`` to ``query``, as
-        ``[CLS] query [SEP] passage [SEP]``, the passage's segment 1.
+        ``[CLS] query [SEP] passage [SEP]``, the passage's segment 1, each
+        special token's id the tokenizer's.
         """
         encode = self.tokenizer.encoding.encode
+        [cls], [sep] = encode("[CLS]"), encode("[SEP]")
         q, p = encode(query), encode(passage)
-        tokens = [self.bos, *q, SEP, *p, SEP]
+        tokens = [cls, *q, sep, *p, sep]
         segments = [0] * (len(q) + 2) + [1] * (len(p) + 1)
         return float(self.logits(tokens, segments)[0])

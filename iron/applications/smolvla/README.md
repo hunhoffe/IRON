@@ -19,9 +19,10 @@ values. `sample` takes ten Euler steps of `denoise` from noise.
 ## Scope: one camera, toy shape
 
 The port takes one square image and is checked at a toy shape over drawn
-weights; loading the released checkpoint is not done yet. At that shape
-the device records only at `Config.precision = HIGHEST`: its 64-row
-projections need 256 rows at the default precision.
+weights; the released checkpoint is not loaded. At that shape the device
+records only with `iron.lm.Config.precision = Precision.HIGHEST`, which
+every model reads: its 64-row projections need 256 rows at the default
+precision.
 
 ## Testing
 

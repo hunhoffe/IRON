@@ -16,9 +16,9 @@ state's row over all of them (``ObservationCache``). ``denoise`` then
 runs the action expert, a narrower stack of Llama layers, over the noisy
 action chunk and the timestep: its layers alternate between attending
 over the observation's keys and values with its own after them, causally
-(``self_attn_every_n_layers``), and over the observation's keys and values
+(``SELF_ATTN_EVERY``), and over the observation's keys and values
 projected by its own ``k_proj`` and ``v_proj`` (``CrossCache``). The host
-integrates the expert's velocity from noise to actions in ``num_steps``
+integrates the expert's velocity from noise to actions in ``NUM_STEPS``
 Euler steps (``sample``).
 """
 
@@ -51,6 +51,15 @@ from iron.lm import (
 from iron.operators.copy import Copy
 from iron.operators.mha import MHA
 
+#: lerobot's SmolVLA: the expert's width, a fraction of the VLM's; every
+#: second expert layer attends itself after the observation, the rest
+#: across it; the Euler steps from noise to actions; and the shortest and
+#: longest period of the timestep's embedding.
+EXPERT_WIDTH = 0.75
+SELF_ATTN_EVERY = 2
+NUM_STEPS = 10
+MIN_PERIOD, MAX_PERIOD = 4e-3, 4.0
+
 
 def padded(n: int) -> int:
     """``n`` rounded up to a whole 64: MHA's unit of queries, and GEMM's
@@ -72,11 +81,6 @@ class SmolVLAConfig(Config):
     max_state_dim: int = 32
     max_action_dim: int = 32
     tokenizer_max_length: int = 48
-    expert_width_multiplier: float = 0.75
-    self_attn_every_n_layers: int = 2
-    num_steps: int = 10
-    min_period: float = 4e-3
-    max_period: float = 4.0
 
     @property
     def prefix(self) -> int:
@@ -112,7 +116,7 @@ class SmolVLAConfig(Config):
         """The action expert's shape: the VLM's heads, narrower, a chunk a
         call; its MLP width rounded as lerobot's ``get_intermediate_size``.
         """
-        width = int(self.text.hidden_size * self.expert_width_multiplier)
+        width = int(self.text.hidden_size * EXPERT_WIDTH)
         hidden = 4 * int(2 * width / 3)
         return dataclasses.replace(
             self.vlm(),
@@ -132,7 +136,9 @@ class ObservationCache(KVCache):
         n, H, D = q.shape
         for x, cache in ((k, self.keys), (v, self.values)):
             cache[: self.chunk][: call.rows] = x
-        mha = dict(heads_interleaved=True, kv_interleaved=True, causal=False)
+        mha = dict(
+            heads_interleaved=True, kv_interleaved=True, causal=False, scale=scale
+        )
         o = MHA.step(q, self.keys[: call.position], self.values[: call.position], **mha)
         state = Copy.step(q[call.position]).reshape(1, H, D)
         span = np.s_[: call.position + 1]
@@ -155,7 +161,7 @@ class Language(iron.Graph):
 
 
 class Expert(iron.Graph):
-    """The action expert: ``layers``, every ``self_attn_every_n_layers``-th
+    """The action expert: ``layers``, every ``SELF_ATTN_EVERY``-th
     attending over its VLM layer's cache, its own rows after the
     observation's, the rest over a ``CrossCache`` of the observation; and
     the final ``norm``.
@@ -165,7 +171,7 @@ class Expert(iron.Graph):
         e, kv = c.expert(), c.text.num_key_value_heads * c.text.head_dim
         self.layers = []
         for i, held in enumerate(vlm.layers):
-            if i % c.self_attn_every_n_layers == 0:
+            if i % SELF_ATTN_EVERY == 0:
                 layer = DecoderLayer(e, i)
                 layer.cache.keys, layer.cache.values = (
                     held.cache.keys,
@@ -255,7 +261,7 @@ class SmolVLA(Model):
         for layer in self.language.layers:
             layer.rope = self.vlm_rope
         for i, layer in enumerate(self.expert.layers):
-            self_attending = i % c.self_attn_every_n_layers == 0
+            self_attending = i % SELF_ATTN_EVERY == 0
             layer.rope = self.expert_rope if self_attending else "chunk"
         self.rows = iron.state((c.prefix, c.text.hidden_size))
 
@@ -341,11 +347,11 @@ class SmolVLA(Model):
 
     def time(self, t: float) -> np.ndarray:
         """The timestep ``t``'s sine-cosine embedding, its periods from
-        ``min_period`` to ``max_period``, ``(1, width)`` bfloat16.
+        ``MIN_PERIOD`` to ``MAX_PERIOD``, ``(1, width)`` bfloat16.
         """
-        c, width = self.config, self.config.expert().hidden_size
+        width = self.config.expert().hidden_size
         fraction = np.linspace(0.0, 1.0, width // 2)
-        period = c.min_period * (c.max_period / c.min_period) ** fraction
+        period = MIN_PERIOD * (MAX_PERIOD / MIN_PERIOD) ** fraction
         angle = 2 * np.pi / period * t
         return np.concatenate([np.sin(angle), np.cos(angle)])[None].astype(bfloat16)
 
@@ -353,7 +359,7 @@ class SmolVLA(Model):
         """The action chunk, ``(chunk_size, max_action_dim)`` float32, for
         ``image`` (``VisionTower.inputs``), the task's token ``ids`` and the
         padded ``state``, from ``noise`` at ``t = 1`` to ``t = 0`` in
-        ``num_steps`` Euler steps.
+        ``NUM_STEPS`` Euler steps.
         """
         c = self.config
         rgb, _ = self.tower.inputs(image)
@@ -361,9 +367,9 @@ class SmolVLA(Model):
         tokens[: len(ids)] = ids
         state = np.asarray(state).astype(bfloat16)
         self(rgb, tokens, state, rows=len(ids))
-        x, dt = np.asarray(noise, np.float32), -1.0 / c.num_steps
+        x, dt = np.asarray(noise, np.float32), -1.0 / NUM_STEPS
         actions = np.zeros((c.chunk, c.actions), bfloat16)
-        for step in range(c.num_steps):
+        for step in range(NUM_STEPS):
             actions[: c.chunk_size, : c.max_action_dim] = x
             time = self.time(1.0 + step * dt)
             v = self(None, None, None, actions, time, rows=len(ids)).numpy()

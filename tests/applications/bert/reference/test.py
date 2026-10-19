@@ -13,7 +13,7 @@ import zlib
 import numpy as np
 import pytest
 
-from iron.applications.bert.model import SEP, BertConfig, BertCrossEncoder
+from iron.applications.bert.model import BertConfig, BertCrossEncoder
 from iron.lm.golden import HuggingFace
 from iron.lm.testing import LOGITS
 from iron.tests.support.llama_model import checkpoint
@@ -80,6 +80,19 @@ class Classifier(HuggingFace):
             return self.model(input_ids=ids, token_type_ids=kinds).logits[0].numpy()
 
 
+class Hidden(Classifier):
+    """transformers' encoder's last hidden rows, as ``logits``."""
+
+    def logits(self, tokens, segments) -> np.ndarray:
+        import torch
+
+        ids = torch.from_numpy(np.asarray(tokens, np.int64)[None])
+        kinds = torch.from_numpy(np.asarray(segments, np.int64)[None])
+        with torch.no_grad():
+            out = self.model.bert(input_ids=ids, token_type_ids=kinds)
+        return out.last_hidden_state[0].numpy()
+
+
 class Host(BertCrossEncoder):
     """The cross-encoder, each call the graph's reference."""
 
@@ -88,18 +101,35 @@ class Host(BertCrossEncoder):
         return types.SimpleNamespace(numpy=lambda: out)
 
 
+class Rows(Host):
+    """The cross-encoder's last layer's rows, in place of its head."""
+
+    def pool(self, x, rows):
+        return x
+
+    def head(self, x):
+        return x
+
+
 class Words:
-    """A word a token, by its checksum, past BERT's special tokens."""
+    """A word a token, by its checksum, past BERT's special tokens, which
+    take their WordPiece ids.
+    """
+
+    SPECIAL = {"[CLS]": 101, "[SEP]": 102}
 
     def encode(self, text: str) -> list[int]:
-        return [200 + zlib.crc32(w.encode()) % 300 for w in text.split()]
+        return [
+            self.SPECIAL.get(w, 200 + zlib.crc32(w.encode()) % 300)
+            for w in text.split()
+        ]
 
 
 @pytest.mark.parametrize("words", [(3, 9), (40, 200)])
 def test_a_pair_s_score_is_transformers(golden, words):
     """A query and a passage, the longer nearly filling ``max_tokens``,
-    scored as transformers scores them: within 5% of the logit's magnitude,
-    or of 1 where it is smaller, as a decoder's logits are held.
+    scored as transformers scores them, within 5% of the logit's
+    magnitude, as a decoder's logits are held.
     """
     weights = checkpoint(TOY, names(TOY)).tree("random")
     model = Host(TOY, weights)
@@ -114,7 +144,29 @@ def test_a_pair_s_score_is_transformers(golden, words):
     query, passage = (" ".join(map(str, rng.integers(0, 10**6, n))) for n in words)
     got = model.score(query, passage)
     q, p = Words().encode(query), Words().encode(passage)
-    tokens = [model.bos, *q, SEP, *p, SEP]
+    tokens = [101, *q, 102, *p, 102]
     segments = [0] * (len(q) + 2) + [1] * (len(p) + 1)
     [want] = reference.logits(tokens, segments)
-    assert abs(got - want) <= LOGITS * max(abs(want), 1.0), (got, want)
+    assert abs(got - want) <= LOGITS * abs(want), (got, want)
+
+
+def test_each_row_s_last_hidden_state_is_transformers(golden):
+    """Every row of a pair after the last layer, each segment's embedding
+    added, within 5% of transformers' largest, as a decoder's logits are
+    held.
+    """
+    weights = checkpoint(TOY, names(TOY)).tree("random")
+    model = Rows(TOY, weights)
+    reference = golden(
+        "rows",
+        lambda: Hidden.build("bert", TOY, weights, num_labels=1),
+        TOY,
+        weights,
+    )
+    tokens = Words().encode("[CLS] " + " ".join(map(str, range(30))) + " [SEP]")
+    segments = [0] * 12 + [1] * (len(tokens) - 12)
+    ids, values = model.inputs(tokens, segments)
+    got = model(ids, **values).numpy()[: len(tokens)].astype(np.float32)
+    want = reference.logits(tokens, segments)
+    err, scale = np.abs(got - want).max(), np.abs(want).max()
+    assert err <= LOGITS * scale, f"|diff| {err:.4f} against |rows| {scale:.3f}"

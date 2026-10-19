@@ -20,7 +20,7 @@ from ml_dtypes import bfloat16
 
 from iron.applications.idefics3.model import SmolVLMTextConfig
 from iron.applications.idefics3.vision.model import VisionConfig
-from iron.applications.smolvla.model import SmolVLA, SmolVLAConfig
+from iron.applications.smolvla.model import SELF_ATTN_EVERY, SmolVLA, SmolVLAConfig
 from iron.lm.golden import flat
 from iron.lm.testing import LOGITS
 from iron.tests.support.llama_model import checkpoint, shapes
@@ -97,11 +97,7 @@ def names(c: SmolVLAConfig) -> dict[str, tuple[int, ...]]:
     for name, shape in shapes(c.expert()).items():
         if "embed_tokens" in name:
             continue
-        cross = (
-            int(name.split(".")[2]) % c.self_attn_every_n_layers
-            if "layers" in name
-            else 0
-        )
+        cross = int(name.split(".")[2]) % SELF_ATTN_EVERY if "layers" in name else 0
         if cross and name.endswith(("k_proj.weight", "v_proj.weight")):
             shape = (KV, KV)
         out[name.replace("model.", expert, 1)] = shape

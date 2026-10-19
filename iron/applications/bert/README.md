@@ -18,10 +18,9 @@ Its LayerNorms run at the LayerNorm kernel's epsilon, 1e-5
 ## Scope: toy shape
 
 The port is checked at a toy shape over drawn weights; no released
-checkpoint has run yet. MHA takes heads of a whole 64, so a checkpoint
-whose `hidden_size / num_attention_heads` is 32 (MiniLM's) does not run.
-`score` assumes BERT's WordPiece vocabulary, where `[CLS]` is 101 and
-`[SEP]` 102.
+checkpoint is loaded. MHA takes heads of a whole 64, so a checkpoint whose
+`hidden_size / num_attention_heads` is 32 (MiniLM's) does not run. A pair
+longer than `max_tokens` is refused, not truncated.
 
 ## Testing
 
@@ -29,6 +28,6 @@ whose `hidden_size / num_attention_heads` is 32 (MiniLM's) does not run.
 pytest tests/applications/bert/
 ```
 
-`reference/` checks, device-free, the score of a short pair and of one
-that nearly fills `max_tokens` against transformers' own, at a toy shape
-over random weights.
+`reference/` checks, device-free, every row's last hidden state and the
+score of a short pair and of one that nearly fills `max_tokens` against
+transformers' own, at a toy shape over random weights.
