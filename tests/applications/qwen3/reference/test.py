@@ -11,7 +11,7 @@ per head.
 from iron.applications.qwen3.model import Qwen3
 from iron.lm import DecoderConfig
 from iron.tests.support.llama_model import shapes
-from iron.tests.support.llama_reference import Decoder
+from iron.tests.support.llama_reference import Decoder, Q4nx
 
 #: Qwen3's proportions at toy size: GQA, a head_dim of its own, a tied head.
 TOY = DecoderConfig(
@@ -43,3 +43,7 @@ class TestQwen3(Decoder):
                 f"{attention}.k_norm.weight": (c.head_dim,),
             }
         return out
+
+
+class TestQwen3Q4nx(Q4nx, TestQwen3):
+    pass

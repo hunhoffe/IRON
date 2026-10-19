@@ -41,7 +41,7 @@ from iron.operators.copy import Copy
 from iron.operators.elementwise_add import ElementwiseAdd
 from iron.operators.rope import RoPE
 from iron.tests.support.llama_model import PROFILE, SMALL
-from iron.tests.support.llama_reference import Decoder, OnHost
+from iron.tests.support.llama_reference import Decoder, OnHost, Q4nx
 
 pytestmark = pytest.mark.usefixtures("npu2")  # MHA decode on any host
 
@@ -61,6 +61,10 @@ SCALED = dataclasses.replace(
 
 class TestLlama(Decoder):
     model, config, model_type, name, profile = Llama, SCALED, "llama", "small", PROFILE
+
+
+class TestLlamaQ4nx(Q4nx, TestLlama):
+    pass
 
 
 @pytest.fixture(scope="module")
@@ -489,3 +493,17 @@ def test_a_chat_s_added_tokens_are_their_ids_and_its_bos_is_the_template_s(
         end,
         *text("\n\n"),
     ]
+
+
+def test_a_q4nx_decode_step_reads_about_a_third_of_bf16_s_weight_bytes():
+    """Every weight a decode step reads, the embedding's whole table among
+    them though it gathers one row: q4nx linears take 5 bits a weight of
+    bf16's 16.
+    """
+
+    def read(cls):
+        model = cls().host(cls.config, cls.weights())
+        decode = model.session.lm.record()
+        return sum(np.asarray(w).nbytes for w, _ in decode.weights.values())
+
+    assert 0.3 < read(TestLlamaQ4nx) / read(TestLlama) < 0.4

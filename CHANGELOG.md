@@ -30,6 +30,10 @@ public API adds its entry under Unreleased.
   `F.gelu`'s default and `hidden_act` `"gelu"`. `Whisper.load` builds
   large-v3-turbo from its checkpoint (`Whisper.config`, `WhisperConfig`'s
   `decoder_start_token_id` its `bos`).
+- q4nx weights for a language model: `iron.lm.quantize(model)` holds every
+  `Linear` weight as q4nx, 5 bits a weight. `F.linear` runs a uint8 weight as q4nx: one row on
+  `flm.Q4nxGEMV`, several on `flm.ProjectionGEMM` over what
+  `flm.DequantBFP` dequantizes. Qwen3 and Llama have q4nx toy goldens.
 - `flm.Q4nxGEMV`: one bf16 row times a q4nx weight, each core streaming
   32 out-features' blocks past it, for a decode step that reads 5 bits a
   weight. `flm.q4nx.quantize` lays a float weight out as it and
@@ -277,6 +281,8 @@ public API adds its entry under Unreleased.
 
 ### Changed
 
+- `flm.DequantBFP` rounds to nearest, ties to even, where it floored as
+  FastFlowLM does: q4nx prompt logits land 3% off the reference, not 6%.
 - An operator's tunables and the values they range over are public:
   `Operator.domains(dev)` and `Operator.with_tunables(**tunables)`.
   `autotune.settings` keeps only settings the placer takes, so

@@ -31,8 +31,10 @@ from iron.common.feature_map import ConcatChannels, Conv2d, MaxPool2d
 from iron.common.graph.handle import Handle, State
 from iron.common.image.packaging import require_device
 from iron.operators.copy import Copy
+from iron.operators.flm.dequant.op import DequantBFP
 from iron.operators.flm.gemm.design import M_TILE, Epilogue, compute_rows
 from iron.operators.flm.gemm.op import ProjectionGEMM
+from iron.operators.flm.gemv.op import Q4nxGEMV
 from iron.operators.gelu import GELU
 from iron.operators.gemm import GEMM
 from iron.operators.gemv import GEMV
@@ -63,13 +65,38 @@ def linear(x: Handle | State, weight, bias=None, *, precision=None, **gemv) -> H
     ``gemv`` passes tunables to the GEMV, for a call the profile cannot
     tell apart from another call of the same shape.
 
+    A uint8 ``weight`` is q4nx, as ``q4nx.quantize`` holds it: one row runs
+    on flm.Q4nxGEMV, which takes no ``gemv``, and several on
+    flm.ProjectionGEMM over the weight flm.DequantBFP dequantizes, at its
+    default precision.
+
     Raises:
-        ValueError: ``x`` of another rank, or GEMV tunables for several rows.
+        ValueError: ``x`` of another rank, GEMV tunables for several rows,
+            or a q4nx weight at another precision.
     """
     one_row = len(x.shape) == 1 or (len(x.shape) == 2 and x.shape[0] == 1)
     if len(x.shape) not in (1, 2):
         raise ValueError(f"linear(): x {tuple(x.shape)} is not (in,) or (rows, in)")
-    if one_row:
+    if weight.dtype == np.uint8:
+        K, N = x.shape[-1], weight.shape[0]
+        if one_row:
+            y = Q4nxGEMV.step(weight.reshape(-1), x, N=N)
+        elif precision not in (None, Precision.MEDIUM):
+            raise ValueError(f"linear(): a q4nx weight runs at MEDIUM, not {precision}")
+        else:
+            B = DequantBFP.step(weight.reshape(-1), K=K, N=N)
+            # Resolved here: whether B is packed is the device's, and the
+            # tiling DequantBFP writes it in is pinned.
+            gemm = ProjectionGEMM(
+                M=x.shape[0],
+                K=K,
+                N=N,
+                epilogue_modes=(Epilogue.NONE,),
+                tile_n=64,
+                k_tile=512,
+            )
+            y = gemm.resolved(require_device())(x, B)
+    elif one_row:
         y = GEMV.step(weight, x, **gemv)
     elif gemv:
         raise ValueError(f"linear(): {x.shape[0]} rows take no GEMV {sorted(gemv)}")

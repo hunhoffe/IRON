@@ -192,4 +192,4 @@ class Q4nxGEMV(Operator):
     def reference(self, w, x):
         """``w @ x`` in float64, rounded to bf16."""
         weights = q4nx.dequantize(q4nx.grid(np.reshape(w, (self.N, -1))))
-        return (weights @ np.asarray(x, np.float64)).astype(bfloat16)
+        return (weights @ np.asarray(x, np.float64).reshape(-1)).astype(bfloat16)
