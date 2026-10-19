@@ -14,6 +14,7 @@ from aie.utils.compile.jit.params import param, tunable, widths
 
 from iron.common import Built, Operator, Unresolvable
 from iron.common.testing import Case, Testing
+from iron.operators.flm import q4nx
 from iron.operators.flm.aie2p_math_emulation import f32_to_bf16_floor
 
 # flm.ProjectionGEMM's B tiling, imported rather than restated: this design has to write
@@ -379,17 +380,10 @@ class DequantBFP(Operator):
         return Tolerance.exact()
 
     def grid(self, qw):
-        """The weight's q4nx blocks in the blob ``qw``, as ``q4nx.unpack``'s grid.
-
-        A column block is its k-tiles in order, each k-tile its two k-halves,
-        each of those its two n-halves: README.md layers 6-9.
-        """
+        """The weight's q4nx blocks in the blob ``qw``, as ``q4nx.unpack``'s grid."""
         cb_bytes = packed_bytes(N_TILE * self.K)
         qw = np.asarray(qw, np.uint8).reshape(-1, cb_bytes)[self.column_blocks]
-        qw = qw.reshape(self.N // N_TILE, self.K // K_TILE_B, 2, 2, BLOCK_BYTES)
-        return qw.transpose(0, 3, 1, 2, 4).reshape(
-            self.N // M_TILE, self.K // K_TILE, BLOCK_BYTES
-        )
+        return q4nx.grid(qw.reshape(self.N, -1))
 
     def reference(self, qw):
         """The bytes the operator must produce from the blob ``qw``, as a flat

@@ -6,6 +6,9 @@
 A block holds M_TILE out-features by K_TILE in-features: bf16 scales, then
 bf16 minima, one each per GROUP in-features of an out-feature, then 4-bit
 codes. A weight is ``min + scale * code``.
+
+A whole weight is held as ``flm.DequantBFP`` reads it (its README's layers
+6 to 9): ``(out, in * 5 // 8)`` bytes, each 64 out-features one run of rows.
 """
 
 import numpy as np
@@ -57,3 +60,53 @@ def dequantize(grid):
     w *= codes
     w += mins[:, group]
     return w
+
+
+def quantize(w):
+    """``w`` ``(out, in)`` as q4nx bytes ``(out, in * 5 // 8)``: per GROUP
+    in-features of an out-feature, the bf16 minimum and a bf16 scale
+    spanning the group in 15 steps, and each weight's nearest code.
+
+    Raises:
+        ValueError: ``out`` is not a multiple of 64 or ``in`` of 512, the
+            blocks of the layout.
+    """
+    w = np.asarray(w, np.float32)
+    N, K = w.shape
+    if N % (2 * M_TILE) or K % (2 * K_TILE):
+        raise ValueError(
+            f"q4nx: a weight ({N}, {K}) must tile to ({2 * M_TILE}, {2 * K_TILE})"
+        )
+    g = w.reshape(N, K // GROUP, GROUP)
+    mins = g.min(axis=2).astype(bfloat16)
+    low = mins.astype(np.float32)[..., None]
+    scales = ((g.max(axis=2) - low[..., 0]) / 15).astype(bfloat16)
+    step = scales.astype(np.float32)[..., None]
+    codes = np.divide(g - low, step, out=np.zeros_like(g), where=step > 0)
+    codes = np.clip(np.rint(codes), 0, 15).astype(np.uint8)
+    # Per block: scales and minima at [k // GROUP, m], codes at
+    # [m // 16, k, m % 16], two to a byte, the lower index low.
+    nb_r, nb_c, groups = N // M_TILE, K // K_TILE, K_TILE // GROUP
+    params = [
+        np.ascontiguousarray(
+            p.reshape(nb_r, M_TILE, nb_c, groups).transpose(0, 2, 3, 1)
+        )
+        .reshape(nb_r, nb_c, -1)
+        .view(np.uint8)
+        for p in (scales, mins)
+    ]
+    codes = codes.reshape(nb_r, M_TILE // 16, 16, nb_c, K_TILE).transpose(0, 3, 1, 4, 2)
+    codes = codes.reshape(nb_r, nb_c, -1)
+    grid = np.concatenate([*params, codes[..., 0::2] | codes[..., 1::2] << 4], axis=2)
+    # By column block of 64 out-features: k-tile pairs, k-tiles, then the
+    # two 32-out-feature halves.
+    grid = grid.reshape(N // 64, 2, K // (2 * K_TILE), 2, BLOCK_BYTES)
+    return grid.transpose(0, 2, 3, 1, 4).reshape(N, -1)
+
+
+def grid(weight):
+    """The blocks of q4nx bytes ``(out, in * 5 // 8)`` as ``unpack``'s grid."""
+    weight = np.asarray(weight, np.uint8)
+    N, K = weight.shape[0], weight.shape[1] * 8 // BITS_PER_WEIGHT
+    blocks = weight.reshape(N // 64, K // (2 * K_TILE), 2, 2, BLOCK_BYTES)
+    return blocks.transpose(0, 3, 1, 2, 4).reshape(N // M_TILE, K // K_TILE, -1)
