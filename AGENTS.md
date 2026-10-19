@@ -73,6 +73,8 @@ Formatting and licence checks are in CONTRIBUTING.md.
 - `iron/common/image/`: what a graph lowers onto: the step sequence, the
   buffer allocator, image fusion (several designs in one image),
   packaging, and an operator called on its own. All internal.
+- `iron/common/feature_map.py`: `Conv2d`, `MaxPool2d` and `ConcatChannels`,
+  the graphs `iron.functional`'s CNN functions are built on.
 - `iron/common/elementwise.py`: the shared elementwise array, its families
   and `Sweep`.
 - `iron/common/testing.py`: `Testing`, `Case`, `vectors`, `run_test`,
@@ -193,7 +195,7 @@ called per token. Its docstring and `compile`'s say how inputs, per-call
 values, weights, state and profiles are named. The rules:
 
 - A capability a model needs is an operator when it is new compute, and a
-  graph when it composes operators the library has (`iron.lm.blocks`'s
+  graph when it composes operators the library has (`iron.lm`'s
   `LogMel`, `Conv2d`, `ImagePatches`). A model calls such a graph in its
   body rather than copying its steps.
 - Tunables come from the graph's `profile`, not keywords at every call: a
@@ -317,8 +319,12 @@ tunables and profiles already do that job.
   its index, or a PyTorch checkpoint read without torch);
   `tree("read" | "random" | "unread")` is the weights by the checkpoint's
   own names.
-- `blocks.py`: the parts a layer is made of (`Norm`, `Attention`, `MLP`,
-  `DecoderLayer`, `CrossDecoderLayer`) and the front-end graphs.
+- `blocks.py`: the leaf modules that declare their weights with
+  `iron.param` (`Linear`, `Embedding`, `RMSNorm`, `LayerNorm`), the blocks
+  a decoder layer is made of (`Attention`, `GatedMLP`, `DecoderLayer`), the
+  memory a layer owns (`KVCache`) and the model's `Rope`; the descriptions
+  the models not yet on modules read (`Norm`, `AttentionSpec`, `MLP`,
+  `DecoderLayerSpec`, `CrossDecoderLayer`); and the front-end graphs.
 - `model.py`: `Model`, which loads from a checkpoint's directory or
   repository id (`Model.load`, its context fitted to the host by
   `Model.fit`) and generates (`generate(prompt, max_tokens, sampler=None)`,
@@ -329,7 +335,8 @@ tunables and profiles already do that job.
   own reference on the host (`OnHost`, which runs it in place of the
   device).
 - `causal.py`: `CausalLM`, a decoder as one graph of a prompt chunk and a
-  decode step; `Checkpoints`, recurrent state per chunk boundary.
+  decode step, its modules a `Decoder` of `layer_class` layers;
+  `Checkpoints`, recurrent state per chunk boundary.
 - `encoder.py`, `encoder_decoder.py`, `multimodal.py`: `Encoder` and
   `Tower`, `EncoderDecoder`, and `Multimodal`.
 - `cli.py`: `main`, the command line every model shares (`--help` lists

@@ -22,11 +22,11 @@ from iron import Precision, Scratchpad
 from iron.common.image.packaging import require_device
 from iron.operators.axpy import AXPY
 from iron.operators.copy import Copy
-from iron.operators.elementwise_max import ElementwiseMax
 from iron.operators.gemm import GEMM
 from iron.operators.limbs import Limbs, stacked
 from iron.operators.log import Log
 from iron.operators.magnitude import Magnitude
+from iron.operators.mha import MHA
 from iron.operators.resample.op import SIDE, PatchPositions, Resample, ResampleTaps
 
 
@@ -125,157 +125,6 @@ class LogMel(iron.Graph):
         return Log.step(energy, features, offset=self.mel_floor)
 
 
-# What every device's GEMM row block divides (aie2's 16 rows, aie2p's 8).
-GEMM_ROWS = 16
-
-
-class Conv2d(iron.Graph):
-    """A 2-D convolution without bias of rows of ``width`` channels-last
-    pixels, at ``stride``, the width padded with ``padding`` zero columns
-    and each output row with ``border`` zero pixels either side; padding in
-    rows is rows the input holds, so a producer writes past them in place.
-
-    A call takes ``(rows, width * channels)`` and the per-call ``rows`` it
-    computes, and writes ``(out_rows, (out_width + 2 * border) *
-    out_channels)`` where a caller gives it, else returns it. One channel
-    (or depthwise) is a GEMM of ``kernel`` gathered rows by the weight laid
-    out as a band over the width; a ragged last block of ``GEMM_ROWS`` rows
-    repeats the first row, so its output cannot be given. More channels
-    are a GEMM of the output channels, as its rows, by the gathered
-    ``kernel * kernel * channels`` patches. Each GEMM sums in float32 and
-    rounds once.
-
-    Args:
-        weight: ``(out_channels, channels_per_group, kernel, kernel)``,
-            ``channels_per_group`` the checkpoint's own (``in_channels //
-            groups``, as a depthwise checkpoint already stores it).
-        width: The input's pixels a row, its held padding among them.
-        stride: The step between output pixels, and rows.
-        padding: The zero columns either side of the width, one channel only.
-        border: The zero pixels either side of each output row, one channel
-            only.
-        groups: ``1`` (every output channel reads every input channel) or
-            ``out_channels`` (depthwise: each its own). No other grouping is
-            built.
-    """
-
-    def __init__(
-        self,
-        weight: np.ndarray,
-        width: int,
-        stride: int = 1,
-        padding: int = 0,
-        border: int = 0,
-        groups: int = 1,
-    ):
-        w = np.asarray(weight, np.float32)
-        C_out, channels_per_group, k, _ = w.shape
-        depthwise = groups > 1
-        if depthwise and (groups != C_out or channels_per_group != 1):
-            raise ValueError(
-                "Conv2d: groups > 1 is depthwise only: groups must equal "
-                "out_channels, and the weight's own channel axis must be 1"
-            )
-        C = groups if depthwise else channels_per_group
-        banded = C == 1 or depthwise
-        if not banded and (padding or border):
-            raise ValueError(
-                "Conv2d: gathered patches hold no zero padding or border; with "
-                "more than one channel (not depthwise) the input holds its "
-                "padding columns"
-            )
-        self.width, self.stride, self.padding, self.border = (
-            width,
-            stride,
-            padding,
-            border,
-        )
-        self.channels, self.out_channels, self.kernel = C, C_out, k
-        self.banded, self.depthwise = banded, depthwise
-        self.out_width = (width + 2 * padding - k) // stride + 1
-        if self.out_width < 1:
-            raise ValueError(
-                f"Conv2d: a {k}-wide kernel does not fit {width} pixels padded "
-                f"by {padding}"
-            )
-        self.out_line = (self.out_width + 2 * border) * C_out
-        if C == 1:
-            band = np.zeros((k, width, self.out_width + 2 * border, C_out), np.float32)
-            for f in range(self.out_width):
-                for b in range(k):
-                    i = stride * f - padding + b
-                    if 0 <= i < width:
-                        band[:, i, f + border] = w[:, 0, :, b].T
-            self.matrix = band.reshape(k * width, self.out_line).astype(bfloat16)
-        elif depthwise:
-            band = np.zeros(
-                (k, width, C, self.out_width + 2 * border, C_out), np.float32
-            )
-            channel = np.arange(C)
-            for f in range(self.out_width):
-                for b in range(k):
-                    i = stride * f - padding + b
-                    if 0 <= i < width:
-                        band[:, i, channel, f + border, channel] = w[:, 0, :, b].T
-            self.matrix = band.reshape(k * width * C, self.out_line).astype(bfloat16)
-        else:
-            self.matrix = w.transpose(0, 2, 3, 1).reshape(C_out, k * k * C)
-            self.matrix = self.matrix.astype(bfloat16)
-
-    def body(self, x, y=None, *, rows: Scratchpad[np.int32]):
-        k, s, C = self.kernel, self.stride, self.channels
-        R, line = x.shape
-        out_rows = (R - k) // s + 1
-        if self.banded:
-            gathered = TensorAccessPattern(
-                (R, line), 0, [out_rows, k * line], [s * line, 1]
-            )
-            spare = -out_rows % GEMM_ROWS
-            if not spare:
-                a = Copy.step(x, src=gathered).reshape(out_rows, k * line)[:rows]
-                return GEMM.step(
-                    a,
-                    self.matrix,
-                    *([] if y is None else [y]),
-                    precision=Precision.HIGHEST,
-                )
-            if y is not None:
-                raise ValueError(
-                    f"Conv2d: {out_rows} output rows are not whole {GEMM_ROWS}-row "
-                    f"blocks, so the GEMM computes {spare} more than a caller's "
-                    f"output holds; take the returned output instead"
-                )
-            first = TensorAccessPattern((R, line), 0, [1, k * line], [s * line, 1])
-            a = Copy.step(x, src=(gathered, *[first] * spare))
-            out = GEMM.step(
-                a.reshape(out_rows + spare, k * line),
-                self.matrix,
-                precision=Precision.HIGHEST,
-            )
-            return out[:rows]
-        n = out_rows * self.out_width
-        patches = TensorAccessPattern(
-            (R, line),
-            0,
-            [out_rows, self.out_width, k, k * C],
-            [s * line, s * C, line, 1],
-        )
-        a = Copy.step(x, src=patches).reshape(n, k * k * C)
-        # The few output channels as M, so that the patches span every
-        # column; every row, as a GEMM bounds no N, and the output after.
-        out = [] if y is None else [y.reshape(n, self.out_channels)]
-        h = GEMM.step(
-            self.matrix,
-            a,
-            *out,
-            b_col_maj=True,
-            c_col_maj=True,
-            precision=Precision.HIGHEST,
-        )
-        h = h if y is not None else h[: rows * self.out_width]
-        return None if y is not None else h.reshape(out_rows, self.out_line)
-
-
 class Conv1d(iron.Graph):
     """A 1-D convolution over rows (time) of ``(rows, channels)``, at
     ``stride``, plus ``bias``: the ``kernel`` consecutive rows gathered whole
@@ -316,124 +165,6 @@ class Conv1d(iron.Graph):
         a = Copy.step(x, src=pattern).reshape(out_rows, k * line)[:rows]
         h = GEMM.step(a, self.matrix, precision=Precision.HIGHEST) + self.bias
         return Copy.step(h, y) if y is not None else h
-
-
-class MaxPool2d(iron.Graph):
-    """Max pooling of ``rows`` rows of ``width`` channels-last pixels, each
-    channel on its own, by a ``kernel``-wide square window at stride 1,
-    padded with ``-inf`` so the output is the input's shape.
-
-    The input is written into a held ``-inf`` border, and the ``kernel *
-    kernel`` shifted views of it are combined by a running
-    ``ElementwiseMax``, a selection, so exact.
-
-    Args:
-        rows: The input's rows.
-        width: The input's pixels a row.
-        channels: The channels a pixel.
-        kernel: The window's side, odd.
-    """
-
-    def __init__(self, rows: int, width: int, channels: int, kernel: int):
-        if kernel % 2 == 0:
-            raise ValueError(
-                f"MaxPool2d: kernel ({kernel}) must be odd, for same padding"
-            )
-        self.rows, self.width, self.channels, self.kernel = (
-            rows,
-            width,
-            channels,
-            kernel,
-        )
-        pad = kernel // 2
-        shape = (rows + 2 * pad, (width + 2 * pad) * channels)
-        self.border = np.full(shape, -np.inf, bfloat16)
-        self.padded = iron.state(shape)
-
-    def body(self, x):
-        k, C, pad = self.kernel, self.channels, self.kernel // 2
-        shape = self.padded.shape
-        line = shape[1]
-        Copy.step(self.border, self.padded)
-        interior = TensorAccessPattern(
-            shape, pad * line + pad * C, [self.rows, self.width * C], [line, 1]
-        )
-        Copy.step(x, self.padded, dst=interior)
-        pooled = None
-        for a in range(k):
-            for b in range(k):
-                view = TensorAccessPattern(
-                    shape, a * line + b * C, [self.rows, self.width * C], [line, 1]
-                )
-                window = Copy.step(self.padded, src=view)
-                # A pixel's channels are a line any plane divides into.
-                pooled = (
-                    window
-                    if pooled is None
-                    else ElementwiseMax.step(pooled, window, tile_size=C)
-                )
-        return pooled.reshape(self.rows, self.width * C)
-
-    def exact(self, x: np.ndarray) -> np.ndarray:
-        """The max pooling of ``x`` ``(rows, width * channels)`` in float32."""
-        k, pad = self.kernel, self.kernel // 2
-        image = np.asarray(x, np.float32).reshape(self.rows, self.width, self.channels)
-        image = np.pad(image, ((pad, pad), (pad, pad), (0, 0)), constant_values=-np.inf)
-        windows = np.stack(
-            [
-                image[a : a + self.rows, b : b + self.width]
-                for a in range(k)
-                for b in range(k)
-            ]
-        )
-        return windows.max(axis=0).reshape(self.rows, self.width * self.channels)
-
-
-class ConcatChannels(iron.Graph):
-    """Two to four inputs of ``rows`` rows of ``width`` channels-last pixels
-    concatenated along their channels, ``channels`` each input's a pixel.
-
-    Each input is copied into its channels of a held buffer, which a last
-    copy returns.
-
-    Args:
-        rows: The inputs' rows.
-        width: The inputs' pixels a row.
-        channels: Each input's channels a pixel, two to four of them.
-    """
-
-    def __init__(self, rows: int, width: int, channels: tuple[int, ...]):
-        if not 2 <= len(channels) <= 4:
-            raise ValueError(
-                f"ConcatChannels: {len(channels)} inputs; it joins two to four"
-            )
-        if any(c % 2 for c in channels):
-            raise ValueError(
-                f"ConcatChannels: channels {tuple(channels)} are not all even; "
-                f"each input's run of a pixel is one transfer of whole 4-byte units"
-            )
-        self.rows, self.width, self.channels = rows, width, tuple(channels)
-        self.out = iron.state((rows, width * sum(channels)))
-
-    def body(self, x0, x1, x2=None, x3=None):
-        xs = [x for x in (x0, x1, x2, x3) if x is not None]
-        if len(xs) != len(self.channels):
-            raise TypeError(
-                f"ConcatChannels: {len(xs)} inputs given, {len(self.channels)} "
-                f"declared"
-            )
-        total = sum(self.channels)
-        offset = 0
-        for x, c in zip(xs, self.channels):
-            dst = TensorAccessPattern(
-                self.out.shape,
-                offset,
-                [self.rows, self.width, c],
-                [self.width * total, total, 1],
-            )
-            Copy.step(x, self.out, dst=dst)
-            offset += c
-        return Copy.step(self.out[:])
 
 
 class ImagePatches(iron.Graph):
@@ -588,6 +319,245 @@ class ImagePatches(iron.Graph):
         )
 
 
+class Linear(iron.Graph):
+    """``torch.nn.Linear``: ``x @ weight.T``, plus ``bias`` where it holds one."""
+
+    def __init__(self, in_features: int, out_features: int, bias: bool = True):
+        self.in_features, self.out_features = in_features, out_features
+        self.weight = iron.param(out_features, in_features)
+        self.bias = iron.param(out_features) if bias else None
+
+    def body(self, x):
+        return F.linear(x, self.weight, self.bias)
+
+
+class Embedding(iron.Graph):
+    """``torch.nn.Embedding``: the rows of ``weight`` that ``ids`` name."""
+
+    def __init__(self, num_embeddings: int, embedding_dim: int):
+        self.num_embeddings, self.embedding_dim = num_embeddings, embedding_dim
+        self.weight = iron.param(num_embeddings, embedding_dim)
+
+    def body(self, ids):
+        return Copy.step(iron.weight(self.weight)[ids])
+
+
+class RMSNorm(iron.Graph):
+    """``torch.nn.RMSNorm`` over the last axis, times ``weight``; ``eps``
+    None is the input dtype's machine epsilon.
+    """
+
+    def __init__(self, normalized_shape: int, eps: float | None = None):
+        self.normalized_shape, self.eps = (normalized_shape,), eps
+        self.weight = iron.param(normalized_shape)
+
+    def body(self, x):
+        return F.rms_norm(x, self.normalized_shape, self.weight, self.eps)
+
+
+class LayerNorm(iron.Graph):
+    """``torch.nn.LayerNorm`` over the last axis, times ``weight`` plus
+    ``bias``; the kernel takes only its own ``eps`` (``F.layer_norm``).
+    """
+
+    def __init__(self, normalized_shape: int, eps: float = 1e-5):
+        self.normalized_shape, self.eps = (normalized_shape,), eps
+        self.weight = iron.param(normalized_shape)
+        self.bias = iron.param(normalized_shape)
+
+    def body(self, x):
+        return F.layer_norm(x, self.normalized_shape, self.weight, self.bias, self.eps)
+
+
+def _activation(name: str):
+    """The function ``hidden_act`` ``name`` is.
+
+    Raises:
+        ValueError: No operator computes it: only ``"silu"`` and
+            ``"gelu_pytorch_tanh"`` have one.
+    """
+    if name == "silu":
+        return F.silu
+    if name == "gelu_pytorch_tanh":
+        return partial(F.gelu, approximate="tanh")
+    raise ValueError(
+        f"no operator for hidden_act {name!r}; silu and gelu_pytorch_tanh have one"
+    )
+
+
+def _add(x, y, residual: float):
+    """``x`` plus ``y`` times ``residual``, in ``x``'s shape."""
+    y = y if y.shape == x.shape else y.reshape(x.shape)
+    if residual == 1:
+        return x + y
+    return AXPY.step(y, x, scalar_factor=residual)
+
+
+class Rope(iron.Graph):
+    """A decoder's RoPE table, a row a position (``DecoderConfig.angles``),
+    with LongRoPE's long table stacked after it where the config gives one
+    (``long_angles``), which a prompt passing ``long_past`` reads. A model
+    copies a call's rows once (``rows``); each layer holding the table reads
+    them.
+    """
+
+    def __init__(self, c):
+        angles, long = c.angles(), c.long_angles()
+        self.long_past = None if long is None else long[0]
+        if long is not None:
+            angles = np.concatenate([angles, long[1]])
+        self.table = iron.weight(angles.astype(bfloat16))
+        self.chunk, self.width = c.prefill_chunk, c.rope_width
+
+    def rows(self, *, prompt: bool, position, start, rows, rope_start):
+        """A call's rows: a prompt call's from ``start``, or from
+        ``rope_start`` where a long table is stacked, else the decode step's
+        at ``position``.
+        """
+        if prompt:
+            begin = start if self.long_past is None else rope_start
+            return Copy.step(self.table[begin : begin + self.chunk][:rows])
+        return Copy.step(self.table[position]).reshape(1, self.width)
+
+
+class KVCache(iron.Graph):
+    """A layer's keys and values, each ``(max_seq_len, num_key_value_heads,
+    head_dim)`` so no descriptor steps by the context, and causal attention
+    over them (``attend``). A prompt chunk writes a run of rows
+    (``cache[s : s + C][:rows]``), the last one short where the chunk does
+    not divide ``max_seq_len``; a decode step attends with ``MHA`` of one
+    query, which costs the context, not the cache.
+    """
+
+    def __init__(self, c):
+        shape = (c.max_seq_len, c.num_key_value_heads, c.head_dim)
+        self.keys, self.values = iron.state(shape), iron.state(shape)
+        self.chunk = c.prefill_chunk
+
+    def attend(self, step, q, k, v, scale: float | None = None):
+        """Write ``k`` and ``v`` ``(rows, groups, head_dim)`` at ``step``'s
+        positions and attend ``q`` ``(rows, heads, head_dim)`` over every
+        position up to its last, causally, the logits scaled by ``scale``
+        (MHA's ``1 / sqrt(head_dim)`` if None); ``(rows, heads * head_dim)``.
+        """
+        C, (_, G, D), (n, H, _) = self.chunk, self.keys.shape, q.shape
+        for x, cache in ((k, self.keys), (v, self.values)):
+            if step.prompt:
+                cache[step.start : step.start + C][: step.rows] = x
+            else:
+                cache[step.position] = x.reshape(G, D)
+        span = np.s_[: step.position + 1]
+        o = MHA.step(
+            q,
+            self.keys[span],
+            self.values[span],
+            heads_interleaved=True,
+            kv_interleaved=True,
+            scale=scale,
+        )
+        return o.reshape(n, H * D)
+
+
+class Attention(iron.Graph):
+    """Layer ``i``'s self-attention on ``c``'s shape: ``q_proj``, ``k_proj``
+    and ``v_proj`` of the layer's input, q and k turned by the call's RoPE
+    angles where given, attended over the layer's ``KVCache``, then
+    ``o_proj``. ``scale`` is the logits' scale; None is ``head_dim **
+    -0.5``.
+
+    Args:
+        c: The decoder's shape.
+        i: The layer.
+        norms: Which of q and k each head of is RMS-normed by ``q_norm``
+            and ``k_norm``, before RoPE.
+        bias: Whether q, k and v each add a bias.
+    """
+
+    def __init__(self, c, i: int, norms: str = "", bias: bool = False):
+        H, G, D, E = (
+            c.num_attention_heads,
+            c.num_key_value_heads,
+            c.head_dim,
+            c.hidden_size,
+        )
+        self.heads, self.groups, self.head_dim = H, G, D
+        self.q_proj = Linear(E, H * D, bias=bias)
+        self.k_proj = Linear(E, G * D, bias=bias)
+        self.v_proj = Linear(E, G * D, bias=bias)
+        self.o_proj = Linear(H * D, E, bias=False)
+        self.q_norm = RMSNorm(D, c.eps) if "q" in norms else None
+        self.k_norm = RMSNorm(D, c.eps) if "k" in norms else None
+        self.scale = None
+
+    def body(self, x, cache, step, angles=None):
+        n, H, G, D = x.shape[0], self.heads, self.groups, self.head_dim
+        # One row's GEMV tiles half a head. Given here, not by the profile:
+        # q's shape is o's when heads * head_dim is the width.
+        tiles = dict(tile_size_output=D // 2) if n == 1 else {}
+        q, k, v = (
+            F.linear(x, p.weight, p.bias, **tiles)
+            for p in (self.q_proj, self.k_proj, self.v_proj)
+        )
+        q, k, v = q.reshape(n * H, D), k.reshape(n * G, D), v.reshape(n * G, D)
+        if self.q_norm is not None:
+            q = self.q_norm(q)
+        if self.k_norm is not None:
+            k = self.k_norm(k)
+        if angles is not None:
+            q, k = F.rope(q, angles), F.rope(k, angles)
+        o = cache.attend(
+            step,
+            q.reshape(n, H, D),
+            k.reshape(n, G, D),
+            v.reshape(n, G, D),
+            scale=self.scale,
+        )
+        return self.o_proj(o)
+
+
+class GatedMLP(iron.Graph):
+    """A gated feed-forward on ``c``'s shape:
+    ``down_proj(act(gate_proj(x)) * up_proj(x))``, ``act`` its
+    ``hidden_act``.
+    """
+
+    def __init__(self, c):
+        E, M = c.hidden_size, c.intermediate_size
+        self.gate_proj = Linear(E, M, bias=False)
+        self.up_proj = Linear(E, M, bias=False)
+        self.down_proj = Linear(M, E, bias=False)
+        self.act = _activation(c.hidden_act)
+
+    def body(self, x):
+        gate, up = self.gate_proj(x), self.up_proj(x)
+        return self.down_proj(self.act(gate) * up)
+
+
+class DecoderLayer(iron.Graph):
+    """Layer ``i`` of a pre-norm decoder on ``c``'s shape: ``self_attn``
+    after ``input_layernorm``, attending over the layer's own ``cache``,
+    then ``mlp`` after ``post_attention_layernorm``, each block's output
+    added to its residual times ``residual``. ``rope`` is the model's
+    ``Rope``, whose rows of the call (``DecodeStep.angles``) turn q and k;
+    None turns nothing.
+    """
+
+    def __init__(self, c, i: int):
+        self.input_layernorm = RMSNorm(c.hidden_size, c.eps)
+        self.self_attn = Attention(c, i)
+        self.post_attention_layernorm = RMSNorm(c.hidden_size, c.eps)
+        self.mlp = GatedMLP(c)
+        self.cache = KVCache(c)
+        self.rope: Rope | None = None
+        self.residual = 1.0
+
+    def body(self, x, step):
+        angles = None if self.rope is None else step.angles
+        h = self.self_attn(self.input_layernorm(x), self.cache, step, angles)
+        x = _add(x, h, self.residual)
+        return _add(x, self.mlp(self.post_attention_layernorm(x)), self.residual)
+
+
 def _linear(x, p, **kw):
     """``x`` through the linear module ``p``: its ``weight``, and its
     ``bias`` where it holds one.
@@ -611,7 +581,7 @@ class Norm:
 
 
 @dataclasses.dataclass(frozen=True)
-class Attention:
+class AttentionSpec:
     """Self-attention over an attention module's ``q_proj``, ``k_proj``,
     ``v_proj`` and ``o_proj``, each with its bias where it holds one. A
     model kind gives the attention itself: ``attend(q, k, v, scale=,
@@ -646,7 +616,7 @@ class Attention:
 
     def __post_init__(self):
         if (self.qk_norm or self.v_norm) and self.eps is None:
-            raise ValueError("Attention: a q, k or v norm needs its eps")
+            raise ValueError("AttentionSpec: a q, k or v norm needs its eps")
 
     def __call__(self, w, x, attend, angles):
         """The block on ``x`` ``(rows, width)``; ``angles``, a row per
@@ -726,16 +696,10 @@ class MLP:
     precision: Precision | None = None
 
     def __post_init__(self):
-        if self.activation not in ("silu", "gelu_pytorch_tanh"):
-            raise ValueError(
-                f"MLP: no operator for hidden_act {self.activation!r}; "
-                "silu and gelu_pytorch_tanh have one"
-            )
+        _activation(self.activation)
 
     def act(self, x):
-        if self.activation == "silu":
-            return F.silu(x)
-        return F.gelu(x, approximate="tanh")
+        return _activation(self.activation)(x)
 
     def __call__(self, w, x):
         act = self.act
@@ -748,13 +712,13 @@ class MLP:
 
 
 @dataclasses.dataclass(frozen=True)
-class DecoderLayer:
+class DecoderLayerSpec:
     """A pre-norm transformer layer module's: ``self_attn`` after
     ``input_layernorm``, then ``mlp`` after ``post_attention_layernorm``,
     each block's output added to its residual times ``residual``.
     """
 
-    attention: Attention
+    attention: AttentionSpec
     mlp: MLP
     norm: Norm
     residual: float = 1.0
@@ -776,15 +740,12 @@ class DecoderLayer:
 
     def add(self, x, y):
         """``x`` plus ``y`` times ``residual``, in ``x``'s shape."""
-        y = y if y.shape == x.shape else y.reshape(x.shape)
-        if self.residual == 1:
-            return x + y
-        return AXPY.step(y, x, scalar_factor=self.residual)
+        return _add(x, y, self.residual)
 
 
 @dataclasses.dataclass(frozen=True)
-class CrossDecoderLayer(DecoderLayer):
-    """``DecoderLayer`` with a third block between its two: ``encoder_attn``
+class CrossDecoderLayer(DecoderLayerSpec):
+    """``DecoderLayerSpec`` with a third block between its two: ``encoder_attn``
     after ``encoder_attn_layer_norm``, attending over an encoder's output.
     """
 

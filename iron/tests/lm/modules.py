@@ -1,0 +1,256 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Modules that own their weights, device-free: ``Graph.load_state_dict`` binding each
+``param`` or naming every tensor it cannot, ``draw`` and ``unread``, and
+the leaf modules' references against numpy.
+"""
+
+import dataclasses
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+from ml_dtypes import bfloat16
+
+import iron
+from iron.lm import Embedding, LayerNorm, Linear, RMSNorm
+from iron.lm.checkpoint import leaves
+from iron.tests.common.llama_model import SMALL, checkpoint
+
+pytestmark = pytest.mark.usefixtures("npu2")
+
+
+class Block(iron.Graph):
+    def __init__(self):
+        self.embed = Embedding(512, 256)
+        self.norm = RMSNorm(256, 1e-5)
+        self.layers = [Linear(256, 128), Linear(128, 256, bias=False)]
+        self.out = LayerNorm(256)
+
+    def body(self, ids):
+        x = self.norm(self.embed(ids))
+        return self.out(self.layers[1](self.layers[0](x)))
+
+
+def tensors(under: str = "") -> dict[str, np.ndarray]:
+    """Zeros for each of a ``Block``'s params, by dotted path under ``under``."""
+    shapes = {
+        "embed.weight": (512, 256),
+        "norm.weight": (256,),
+        "layers.0.weight": (128, 256),
+        "layers.0.bias": (128,),
+        "layers.1.weight": (256, 128),
+        "out.weight": (256,),
+        "out.bias": (256,),
+    }
+    return {under + n: np.zeros(s, bfloat16) for n, s in shapes.items()}
+
+
+def test_bind_binds_each_param_to_its_tensor():
+    named = {n: t.shape for n, t in tensors("model.").items()}
+    tree = checkpoint(SMALL, named | {"lm_head.weight": (512, 256)}).tree()
+    block = Block()
+    block.load_state_dict(tree, "model.")
+    assert block.layers[0].bias is tree.model.layers[0].bias and block.held()
+
+
+class Head(iron.Graph):
+    def __init__(self):
+        self.classifier = [None, Linear(256, 128, bias=False)]
+
+
+def test_an_index_a_checkpoint_skips_is_none_and_no_leaf():
+    """``nn.Sequential(nn.Flatten(), nn.Linear(...))`` names only ``1``."""
+    tree = checkpoint(SMALL, {"classifier.1.weight": (128, 256)}).tree()
+    assert tree.classifier[0] is None
+    assert [n for n, _ in leaves(tree)] == ["classifier.1.weight"]
+    head = Head()
+    head.load_state_dict(tree)
+    assert head.classifier[1].weight is tree.classifier[1].weight
+
+
+def test_bind_names_every_missing_tensor():
+    named = tensors()
+    del named["norm.weight"], named["layers.1.weight"]
+    with pytest.raises(ValueError, match=r"missing layers\.1\.weight, norm\.weight$"):
+        Block().load_state_dict(named)
+
+
+def test_bind_names_each_kind_in_one_error():
+    named = tensors("model.") | {"model.norm.weight": np.zeros(4, bfloat16)}
+    del named["model.out.bias"]
+    named["model.extra"] = np.zeros(1, bfloat16)
+    with pytest.raises(ValueError) as error:
+        Block().load_state_dict(named, "model.")
+    assert str(error.value) == (
+        "Block: cannot load: missing model.out.bias; extra model.extra; "
+        "wrong shape model.norm.weight (4,), not (256,)"
+    )
+
+
+def test_a_param_never_bound_is_named_at_trace():
+    with pytest.raises(TypeError, match=r"embed\.weight was never bound"):
+        Block().trace(ids=((4,), np.int32))
+
+
+def test_draw_is_the_random_tree_of_a_checkpoint_in_the_same_order():
+    """``Checkpoint.tree("random")`` draws in the file's order, ``draw`` in
+    the graph's: the same tensors where the two orders agree.
+    """
+    block = Block()
+    block.draw(3)
+    named = {n: t.shape for n, t in tensors().items()}
+    tree = checkpoint(SMALL, named).tree("random", 3)
+    for path, x in block.held().values():
+        want = tree
+        for key in path.split("."):
+            want = want[int(key)] if key.isdigit() else getattr(want, key)
+        assert np.array_equal(x.view(np.uint16), want.view(np.uint16)), path
+
+
+def test_unread_allocates_each_param_and_zeroes_a_scalar():
+    class Scaled(Block):
+        def __init__(self):
+            super().__init__()
+            self.scale = iron.param()
+
+    block = Scaled()
+    block.unread()
+    assert all(x.flags.owndata for _, x in block.held().values())
+    assert block.scale.shape == () and block.scale == 0
+
+
+class Tied(iron.Graph):
+    """An embedding and a head over one param, as a tied checkpoint has."""
+
+    def __init__(self):
+        self.embed = Embedding(512, 256)
+        self.head = Linear(256, 512, bias=False)
+        self.head.weight = self.embed.weight
+
+
+def test_a_tied_param_needs_only_its_first_path():
+    table = np.ones((512, 256), bfloat16)
+    tied = Tied()
+    tied.load_state_dict({"embed.weight": table})
+    assert tied.head.weight is tied.embed.weight is table
+
+
+def test_a_tied_param_ignores_a_tensor_at_its_other_path():
+    first, second = np.ones((512, 256), bfloat16), np.zeros((512, 256), bfloat16)
+    tied = Tied()
+    tied.load_state_dict({"embed.weight": first, "head.weight": second})
+    assert tied.head.weight is tied.embed.weight is first
+
+
+def test_a_graph_held_at_two_paths_skips_the_second_paths_tensors():
+    class Shared(iron.Graph):
+        def __init__(self):
+            self.a = self.b = Linear(4, 4, bias=False)
+            self.c = self.d = [iron.param(2)]
+
+    tensors = {
+        n: np.zeros(s, bfloat16) for n, s in [("a.weight", (4, 4)), ("c.0", (2,))]
+    }
+    shared = Shared()
+    shared.load_state_dict(tensors | {"b.weight": np.ones((4, 4), bfloat16)})
+    assert shared.b.weight is tensors["a.weight"] and shared.d[0] is tensors["c.0"]
+
+
+def test_bind_binds_params_in_lists_dicts_and_namespaces():
+    class Held(iron.Graph):
+        def __init__(self):
+            self.items = [iron.param(2)]
+            self.named = {"a": iron.param(2)}
+            self.space = SimpleNamespace(b=iron.param(2))
+
+    held = Held()
+    held.unread()
+    assert len(held.held()) == 3
+
+
+def test_bind_refuses_a_param_in_a_tuple():
+    class Held(iron.Graph):
+        def __init__(self):
+            self.pair = (iron.param(2), iron.param(2))
+
+    with pytest.raises(TypeError, match=r"pair\.0 is in a tuple"):
+        Held().unread()
+
+
+def test_bind_refuses_a_param_in_a_frozen_dataclass():
+    @dataclasses.dataclass(frozen=True)
+    class Pair:
+        first: np.ndarray
+
+    class Held(iron.Graph):
+        def __init__(self):
+            self.pair = Pair(iron.param(2))
+
+    with pytest.raises(TypeError, match=r"pair\.first is in a tuple or a frozen"):
+        Held().unread()
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float16])
+def test_bind_casts_to_the_params_dtype(dtype):
+    named = {n: t.astype(dtype) for n, t in tensors().items()}
+    block = Block()
+    block.load_state_dict(named)
+    assert block.norm.weight.dtype == bfloat16
+
+
+def test_bind_keeps_a_tensor_of_the_params_dtype_as_the_view_it_is():
+    named = tensors()
+    block = Block()
+    block.load_state_dict(named)
+    assert block.norm.weight is named["norm.weight"]
+
+
+def test_bind_refuses_a_change_of_kind():
+    named = tensors() | {"norm.weight": np.ones(256, np.int32)}
+    with pytest.raises(
+        ValueError, match=r"wrong kind norm\.weight int32, not bfloat16"
+    ):
+        Block().load_state_dict(named)
+
+
+def test_a_second_bind_is_refused():
+    block = Block()
+    block.draw(0)
+    with pytest.raises(ValueError, match="already bound"):
+        block.load_state_dict(tensors())
+
+
+def test_a_path_without_its_trailing_dot_is_refused():
+    with pytest.raises(ValueError, match="'model' must end in a dot"):
+        Block().load_state_dict(tensors("model."), "model")
+
+
+def test_leaf_modules_match_numpy():
+    block = Block()
+    block.draw(0)
+    ids = np.array([3, 17, 511, 0], np.int32)
+    f32 = {path: np.asarray(x, np.float32) for path, x in block.held().values()}
+
+    def norm(x, w, b=0.0, centre=False):
+        x = x - x.mean(-1, keepdims=True) if centre else x
+        return x / np.sqrt((x * x).mean(-1, keepdims=True) + 1e-5) * w + b
+
+    x = norm(f32["embed.weight"][ids], f32["norm.weight"])
+    x = x @ f32["layers.0.weight"].T + f32["layers.0.bias"]
+    x = x @ f32["layers.1.weight"].T
+    want = norm(x, f32["out.weight"], f32["out.bias"], centre=True)
+    got = np.asarray(block.reference(ids), np.float32)
+    assert np.abs(got - want).max() < 0.05 * np.abs(want).max()
+
+
+def test_leaf_modules_take_torch_nn_s_names_and_defaults():
+    linear, embedding = Linear(4, 8), Embedding(16, 4)
+    rms, layer = RMSNorm(4), LayerNorm(4)
+    assert (linear.in_features, linear.out_features) == (4, 8)
+    assert linear.bias.shape == (8,) and Linear(4, 8, bias=False).bias is None
+    assert (embedding.num_embeddings, embedding.embedding_dim) == (16, 4)
+    assert (rms.normalized_shape, rms.eps) == ((4,), None)
+    assert (layer.normalized_shape, layer.eps) == ((4,), 1e-5)

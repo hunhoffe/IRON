@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """SmolVLM-256M-Instruct over ``iron.lm``: its text model (``SmolVLMText``,
-a ``CausalLM`` of Llama's ``DecoderLayer``, 9 heads over 3 KV groups, with an untied
+a ``CausalLM`` of Llama's ``DecoderLayerSpec``, 9 heads over 3 KV groups, with an untied
 ``lm_head``), its vision tower (``vision/``, an ``iron.lm.Tower``), and the
 two as one ``iron.lm.Multimodal`` (``SmolVLM``), whose image
 placeholders take the tower's soft tokens, judged by transformers' own
@@ -22,7 +22,7 @@ from pathlib import Path
 
 
 from iron import lm
-from iron.lm import CausalLM, DecoderConfig, Multimodal
+from iron.lm import CausalLM, DecoderConfig, Multimodal, not_json
 from iron.applications.idefics3.vision.model import VisionConfig, VisionTower
 
 
@@ -56,9 +56,7 @@ class SmolVLMTextConfig(DecoderConfig):
     max_seq_len: int = dataclasses.field(
         metadata={"json": "text_config.max_position_embeddings"}
     )
-    tie_word_embeddings: bool = dataclasses.field(
-        default=False, metadata={"json": "tie_word_embeddings"}
-    )
+    tie_word_embeddings: bool = False
 
 
 #: ``<|im_start|>``, the turn marker every prompt starts with.
@@ -76,6 +74,7 @@ class SmolVLMText(CausalLM):
     config = SmolVLMTextConfig
     profile = Path(__file__).with_name("profiles")
     bos = BOS
+    layer_class = None
 
     def __init__(self, config, weights):
         super().__init__(config, weights, decoder=weights.model.text_model)
@@ -109,7 +108,7 @@ def build_prompt(question: list[int], vision: VisionConfig) -> list[int]:
 class SmolVLMConfig(SmolVLMTextConfig):
     """``SmolVLMTextConfig`` and the vision tower's shape, ``vision``."""
 
-    vision: VisionConfig | None = dataclasses.field(default=None, kw_only=True)
+    vision: VisionConfig | None = not_json(None, kw_only=True)
 
     @classmethod
     def from_checkpoint(cls, path) -> "SmolVLMConfig":

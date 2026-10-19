@@ -13,7 +13,7 @@ Phi-4-mini is Llama's layer with three differences:
   ``mlp.gate_up_proj``, which ``Phi4.sanitize`` cuts by rows at load, each
   piece a view of the checkpoint's own array.
 * **Partial rotary.** Only the first ``rotary_dim`` (96 of 128) columns of
-  each head rotate (``partial_rotary_factor``); ``Attention`` turns that
+  each head rotate (``partial_rotary_factor``); ``AttentionSpec`` turns that
   prefix alone.
 * **LongRoPE.** A forward call whose sequence passes
   ``original_max_position_embeddings`` (4096) rotates by the
@@ -84,13 +84,9 @@ class Phi4Config(DecoderConfig):
         kw_only=True,
         metadata={"json": "rope_scaling", "convert": LongRope.from_dict},
     )
-    partial_rotary_factor: float = dataclasses.field(
-        default=1.0, kw_only=True, metadata={"json": "partial_rotary_factor"}
-    )
+    partial_rotary_factor: float = dataclasses.field(default=1.0, kw_only=True)
     original_max_position_embeddings: int | None = dataclasses.field(
-        default=None,
-        kw_only=True,
-        metadata={"json": "original_max_position_embeddings"},
+        default=None, kw_only=True
     )
 
     def __post_init__(self):
@@ -139,6 +135,7 @@ class Phi4(CausalLM):
 
     config = Phi4Config
     profile = Path(__file__).with_name("profiles")
+    layer_class = None
 
     def sanitize(self, w):
         c, a, m = self.config, w.self_attn, w.mlp

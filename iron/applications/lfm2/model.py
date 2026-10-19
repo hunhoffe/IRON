@@ -9,12 +9,12 @@ checkpoint's ``config.json``. Run it with ``python -m
 iron.applications.lfm2.model``.
 
 Sixteen layers, only six of them full attention (``full_attn_idxs``),
-each a ``DecoderLayer`` with per-head q/k norms (Qwen3's shape); the rest
+each a ``DecoderLayerSpec`` with per-head q/k norms (Qwen3's shape); the rest
 are a gated short causal depthwise convolution (``conv_L_cache=3`` taps)
 in place of attention, then the same feed-forward block. ``renames``
 moves LFM2's modules to the names the parts read once at load; a conv
 layer holds no ``self_attn``, so ``layer()`` takes the whole
-``DecoderLayer`` where the checkpoint holds one.
+``DecoderLayerSpec`` where the checkpoint holds one.
 
 A conv layer's three per-channel taps, a row each (``sanitize``, once at
 load), read a window that spans the current call and the
@@ -35,8 +35,7 @@ import numpy as np
 import iron
 import iron.functional as F
 from iron import lm
-from iron.lm import Attention, CausalLM, Checkpoints, DecoderConfig
-from iron.operators.copy import Copy
+from iron.lm import AttentionSpec, CausalLM, Checkpoints, DecoderConfig, not_json
 
 
 @dataclasses.dataclass(frozen=True)
@@ -45,14 +44,12 @@ class Lfm2Config(DecoderConfig):
     keys, and which layers are full attention.
     """
 
-    intermediate_size: int = dataclasses.field(default=0, init=False)
+    intermediate_size: int = not_json(0, init=False)
     eps: float = dataclasses.field(
         default=1e-5, kw_only=True, metadata={"json": "norm_eps"}
     )
     # Hugging Face's Lfm2MLP narrows block_ff_dim by the three after it.
-    block_ff_dim: int = dataclasses.field(
-        kw_only=True, metadata={"json": "block_ff_dim"}
-    )
+    block_ff_dim: int = dataclasses.field(kw_only=True)
     auto_adjust_ff_dim: bool = dataclasses.field(
         default=False, kw_only=True, metadata={"json": "block_auto_adjust_ff_dim"}
     )
@@ -65,7 +62,7 @@ class Lfm2Config(DecoderConfig):
     #: Layer indices that are full attention; every other layer is a
     #: gated short conv.
     full_attn_idxs: tuple[int, ...] = dataclasses.field(
-        default=(), metadata={"json": "full_attn_idxs", "convert": tuple}
+        default=(), metadata={"convert": tuple}
     )
     #: The short conv's kernel width.
     conv_kernel: int = dataclasses.field(default=3, metadata={"json": "conv_L_cache"})
@@ -80,7 +77,7 @@ class Lfm2Config(DecoderConfig):
             ff = self.multiple_of * -(-ff // self.multiple_of)
         object.__setattr__(self, "intermediate_size", ff)
 
-    def attention(self, i: int) -> Attention:
+    def attention(self, i: int) -> AttentionSpec:
         return dataclasses.replace(super().attention(i), qk_norm=True)
 
 
@@ -94,6 +91,7 @@ class Lfm2(CausalLM):
 
     config = Lfm2Config
     profile = Path(__file__).with_name("profiles")
+    layer_class = None
 
     def __init__(self, config: Lfm2Config, weights):
         super().__init__(config, weights)
@@ -103,7 +101,7 @@ class Lfm2(CausalLM):
             if "conv" in vars(w):
                 tail = Checkpoints.of((K - 1, E), config.max_seq_len, C)
                 self.recurrent[i] = {"conv": tail}
-        # The rows before a call end block 0; a chunk's rows are block 1.
+        # Scratch F.causal_conv1d stages a call's window and tail in.
         self.conv_window = iron.state((2, C, E))
         self.conv_tail = iron.state((K - 1, E))
 
@@ -127,7 +125,7 @@ class Lfm2(CausalLM):
         return w
 
     def layer(self, step, i, w, x):
-        """Layer ``i``: an attention layer is ``DecoderLayer``'s; a conv
+        """Layer ``i``: an attention layer is ``DecoderLayerSpec``'s; a conv
         layer its short conv in attention's place, then the feed-forward.
         """
         if "self_attn" in vars(w):
@@ -141,8 +139,7 @@ class Lfm2(CausalLM):
         FIR of ``conv_kernel`` taps over ``h``'s rows, each channel its own
         tap weights, gated on both sides by a projection of ``h``.
         """
-        c, n = self.config, h.shape[0]
-        E, K, C = c.hidden_size, c.conv_kernel, c.prefill_chunk
+        n, E = h.shape[0], self.config.hidden_size
         # Three projections, not one split three ways: a bounded row count's
         # column range of a combined projection is a strided view no single
         # descriptor fits, where three plain projections need none.
@@ -150,28 +147,9 @@ class Lfm2(CausalLM):
             F.linear(h, w.in_proj.weight[k * E : (k + 1) * E]).reshape(n, E)
             for k in range(3)
         )
-        gated = b * x
-        tap = w.taps
         read, write = self.recurrent[i]["conv"].at(step)
-        flat = self.conv_window.reshape(2 * C, E)
-        first = C - (K - 1)
-        flat[first:C] = read
-        if step.prompt:
-            self.conv_window[1, : step.rows] = gated
-            total = flat[first : first + C] * tap[0]
-            for k in range(1, K):
-                total = total + flat[first + k : first + k + C] * tap[k]
-            total = total[: step.rows]
-            for j in range(K - 1):
-                self.conv_tail[j] = flat[first + step.rows + j]
-            Copy.step(self.conv_tail, write)
-        else:
-            flat[C] = gated.reshape(E)
-            total = gated * tap[K - 1]
-            for k in range(K - 1):
-                total = total + flat[first + k : first + k + 1] * tap[k]
-            Copy.step(flat[first + 1 : C + 1], write)
-        return F.linear(cc * total, w.out_proj.weight)
+        state = F.ConvState(read, write, self.conv_window, self.conv_tail)
+        return F.linear(cc * F.causal_conv1d(b * x, w.taps, state), w.out_proj.weight)
 
 
 if __name__ == "__main__":

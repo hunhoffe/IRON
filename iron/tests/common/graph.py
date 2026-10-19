@@ -498,8 +498,8 @@ def test_llama_decode_traces_and_tunes():
     assert draw == {"row": Affine(position, 4), "at": Affine(position)}
     # The weights are named by the checkpoint; the caches are pinned state.
     assert "weights.model.layers.1.self_attn.q_proj.weight" in t.pinned
-    assert "keys.0" in t.pinned
-    assert t.pinned["keys.0"] == cfg.num_key_value_heads * L * cfg.head_dim * 2
+    keys = "model.layers.0.cache.keys"
+    assert t.pinned[keys] == cfg.num_key_value_heads * L * cfg.head_dim * 2
     # Every MHA attends over the keys up to the position, its one query
     # packed by its heads.
     mhas = [s.op for s in t.steps if type(s.op) is MHA]
@@ -550,7 +550,8 @@ def test_llama_prompt_traces_over_the_same_caches():
     # so one arena holds them once for both.
     token = g.trace(**g.shapes()[0])
     assert set(t.states) == set(token.states)
-    assert t.residents["keys.0"] == token.residents["keys.0"]
+    keys = "model.layers.0.cache.keys"
+    assert t.residents[keys] == token.residents[keys]
     assert set(t.weights) == set(token.weights)
     # Every projection reads the (out, in) checkpoint layout through the
     # column-major flag, which the trace carries into shape inference.
@@ -701,8 +702,10 @@ def test_llama_does_not_grow_with_the_context(step):
         == ([] if step == "decode" else ["ids"])
     )
     grown = {name for name, n in long.pinned.items() if short.pinned[name] != n}
-    caches = {"keys.0", "keys.1", "values.0", "values.1"}
-    assert grown == {"rope", "draws", "drawn"} | caches
+    caches = {
+        f"model.layers.{i}.cache.{kv}" for i in (0, 1) for kv in ("keys", "values")
+    }
+    assert grown == {"rope.table", "draws", "drawn"} | caches
 
     def activations(t):
         return {
@@ -2265,6 +2268,67 @@ def test_the_reference_runs_the_trace_so_held_state_takes_arithmetic():
     got = np.asarray(Scaled().reference(x), np.float32)
     np.testing.assert_array_equal(got, 3 * x.astype(np.float32))
     np.testing.assert_array_equal(held.host[:4], x)
+
+
+def test_causal_conv1d_carries_its_tail_from_a_prompt_chunk_to_decode_steps():
+    """A bounded chunk then two single rows, each row the taps over it and
+    the rows before it, the first chunk's from zeros, each step's from the
+    tail before it.
+    """
+    K, C, n = 3, 8, 5
+    carried, tail = iron.state((K - 1, 64)), iron.state((K - 1, 64))
+    window = iron.state((2, C, 64))
+    taps = (np.arange(K * 64) % 5 + 1).reshape(K, 64).astype(bfloat16)
+    state = F.ConvState(carried, carried, window, tail)
+
+    class Prompt(iron.Graph):
+        def body(self, x, *, rows: Scratchpad[np.int32]):
+            return F.causal_conv1d(x[:rows], taps, state)
+
+    class Decode(iron.Graph):
+        def body(self, x):
+            return F.causal_conv1d(x, taps, state)
+
+    x = (np.arange((C + 2) * 64) % 7).reshape(C + 2, 64).astype(bfloat16)
+    decode = Decode()
+    got = np.concatenate(
+        [
+            Prompt().reference(x[:C], rows=n),
+            decode.reference(x[C : C + 1]),
+            decode.reference(x[C + 1 :]),
+        ]
+    ).astype(np.float32)
+    rows = np.concatenate([np.zeros((K - 1, 64)), x[:n], x[C:]])
+    t = taps.astype(np.float32)
+    want = [sum(t[k] * rows[i + k] for k in range(K)) for i in range(n + 2)]
+    np.testing.assert_array_equal(got, want)
+
+
+@pytest.mark.parametrize(
+    "keywords, doubles",
+    [
+        (dict(scale_factor=2), True),
+        (dict(size=(6, 10)), True),
+        (dict(size=6), False),
+        (dict(scale_factor=2, mode="bilinear"), False),
+        (dict(scale_factor=2, align_corners=False), False),
+    ],
+    ids=["scale", "size", "square_size", "bilinear", "align_corners"],
+)
+def test_interpolate_is_the_exact_2x_nearest_upsampling_only(keywords, doubles):
+    class Upsample(iron.Graph):
+        def body(self, x):
+            return F.interpolate(x, **keywords)
+
+    x = (np.arange(3 * 5 * 4) % 11).reshape(3, 5, 4).astype(bfloat16)
+    if not doubles:
+        with pytest.raises(ValueError, match="only the exact 2x nearest"):
+            Upsample().trace(x=(x.shape, bfloat16))
+        return
+    got = np.asarray(Upsample().reference(x)).reshape(6, 10, 4)
+    np.testing.assert_array_equal(got, x.repeat(2, 0).repeat(2, 1))
+    with pytest.raises(ValueError, match="not a map"):
+        Upsample().trace(x=((3, 20), bfloat16))
 
 
 def _steps(t) -> list[str]:

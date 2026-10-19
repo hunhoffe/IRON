@@ -139,27 +139,34 @@ class HuggingFace:
     @classmethod
     def build(cls, model_type: str, config, weights, **json) -> "HuggingFace":
         """``model_type``'s model on ``config``'s fields as its
-        ``config.json`` names them, and ``json``'s, over ``weights``.
+        ``config.json`` names them, and ``json``'s, over ``weights`` named as
+        the model's checkpoints name them: written to a checkpoint and
+        loaded, so transformers renames (and stacks) them as it loads one.
 
         Raises:
             ValueError: ``weights`` lacks a parameter the model holds, other
                 than one tied to another, or holds one it does not.
         """
+        import tempfile
+
         import torch
         import transformers
+        from safetensors.torch import save_file
 
         hf = transformers.AutoConfig.for_model(model_type, **(config.to_json() | json))
         auto = getattr(transformers, cls.model_class)
-        model = auto.from_config(hf, dtype=torch.float32)
-        state = {k: torch.from_numpy(v) for k, v in flat(weights)}
-        missing, unexpected = model.load_state_dict(state, strict=False)
-        # A tied parameter is named once, by the first of its names.
-        named = dict(model.named_parameters())
-        missing = [k for k in missing if k in named]
+        with tempfile.TemporaryDirectory() as directory:
+            hf.save_pretrained(directory)
+            state = {k: torch.from_numpy(v) for k, v in flat(weights)}
+            save_file(state, f"{directory}/model.safetensors")
+            model, info = auto.from_pretrained(
+                directory, dtype=torch.float32, output_loading_info=True
+            )
+        missing, unexpected = info["missing_keys"], info["unexpected_keys"]
         if missing or unexpected:
             raise ValueError(
-                f"{model_type}: the weights lack {missing} and hold {unexpected}, "
-                "which the model does not"
+                f"{model_type}: the weights lack {sorted(missing)} and hold "
+                f"{sorted(unexpected)}, which the model does not"
             )
         return cls(model)
 

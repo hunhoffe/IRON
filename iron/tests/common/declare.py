@@ -70,7 +70,7 @@ class MV(Operator):
     epilogue: CompileTime[str] = field(default="none", array=True)
 
     A = In(num_batches, M, K, obj_shape=(tile_out, K), per=columns)
-    B = In(num_batches, K, obj_shape=(K,), broadcast=True)
+    B = In(num_batches, K, obj_shape=(K,))
     C = Out(num_batches, M, obj_shape=(tile_out,), per=columns)
     count = Value(derive=lambda op: op.M // (op.columns * op.tile_out))
     start = Value(derive=lambda op: 0)  # per call when a graph binds it
@@ -109,6 +109,37 @@ def test_fields_are_their_own_references_and_instances_shadow_them():
     assert isinstance(ParamSpec.of(MV.tile_out), AutoSpec)
     op = MV(M=64, K=256, columns=2)
     assert op.K == 256 and op.columns == 2 and MV.K is fields["K"]
+
+
+def test_a_declaration_prints_what_it_inferred():
+    assert repr(MV.declaration) == "\n".join(
+        [
+            "MV",
+            "  fields:   M, K, num_batches, epilogue",
+            "  derived:  -",
+            "  tunables: columns, tile_out, vec",
+            "  resolved: -",
+            "  In        A [num_batches, M, K] per [columns]",
+            "  In        B [num_batches, K]",
+            "  Out       C [num_batches, M] per [columns]",
+            "  Value     count",
+            "  Value     start",
+            "  array:    (K, columns, tile_out, epilogue)",
+        ]
+    )
+
+
+def test_every_catalog_operator_s_declaration_prints():
+    import iron.operators as catalog
+    import iron.operators.flm as flm
+
+    for name in catalog._OPERATOR_MODULES:
+        cls = (
+            getattr(flm, name[4:])
+            if name.startswith("flm.")
+            else getattr(catalog, name)
+        )
+        assert repr(cls.declaration).startswith(cls.__name__)
 
 
 def test_members_keep_declaration_order_and_names():
@@ -255,15 +286,6 @@ def test_float_scratchpad_annotation_is_rejected():
         class Bad(iron.Graph):
             def body(self, x, *, scale: Scratchpad[np.float32]):
                 return x
-
-
-def test_per_and_broadcast_are_exclusive():
-    with pytest.raises(TypeError, match="either per"):
-
-        class Bad(Operator):
-            n: CompileTime[int] = field()
-            c: CompileTime[int] = Auto(default=2)
-            x = In(n, obj_shape=(4,), per=(c,), broadcast=True)
 
 
 def test_a_probe_may_not_be_on_a_field_the_array_reads():
@@ -781,7 +803,7 @@ def test_resolve_columns_is_the_count_given_or_the_most_that_fit():
         op.resolve_columns(None, None)
 
 
-def test_a_stream_with_no_lanes_or_broadcast_is_paid_once_in_the_shim_budget():
+def test_a_stream_with_no_lanes_is_paid_once_in_the_shim_budget():
     class Scaled(MV):
         scale = In(MV.M, obj_shape=(MV.tile_out,), per=MV.columns)
 
@@ -1100,3 +1122,35 @@ def test_an_axis_is_found_through_the_branch_a_select_takes():
     assert Laid.x.dims.axis_of("rows", Laid(rows=4, cols=8)) == 0
     assert Laid.x.dims.axis_of("rows", Laid(rows=4, cols=8, flip=True)) == 1
     assert Laid(rows=4, cols=8, flip=True).x.shape == (8, 4)
+
+
+class Doubled(Operator):
+    """Doubles its input, with a reference and no kernel."""
+
+    reference_only = True
+    rows: CompileTime[int] = field()
+    x = In(rows, 8)
+    y = Out(rows, 8)
+
+    def reference(self, x):
+        return x * 2
+
+
+def test_a_reference_only_operator_runs_its_reference_and_does_not_compile(npu2):
+    class Twice(iron.Graph):
+        def body(self, x):
+            return Doubled.step(x)
+
+    x = np.arange(32).reshape(4, 8).astype(bfloat16)
+    np.testing.assert_array_equal(np.asarray(Twice().reference(x)), x * 2)
+    with pytest.raises(TypeError, match="Doubled is reference-only: it has no kernel"):
+        Doubled(rows=4).compile()
+
+
+def test_a_reference_only_operator_takes_no_build():
+    with pytest.raises(TypeError, match="Builds is reference-only, so it takes no"):
+
+        class Builds(Doubled):
+            class Array(Operator.Array):
+                def build(self) -> Built:
+                    return Built([])

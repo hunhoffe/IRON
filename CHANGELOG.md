@@ -12,12 +12,52 @@ public API adds its entry under Unreleased.
 
 ### Added
 
+- `Operator.reference_only = True`: an operator that is a declaration plus
+  `reference()`, with no kernel. Graphs trace it and references run it;
+  compiling it raises, and the device catalog skips it.
+- `Experts`: each row through the gated feed-forwards of the experts
+  `TopKRouter` chose for it, weighted, on one core over mlir-aie's scalar
+  `expert_gate_up` and `expert_down`, streaming every expert each row.
+- `SelectiveScan`, reference only: Mamba2's state space recurrence over a
+  run of rows, from a state to the state after its last valid row.
+- Application `granite_hybrid` (Granite 4.0-H, dense and MoE, on the host),
+  judged by device-free toy goldens.
+- Application `resnet` (ResNet-50), judged by a device-free toy golden.
+- Applications `smollm3` (SmolLM3 3B), `ministral3` (Ministral 3's text
+  decoder, on drawn weights) and `qwen3_moe` (Qwen3-30B-A3B, on the host),
+  each judged by a device-free toy golden.
+- `iron.param(*shape, dtype=bfloat16)`, a weight a graph declares by shape,
+  and `Graph.load_state_dict(tree, path="")`, which binds each one to the tensor at its
+  dotted path, cast to its dtype, and raises once, naming every missing,
+  extra and wrong-shaped tensor; a param held at two paths is tied, bound
+  from its first. A param never bound is named when the graph is traced,
+  and a second load is refused. `Graph.draw(seed)` and `Graph.unread()` bind
+  them drawn or unwritten.
+- Leaf modules in `iron.lm`, graphs that declare their weights as
+  transformers names them: `Linear`, `Embedding`, `RMSNorm` and `LayerNorm`.
+- Decoder blocks as modules in `iron.lm.blocks`, each built from a config
+  and a layer index: `Attention(c, i, norms="", bias=False)`, `GatedMLP(c)`
+  and `DecoderLayer(c, i)`, which holds its own `KVCache(c)` and the
+  model's `Rope(c)`. `iron.lm` exports `Attention` and `DecoderLayer`.
+- `Graph.trace(precision=)`, which `compile(precision=)` passes on instead of
+  setting `Graph.precision` while it compiles.
+- `iron.lm.testing.load_from_flags`, a model test's `Model.load` at the
+  `--random-weights` and `--max-seq-len` pytest was given, its files
+  `require`d; `require(staged=False)` skips in CI too.
 - `Gather` and `GatherWords`, `Copy`'s gather steps, in `iron.operators`'
   catalog, so a profile that tunes them saves and loads; a test fails on
   any public operator the catalog leaves out.
 - `iron.functional` with torch's names: `linear`, `rms_norm`, `layer_norm`,
   `silu`, `gelu(x, approximate=)` and `rope`. `linear` replaces
   `iron.lm.blocks.project`.
+- `iron.functional` for CNNs, on channels-last `(H, W, C)` feature maps,
+  with torch's signatures: `conv2d`, `max_pool2d`, `interpolate` (2x
+  nearest) and `cat` (`dim=-1`). Each pads the map and its rows as its
+  steps need, and refuses what it does not compute.
+- `iron.functional.causal_conv1d(x, taps, state)`, a depth-wise causal FIR
+  over a prompt chunk or a decode step that stages and carries the rows
+  before the call itself, its `state` an `F.ConvState(read, write, window,
+  tail)`; LFM2's short conv calls it.
 - Handle arithmetic in graph bodies: `x + y` and `x * y` record an
   elementwise step, or a rowwise one when a row meets a matrix, in either
   order.
@@ -26,6 +66,8 @@ public API adds its entry under Unreleased.
   its weights first, as in `Norm(w, x)`.
 - `Model.sanitize(w)`, which renames a checkpoint's modules to the names the
   parts read, once at load.
+- `iron.lm.TokenizerJson(path)`, a Hugging Face `tokenizer.json` read
+  through `tokenizers`: the encoding every loaded model's `Tokenizer` wraps.
 - `iron.lm.Tokenizer(encoding, bos)`, a prompt's tokenizer: called on text
   it gives the ids with `bos` first, and `decode` gives text back. A
   loaded model's `tokenizer` is one, over `tokenizer.json` unless the
@@ -78,10 +120,9 @@ public API adds its entry under Unreleased.
   Hugging Face repository's files, a local directory or a repository id
   downloaded once, fitted, compiled and loaded, its tokenizer as
   `model.tokenizer`; `Model.from_checkpoint` is the same, not yet loaded.
-  The model class names its `config`, `tokenizer_file`, `open_tokenizer`
-  and `hugging_face`; `fit`, `default_config`, `tune_arguments` and
-  `tune_calls` are its classmethods, and `prompt` and `cpu_reference` its
-  methods. Each application's package exports its model class.
+  The model class names its `config` and `hugging_face`; `fit`,
+  `default_config`, `tune_arguments` and `tune_calls` are its classmethods,
+  and `prompt` and `cpu_reference` its methods. Each application's package exports its model class.
 - `lm.main(Model)`, a model's command line, whose positional argument is
   the path or repository id `load` takes.
 - `OnHost.generate`, which draws on the host.
@@ -98,6 +139,9 @@ public API adds its entry under Unreleased.
 - `repr` of a graph names its traced shapes; of a compiled version, its
   inputs, packaging and build directory; of a `Profile`, its operators; of
   a model, its `max_seq_len` and whether it is loaded.
+- `repr` of an operator's `declaration` lists its fields, tunables with the
+  values each is searched over, members with their symbolic shapes, and the
+  array tier its cores are built from.
 - flm.DequantBFP and flm.LMHead declare `Testing` cases, so the catalog runs
   them; `DecodeLayer.reference()` and `DecodeLayer.dims`, a typed `LayerDims`
   with the layer type's dimensions, weight blob and KV rows; and
@@ -106,6 +150,43 @@ public API adds its entry under Unreleased.
 
 ### Changed
 
+- `iron.lm`'s leaf modules take `torch.nn`'s names and defaults:
+  `Linear(in_features, out_features, bias=True)`,
+  `Embedding(num_embeddings, embedding_dim)`, `RMSNorm(normalized_shape,
+  eps=None)` (the dtype's machine epsilon) and `LayerNorm(normalized_shape,
+  eps=1e-5)`, holding those as attributes.
+- `Tokenizer.chat` puts the BOS where the chat template writes it, and only
+  there, as transformers' `apply_chat_template` does; it no longer adds one.
+  The template may call `strftime_now` and writes `tokenizer_config.json`'s
+  `bos_token` where it has one; `Model.load` reads the template from
+  `chat_template.jinja` when `tokenizer_config.json` has none.
+- `CausalLM` builds its modules, `model` (a `Decoder` of `layer_class`
+  layers, `DecoderLayer` by default) and `lm_head` (the embedding where
+  tied), and binds them to the checkpoint's tree with `Graph.load_state_dict`. A
+  model with `layer_class = None` reads `config.layer(i)` as before, its
+  caches in `caches`, a `KVCache` per attention layer, in place of `keys`
+  and `values`. The RoPE table is `CausalLM.rope`, a `Rope`, whose `rows`
+  replaces `CausalLM.angles` and whose `long_past` replaces
+  `CausalLM.long_past`.
+- Qwen 2, Qwen3 and Granite name their layers, `Qwen2Layer`, `Qwen3Layer`
+  and `GraniteLayer`, in place of `Qwen3Config.attention` and
+  `GraniteConfig.attention` and `layer`.
+- The layer descriptions a config's `layer()` returns, `iron.lm.Attention`
+  and `DecoderLayer`, are `AttentionSpec` and `DecoderLayerSpec`, leaving
+  the names to the modules that own their weights.
+- `YOLOXNano` is written in `iron.functional`'s CNN functions, and returns
+  each scale's predictions as `(H, W, 144)`, not `(H, W * 144)`.
+- `Model.generate` and `stream` stop after the first of `Model.eos` they
+  draw, the eos token included, as Hugging Face's `generate` does:
+  `max_tokens` is a cap. `Model.eos` is the checkpoint's `eos_token_id`, one
+  or a list, from its `generation_config.json` or else its `config.json`.
+- `LayerNorm` takes an optional `weight=` row, as `RMSNorm` does: weighted,
+  a second core per (column, channel) multiplies each normalized row by it.
+  Both share `iron.common.WeightedRowwise`, and `F.layer_norm` passes its
+  weight to the one `LayerNorm` step, leaving the bias a `RowwiseAdd` step.
+  A weighted `LayerNorm`'s row is at most 4096 elements (8192 before), since
+  the multiplying core holds the weight row beside each line; its tolerance
+  scales the first kernel's atol by the weight.
 - An operand of an `Elementwise` or `Rowwise` operator that gives no `per=`
   is split over every core, `per=(num_aie_columns, num_channels)`.
 - A `field(derive=...)` field is held to its formula: a value given that
@@ -216,6 +297,9 @@ public API adds its entry under Unreleased.
   again.
 - `Config.from_checkpoint` names the missing `config.json` keys, and an
   encoder refuses a token outside its vocabulary.
+- A config field is read from and written to `config.json` at its own name
+  unless its `metadata["json"]` names another key; `iron.lm.not_json(default)`
+  declares one `config.json` does not set.
 - idefics3 vision, Whisper and Phi-4 config fields take `config.json`'s
   names: `hidden_size`, `patch_size`, `encoder_attention_heads`,
   `encoder_ffn_dim`, `num_mel_bins`, `max_source_positions` and
@@ -223,6 +307,9 @@ public API adds its entry under Unreleased.
 
 ### Removed
 
+- Llama's tiktoken tokenizer, `SPECIAL_TOKENS` and `tokenizer()`: Llama
+  reads its checkpoint's `tokenizer.json` like every model, and tiktoken is
+  no longer a dependency.
 - flm's `layer_dims` and `weight_layout`, replaced by `LayerDims`;
   `dequant.op.dequantize` and `qw_bytes_for`, replaced by
   `q4nx.dequantize(DequantBFP.grid(qw))` and `DequantBFP.quantized_size()`;

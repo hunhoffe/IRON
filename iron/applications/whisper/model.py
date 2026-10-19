@@ -25,15 +25,16 @@ import iron
 from iron import Scratchpad
 from iron.lm import (
     MLP,
-    Attention,
+    AttentionSpec,
     Config,
     Conv1d,
     CrossDecoderLayer,
     DecoderConfig,
-    DecoderLayer,
+    DecoderLayerSpec,
     EncoderDecoder,
     Norm,
     Tower,
+    not_json,
 )
 from iron.lm.checkpoint import _nest, leaves
 from iron.operators.copy import Copy
@@ -68,7 +69,10 @@ RENAMES = {
 
 @dataclasses.dataclass(frozen=True)
 class WhisperEncoderConfig(Config):
-    """The audio encoder's shape (``WhisperConfig.encoder``)."""
+    """The audio encoder's shape, built by ``WhisperConfig.encoder`` from
+    the checkpoint's ``encoder_*`` keys; never read from or written to a
+    ``config.json`` by itself.
+    """
 
     hidden_size: int
     num_hidden_layers: int
@@ -106,10 +110,10 @@ class WhisperEncoderConfig(Config):
     def norm(self) -> Norm:
         return Norm(self.eps, bias=True)
 
-    def layer(self, i: int) -> DecoderLayer:
+    def layer(self, i: int) -> DecoderLayerSpec:
         H = self.num_attention_heads
-        return DecoderLayer(
-            Attention(H, H, self.hidden_size // H),
+        return DecoderLayerSpec(
+            AttentionSpec(H, H, self.hidden_size // H),
             MLP(self.hidden_act, gated=False),
             self.norm(),
         )
@@ -130,30 +134,20 @@ class WhisperConfig(DecoderConfig):
         metadata={"json": "decoder_attention_heads"}
     )
     intermediate_size: int = dataclasses.field(metadata={"json": "decoder_ffn_dim"})
-    rope_theta: float | None = dataclasses.field(default=None, kw_only=True)
+    rope_theta: float | None = not_json(None, kw_only=True)
     max_seq_len: int = dataclasses.field(metadata={"json": "max_target_positions"})
-    prefill_chunk: int = 256
+    prefill_chunk: int = not_json(256)
     # Whisper's own "gelu" is exact, which MLP refuses: no operator computes
     # it. A checkpoint at "gelu_pytorch_tanh" runs.
     hidden_act: str = dataclasses.field(
         default="gelu", metadata={"json": "activation_function"}
     )
-    eps: float = dataclasses.field(default=1e-5, kw_only=True)
-    encoder_layers: int = dataclasses.field(
-        kw_only=True, metadata={"json": "encoder_layers"}
-    )
-    encoder_attention_heads: int = dataclasses.field(
-        kw_only=True, metadata={"json": "encoder_attention_heads"}
-    )
-    encoder_ffn_dim: int = dataclasses.field(
-        kw_only=True, metadata={"json": "encoder_ffn_dim"}
-    )
-    num_mel_bins: int = dataclasses.field(
-        kw_only=True, metadata={"json": "num_mel_bins"}
-    )
-    max_source_positions: int = dataclasses.field(
-        kw_only=True, metadata={"json": "max_source_positions"}
-    )
+    eps: float = not_json(1e-5, kw_only=True)
+    encoder_layers: int = dataclasses.field(kw_only=True)
+    encoder_attention_heads: int = dataclasses.field(kw_only=True)
+    encoder_ffn_dim: int = dataclasses.field(kw_only=True)
+    num_mel_bins: int = dataclasses.field(kw_only=True)
+    max_source_positions: int = dataclasses.field(kw_only=True)
 
     def norm(self) -> Norm:
         return Norm(self.eps, bias=True)
@@ -161,7 +155,7 @@ class WhisperConfig(DecoderConfig):
     def layer(self, i: int) -> CrossDecoderLayer:
         H = self.num_attention_heads
         return CrossDecoderLayer(
-            Attention(H, H, self.head_dim),
+            AttentionSpec(H, H, self.head_dim),
             MLP(self.hidden_act, gated=False),
             self.norm(),
         )

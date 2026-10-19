@@ -17,8 +17,13 @@ from iron.applications.embedding_gemma2.config import (
     Config as EmbeddingGemmaConfig,
     VisionConfig,
 )
+from iron.applications.granite.model import GraniteConfig
+from iron.applications.idefics3.model import SmolVLMTextConfig
+from iron.applications.idefics3.vision import model as smolvlm_vision
+from iron.applications.lfm2.model import Lfm2Config
 from iron.applications.llama.model import Llama3RopeScaling, LlamaConfig
 from iron.applications.phi3.model import LongRope, Phi4Config
+from iron.applications.whisper.model import WhisperConfig
 from iron.lm import Config, DecoderConfig
 from iron.tests.common.llama_model import REAL_1B
 from iron.lm.testing import require, weights_dir
@@ -50,27 +55,50 @@ def test_from_checkpoint_takes_either_the_file_or_its_directory():
     )
 
 
-def test_from_checkpoint_leaves_an_unnamed_field_at_its_default():
-    require(LLAMA_DIR / "config.json")
-    # prefill_chunk names no config.json key: an IRON choice.
-    assert LlamaConfig.from_checkpoint(LLAMA_DIR).prefill_chunk == 2048
-
-
-def test_from_checkpoint_reads_null_as_the_fields_default(tmp_path):
-    """SmolLM2's config.json writes rope_scaling null: no scaling."""
-    fields = dict(
-        vocab_size=32,
-        hidden_size=64,
-        num_hidden_layers=1,
-        num_attention_heads=2,
-        num_key_value_heads=2,
-        intermediate_size=128,
-        rope_theta=130000.0,
-        max_position_embeddings=8192,
-        rope_scaling=None,
-    )
-    (tmp_path / "config.json").write_text(json.dumps(fields))
-    assert LlamaConfig.from_checkpoint(tmp_path).rope_scaling is None
+@pytest.mark.parametrize(
+    "cls",
+    [
+        DecoderConfig,
+        LlamaConfig,
+        GraniteConfig,
+        Lfm2Config,
+        Phi4Config,
+        WhisperConfig,
+        SmolVLMTextConfig,
+        smolvlm_vision.VisionConfig,
+        EmbeddingGemmaConfig,
+        AudioConfig,
+        VisionConfig,
+    ],
+    ids=lambda cls: f"{cls.__module__}.{cls.__name__}",
+)
+def test_from_checkpoint_reads_each_key_and_no_not_json_field(tmp_path, cls):
+    """Every field is read at its key, its own name unless it names another,
+    and one the file leaves null (each converted one here) keeps its
+    default; a ``not_json`` field is neither read nor written, even where
+    the file names it.
+    """
+    fields = dataclasses.fields(cls)
+    keys = {f.metadata.get("json", f.name) for f in fields}
+    data, expected, unread = {}, {}, {}
+    for f in fields:
+        key = f.metadata.get("json", f.name)
+        if key is None:
+            if f.name not in keys:
+                unread[f.name] = 7
+            continue
+        value = None if "convert" in f.metadata else 2
+        expected[f.name] = f.default if value is None else value
+        *parents, leaf = key.split(".")
+        node = data
+        for part in parents:
+            node = node.setdefault(part, {})
+        node[leaf] = value
+    (tmp_path / "config.json").write_text(json.dumps(data | unread))
+    config = cls.from_checkpoint(tmp_path)
+    assert {name: getattr(config, name) for name in expected} == expected
+    assert 7 not in [getattr(config, name) for name in unread]
+    assert not unread.keys() & config.to_json().keys()
 
 
 def test_head_dim_falls_back_and_max_seq_len_is_the_native_context(tmp_path):
@@ -123,12 +151,6 @@ def test_embedding_gemma2_from_checkpoint_is_the_default_instance(cls, instance)
     assert cls.from_checkpoint(EMBEDDING_GEMMA2_DIR) == instance
 
 
-def test_embedding_gemma2_global_layers_are_the_checkpoints_full_attention_ones():
-    require(EMBEDDING_GEMMA2_DIR / "config.json")
-    config = EmbeddingGemmaConfig.from_checkpoint(EMBEDDING_GEMMA2_DIR)
-    assert config.global_layers == (5, 11, 17, 23)
-
-
 def test_decoder_config_adds_the_decoder_fields_to_configs_eps():
     base_fields = {f.name for f in dataclasses.fields(Config)}
     decoder_fields = {f.name for f in dataclasses.fields(DecoderConfig)}
@@ -150,7 +172,11 @@ PHI4 = Phi4Config(
 )
 
 
-@pytest.mark.parametrize("config", [REAL_1B, PHI4], ids=["llama", "phi4"])
+@pytest.mark.parametrize(
+    "config",
+    [REAL_1B, PHI4, EmbeddingGemmaConfig()],
+    ids=["llama", "phi4", "embedding_gemma2"],
+)
 def test_to_json_is_from_checkpoint_s_inverse(tmp_path, config):
     """A converted field (a ``rope_scaling``) is written as the checkpoint
     writes it, so the file reads back the same config.

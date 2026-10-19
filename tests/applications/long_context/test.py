@@ -30,11 +30,13 @@ from iron.applications.phi3 import Phi4
 from iron.applications.qwen2 import Qwen2
 from iron.applications.qwen3 import Qwen3
 from iron.applications.smollm2 import SmolLM2
+from iron.applications.smollm3 import SmolLM3
 from iron.lm import CausalLM, Checkpoint, EncoderDecoder
 from iron.lm.testing import (
     check_deep_decode,
     check_deep_prompt,
     check_prompt_time,
+    load_from_flags,
     require,
     weights_dir,
 )
@@ -69,12 +71,6 @@ class Application:
     def path(self) -> Path:
         return weights_dir(self.directory) / self.weights
 
-    def require(self, *files: Path) -> None:
-        """Skip unless ``files`` exist; in CI, fail where it is staged."""
-        if not self.staged and not all(f.exists() for f in files):
-            pytest.skip(f"{self.directory} is not staged: {files}")
-        require(*files)
-
 
 INDEX = "model.safetensors.index.json"
 
@@ -85,10 +81,10 @@ APPLICATIONS = {
         Llama,
         "llama3.2-1b",
         "model.safetensors",
-        "tokenizer.model",
+        "tokenizer.json",
         each_step=("npu1", "npu2"),
     ),
-    "llama_3.2_3b": Application(Llama, "llama3.2-3b", INDEX, "tokenizer.model"),
+    "llama_3.2_3b": Application(Llama, "llama3.2-3b", INDEX, "tokenizer.json"),
     "smollm2_1.7b": Application(
         SmolLM2,
         "smollm2-1.7b-instruct",
@@ -126,6 +122,16 @@ APPLICATIONS = {
     "smolvlm_256m": Application(
         SmolVLMText, "smolvlm-256m-instruct", "model.safetensors", "tokenizer.json"
     ),
+    "smollm3_3b": Application(
+        SmolLM3, "smollm3-3b", INDEX, "tokenizer.json", staged=False
+    ),
+}
+
+#: Decoder applications held to no context yet, and why.
+UNHELD = {
+    "granite_hybrid": "SelectiveScan has no kernel",
+    "qwen3_moe": "Experts streams every expert a row: too slow to generate",
+    "ministral3": "its released checkpoints nest the text decoder, unread",
 }
 
 
@@ -142,7 +148,7 @@ def test_every_decoder_application_is_held_to_its_context():
             if issubclass(model, CausalLM) and not issubclass(model, EncoderDecoder):
                 found.add(package.name)
     held = {a.model.__module__.split(".")[2] for a in APPLICATIONS.values()}
-    assert found == held
+    assert found == held | UNHELD.keys()
 
 
 @pytest.mark.parametrize("version", ["decode", "prompt"])
@@ -153,7 +159,7 @@ def test_nothing_grows_with_the_context(application, version):
     row per position: its size is affine in the context.
     """
     app = APPLICATIONS[application]
-    app.require(app.path, app.path.with_name("config.json"))
+    require(app.path, app.path.with_name("config.json"), staged=app.staged)
     config = app.model.default_config(app.path)
     weights = Checkpoint(app.path).tree("unread")
     C = config.prefill_chunk
@@ -205,20 +211,9 @@ def loaded(request):
     each on the token the last one drew.
     """
     app = APPLICATIONS[request.param.removesuffix("_each_step")]
-    seed = request.config.getoption("--random-weights")
-    max_seq_len = request.config.getoption("--max-seq-len")
-    if seed is not None:
-        app.require(app.path, app.path.with_name("config.json"))
-    else:
-        tokenizer = weights_dir(app.directory) / app.tokenizer
-        app.require(app.path, tokenizer, app.path.with_name("config.json"))
+    load = load_from_flags(request, app.model, app.path, app.tokenizer, app.staged)
     each_step = request.param.endswith("_each_step")
-    model = app.model.load(
-        app.path.parent,
-        seed=seed,
-        max_seq_len=max_seq_len,
-        full_elf=False if each_step else None,
-    )
+    model = load(full_elf=False if each_step else None)
     assert model.device_loop is not each_step
     yield app, model
     if aie_utils.DefaultNPURuntime is not None:

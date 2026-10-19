@@ -8,6 +8,7 @@ prompt's text to its ids.
 """
 
 import dataclasses
+import datetime
 import functools
 import json
 import logging
@@ -53,13 +54,21 @@ def prompt_text(chars: int, skip: int = 0) -> str:
 class Tokenizer:
     """Text to a prompt's token ids, ``bos`` first, and token ids back to
     text, over ``encoding``: anything with ``encode`` and ``decode``, as
-    ``Model.open_tokenizer`` gives. ``chat_template`` is the checkpoint's
-    own, from its ``tokenizer_config.json``, if it has one.
+    ``TokenizerJson`` gives. ``chat_template`` is the checkpoint's
+    own, from its ``tokenizer_config.json`` or ``chat_template.jinja``, if
+    it has one, and ``bos_token`` the text it writes for ``bos_token``
+    (``bos``'s own text when None).
     """
 
-    def __init__(self, encoding, bos: int, chat_template: str | None = None):
+    def __init__(
+        self,
+        encoding,
+        bos: int,
+        chat_template: str | None = None,
+        bos_token: str | None = None,
+    ):
         self.encoding, self.bos = encoding, bos
-        self.chat_template = chat_template
+        self.chat_template, self.bos_token = chat_template, bos_token
 
     def __call__(self, text: str) -> list[int]:
         return [self.bos, *self.encoding.encode(text)]
@@ -71,7 +80,8 @@ class Tokenizer:
         """The ids of ``messages``, each ``{"role": ..., "content": ...}``,
         as ``chat_template`` renders them (with jinja2, the ``models``
         extra), the assistant's turn opened after them. The special tokens
-        the text names are their ids, and ``bos`` is first, once.
+        the text names are their ids; ``bos`` is there only where the
+        template writes it, as transformers' ``apply_chat_template`` has it.
 
         Raises:
             ValueError: The checkpoint has no chat template.
@@ -80,9 +90,7 @@ class Tokenizer:
                 (its ``raise_exception``).
         """
         if self.chat_template is None:
-            raise ValueError(
-                "the checkpoint's tokenizer_config.json has no chat_template"
-            )
+            raise ValueError("the checkpoint has no chat template")
         try:
             from jinja2 import TemplateError
             from jinja2.sandbox import ImmutableSandboxedEnvironment
@@ -101,14 +109,18 @@ class Tokenizer:
         text = template.render(
             messages=messages,
             add_generation_prompt=True,
-            bos_token="",
+            bos_token=(
+                self.encoding.token(self.bos)
+                if self.bos_token is None
+                else self.bos_token
+            ),
             raise_exception=raise_exception,
+            strftime_now=lambda f: datetime.datetime.now().strftime(f),
         )
-        ids = self.encoding.encode(text, allowed_special="all")
-        return ids if ids[:1] == [self.bos] else [self.bos, *ids]
+        return self.encoding.encode(text)
 
 
-class _TokenizerJson:
+class TokenizerJson:
     """A Hugging Face ``tokenizer.json``, over ``tokenizers`` (not
     ``transformers``): text to token ids without the special tokens its
     post-processor adds, since ``Tokenizer`` puts the BOS first, and back.
@@ -119,14 +131,16 @@ class _TokenizerJson:
 
         self._tokenizer = tokenizers.Tokenizer.from_file(str(path))
 
-    def encode(self, text: str, allowed_special="all") -> list[int]:
-        """``text``'s ids, each added token it names its own id, which
-        ``allowed_special`` (tiktoken's keyword) cannot turn off.
-        """
+    def encode(self, text: str) -> list[int]:
+        """``text``'s ids, each added token it names its own id."""
         return self._tokenizer.encode(text, add_special_tokens=False).ids
 
     def decode(self, tokens) -> str:
         return self._tokenizer.decode(tokens)
+
+    def token(self, id: int) -> str:
+        """The text of token ``id``."""
+        return self._tokenizer.id_to_token(id)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -160,8 +174,6 @@ class Model(iron.Graph):
     # Each checkpoint layer's dotted paths that its config's ``layer``
     # reads under another name, by that name.
     renames: ClassVar[dict[str, str]] = {}
-    # The tokenizer's file in the model's Hugging Face repository.
-    tokenizer_file = "tokenizer.json"
     # What loads the checkpoint into transformers to record its goldens.
     hugging_face: type = HuggingFace
     checkpoint: Checkpoint | None = None
@@ -194,7 +206,7 @@ class Model(iron.Graph):
         Args:
             path: A directory holding ``config.json``, ``model.safetensors``
                 or a sharded one's ``model.safetensors.index.json``, and
-                ``tokenizer_file``; or a repository's id, those files
+                ``tokenizer.json``; or a repository's id, those files
                 downloaded to Hugging Face's cache.
             seed: In place of the checkpoint's weights and the tokenizer,
                 weights drawn at ``seed`` in its shapes (only its header is
@@ -209,7 +221,7 @@ class Model(iron.Graph):
         if not directory.is_dir():
             from huggingface_hub import snapshot_download
 
-            files = ["*config.json", "model.safetensors*", cls.tokenizer_file]
+            files = ["*config.json", "model.safetensors*", "tokenizer.json"]
             directory = Path(snapshot_download(str(path), allow_patterns=files))
         weights = directory / "model.safetensors.index.json"
         if not weights.exists():
@@ -228,16 +240,20 @@ class Model(iron.Graph):
         model = cls(config, tree)
         model.checkpoint, model.seed = checkpoint, seed
         if seed is None:
-            tokenizer = directory / cls.tokenizer_file
-            # A directory laid out by hand may hold it at its top.
-            if not tokenizer.exists():
-                tokenizer = directory / tokenizer.name
             settings = directory / "tokenizer_config.json"
-            template = None
-            if settings.exists():
-                template = json.loads(settings.read_text()).get("chat_template")
-            encoding = cls.open_tokenizer(tokenizer)
-            model.tokenizer = Tokenizer(encoding, model.bos, template)
+            jinja = directory / "chat_template.jinja"
+            found = json.loads(settings.read_text()) if settings.exists() else {}
+            template = found.get("chat_template")
+            if template is None and jinja.exists():
+                template = jinja.read_text()
+            # transformers renders tokenizer_config.json's bos_token, which
+            # may be null (nothing) or an added token's record.
+            bos_token = None
+            if "bos_token" in found:
+                b = found["bos_token"]
+                bos_token = (b["content"] if isinstance(b, dict) else b) or ""
+            encoding = TokenizerJson(directory / "tokenizer.json")
+            model.tokenizer = Tokenizer(encoding, model.bos, template, bos_token)
         return model
 
     @functools.cached_property
@@ -255,10 +271,22 @@ class Model(iron.Graph):
                     return bos
         raise KeyError(f"{directory} names no bos_token_id: name the model's bos")
 
-    @staticmethod
-    def open_tokenizer(path):
-        """The tokenizer at ``path``: a Hugging Face ``tokenizer.json``."""
-        return _TokenizerJson(path)
+    @functools.cached_property
+    def eos(self) -> set[int]:
+        """The tokens generation stops at: the checkpoint's ``eos_token_id``,
+        one or a list, from its ``generation_config.json`` or else its
+        ``config.json``; none without a checkpoint or either.
+        """
+        if self.checkpoint is None:
+            return set()
+        directory = Path(self.checkpoint.path).parent
+        for name in ("generation_config.json", "config.json"):
+            path = directory / name
+            if path.exists():
+                eos = json.loads(path.read_text()).get("eos_token_id")
+                if eos is not None:
+                    return set(eos) if isinstance(eos, list) else {eos}
+        return set()
 
     @classmethod
     def default_config(cls, weights_path) -> Config:
@@ -370,8 +398,9 @@ class Model(iron.Graph):
     def stream(
         self, prompt, max_tokens: int, sampler: Sampler | None = None, **inputs
     ) -> Iterator:
-        """Draw ``max_tokens`` after ``prompt``, each yielded as it is drawn,
-        and its timings into ``stats`` once the last is.
+        """Draw up to ``max_tokens`` after ``prompt``, each yielded as it is
+        drawn, through the first of ``eos`` drawn, and its timings into
+        ``stats`` once the last is.
 
         Args:
             prompt: Text, tokenized; a list of chat messages, each
@@ -379,7 +408,7 @@ class Model(iron.Graph):
                 checkpoint's chat template (``Tokenizer.chat``); or token ids.
                 Text and messages yield text, each piece once its characters
                 are whole; ids yield ids.
-            max_tokens: How many tokens to draw.
+            max_tokens: The most tokens to draw.
             sampler: How each is drawn; None is greedy.
             inputs: What the model takes beside the tokens
                 (``Multimodal``'s ``raw``).
@@ -415,16 +444,20 @@ class Model(iron.Graph):
             drawn.append(token)
             if not text:
                 yield token
-                continue
-            shown = self.tokenizer.decode(drawn[seen:held])
-            piece = self.tokenizer.decode(drawn[seen:])[len(shown) :]
-            # A token can end partway through a character; the next completes it.
-            if not piece.endswith("\ufffd"):
-                yield piece
-                seen, held = held, len(drawn)
+            else:
+                shown = self.tokenizer.decode(drawn[seen:held])
+                piece = self.tokenizer.decode(drawn[seen:])[len(shown) :]
+                # A token can end partway through a character; the next completes it.
+                if not piece.endswith("\ufffd"):
+                    if piece:
+                        yield piece
+                    seen, held = held, len(drawn)
+            if token in self.eos:
+                break
         if text and held < len(drawn):
             shown = self.tokenizer.decode(drawn[seen:held])
-            yield self.tokenizer.decode(drawn[seen:])[len(shown) :]
+            if piece := self.tokenizer.decode(drawn[seen:])[len(shown) :]:
+                yield piece
         later = len(drawn) - 1
         rate = later / (last - first) if later else math.nan
         self.stats = Stats(first - began, rate)
@@ -450,8 +483,9 @@ class Model(iron.Graph):
         full_elf: bool | None = None,
         dev=None,
     ) -> "Model":
-        """Compile and load every version before the first call, in one
-        arena, then hand them to ``loaded``.
+        """Compile every version, then load each, in one arena, and hand
+        them to ``loaded``: every version is placed before the arena's
+        buffers are made, so none grows them, which would copy them.
 
         Args:
             release: Given each piece of each weight once it is on the device.
@@ -466,10 +500,11 @@ class Model(iron.Graph):
             version = self.compile(
                 dev=dev, feeds=decode if prompt else None, full_elf=full_elf, **shapes
             )
-            version.load(release=release)
             if not shapes and version.emit is not None:
                 decode = version
             compiled.append(version)
+        for version in compiled:
+            version.load(release=release)
         self.loaded(compiled)
         return self
 
@@ -496,7 +531,7 @@ def _is_text(prompt) -> bool:
 
 
 class OnHost:
-    """A model with its images stood in by its graph's reference
+    """A model with its versions stood in by its graph's reference
     (``Graph.reference``), run at whatever shape it is called with: the
     model with no device, mixed in before the model's own class. It
     compiles nothing, and ``generate`` draws on the host.
@@ -517,7 +552,7 @@ class OnHost:
 
 
 class _HostOutput:
-    """What an image returns: a buffer read with ``numpy()``."""
+    """What a version returns: a buffer read with ``numpy()``."""
 
     def __init__(self, array):
         self.array = array

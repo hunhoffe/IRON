@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Ministral 3's text decoder on the shared decoder (``iron.lm``), its shape
+that of Hugging Face's ``ministral3`` text model. The released checkpoints
+are Mistral 3's vision-language model, its text config and weights nested
+under it, which nothing here reads yet.
+
+Ministral 3 is Llama's layer under YaRN's RoPE (``YarnRopeScaling``), its
+queries scaled by position past the context it was trained at: by ``1 +
+beta * log(1 + floor(position / original_max_position_embeddings))``,
+Llama 4's attention temperature. RoPE is linear in its angles, so the
+queries turn by a second table, the first one times that scale
+(``Ministral3Attention``).
+"""
+
+import dataclasses
+import math
+
+import numpy as np
+from ml_dtypes import bfloat16
+
+import iron
+import iron.functional as F
+from iron.lm import Attention, CausalLM, DecoderConfig, DecoderLayer
+from iron.lm.blocks import Rope
+
+
+@dataclasses.dataclass(frozen=True)
+class YarnRopeScaling:
+    """YaRN's RoPE frequency scaling (``"rope_type": "yarn"``): a frequency
+    turning fewer than ``beta_slow`` times over the original context is
+    divided by ``factor``, one turning more than ``beta_fast`` times is
+    kept, and one between is blended linearly by its dimension, the blend's
+    bounds rounded outward to whole dimensions. The fields are the
+    checkpoint's ``rope_parameters``.
+    """
+
+    factor: float
+    original_max_position_embeddings: int
+    beta_fast: float = 32.0
+    beta_slow: float = 1.0
+    mscale: float | None = None
+    mscale_all_dim: float | None = None
+    attention_factor: float | None = None
+
+    def __call__(self, inv_freq: np.ndarray) -> np.ndarray:
+        """``inv_freq`` (radians per position, per frequency), scaled."""
+        dim = 2 * inv_freq.size
+        log_base = -math.log(inv_freq[1]) * dim / 2
+
+        def dimension(turns):
+            # The dimension whose frequency turns `turns` times over the
+            # original context.
+            original = self.original_max_position_embeddings
+            return dim * math.log(original / (turns * 2 * math.pi)) / (2 * log_base)
+
+        low = max(math.floor(dimension(self.beta_fast)), 0)
+        high = min(math.ceil(dimension(self.beta_slow)), dim - 1)
+        ramp = np.clip((np.arange(dim // 2) - low) / max(high - low, 1e-3), 0, 1)
+        return inv_freq / self.factor * ramp + inv_freq * (1 - ramp)
+
+    def cos_sin_scale(self) -> float:
+        """What YaRN multiplies cos and sin by: ``attention_factor``, else
+        its ``mscale`` over its ``mscale_all_dim``'s.
+        """
+        if self.attention_factor is not None:
+            return self.attention_factor
+
+        def mscale(m):
+            return 1.0 if self.factor <= 1 else 0.1 * m * math.log(self.factor) + 1
+
+        if self.mscale and self.mscale_all_dim:
+            return mscale(self.mscale) / mscale(self.mscale_all_dim)
+        return mscale(1)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "YarnRopeScaling":
+        """``rope_parameters`` as ``config.json`` writes them, the keys not
+        YaRN's dropped.
+        """
+        names = {f.name for f in dataclasses.fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in names})
+
+    def to_json(self) -> dict:
+        given = {k: v for k, v in dataclasses.asdict(self).items() if v is not None}
+        return {"rope_type": "yarn", **given}
+
+
+@dataclasses.dataclass(frozen=True)
+class Ministral3Config(DecoderConfig):
+    """``DecoderConfig`` with its RoPE base, YaRN and attention temperature
+    in ``rope_parameters``.
+    """
+
+    rope_theta: float = dataclasses.field(
+        metadata={"json": "rope_parameters.rope_theta"}
+    )
+    rope_scaling: YarnRopeScaling | None = dataclasses.field(
+        default=None,
+        metadata={"json": "rope_parameters", "convert": YarnRopeScaling.from_dict},
+    )
+    llama_4_scaling_beta: float = dataclasses.field(
+        default=0.0,
+        kw_only=True,
+        metadata={"json": "rope_parameters.llama_4_scaling_beta"},
+    )
+    tie_word_embeddings: bool = False
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.llama_4_scaling_beta and self.rope_scaling is None:
+            raise ValueError(
+                "Ministral3Config: the query temperature counts YaRN's "
+                "original context, and there is no YaRN"
+            )
+        if self.rope_scaling is not None:
+            scale = self.rope_scaling.cos_sin_scale()
+            object.__setattr__(self, "rope_attention_scaling", scale)
+
+    def to_json(self) -> dict:
+        out = super().to_json()
+        # rope_scaling's dict replaced the one rope_theta was written into.
+        out.setdefault("rope_parameters", {})["rope_theta"] = self.rope_theta
+        return out
+
+    def query_scale(self) -> np.ndarray:
+        """Each position's query scale, float32."""
+        original = self.rope_scaling.original_max_position_embeddings
+        blocks = np.floor(np.arange(self.max_seq_len) / original)
+        return (1 + self.llama_4_scaling_beta * np.log1p(blocks)).astype(np.float32)
+
+
+class QueryRope(Rope):
+    """The config's RoPE, each row of its table times its position's query
+    scale.
+    """
+
+    def __init__(self, c: Ministral3Config):
+        super().__init__(c)
+        scaled = c.angles() * c.query_scale()[:, None]
+        self.table = iron.weight(scaled.astype(bfloat16))
+
+
+class Ministral3Attention(Attention):
+    """Llama's attention, q turned by ``query_rope``'s rows of the call
+    where it holds one and k by the call's angles.
+    """
+
+    query_rope: QueryRope | None = None
+
+    def body(self, x, cache, step, angles=None):
+        n, H, G, D = x.shape[0], self.heads, self.groups, self.head_dim
+        tiles = dict(tile_size_output=D // 2) if n == 1 else {}
+        q, k, v = (
+            F.linear(x, p.weight, p.bias, **tiles)
+            for p in (self.q_proj, self.k_proj, self.v_proj)
+        )
+        rows = angles
+        if self.query_rope is not None:
+            rows = self.query_rope.rows(
+                prompt=step.prompt,
+                position=step.position,
+                start=step.start,
+                rows=step.rows,
+                rope_start=None,
+            )
+        q = F.rope(q.reshape(n * H, D), rows)
+        k = F.rope(k.reshape(n * G, D), angles)
+        o = cache.attend(
+            step,
+            q.reshape(n, H, D),
+            k.reshape(n, G, D),
+            v.reshape(n, G, D),
+            scale=self.scale,
+        )
+        return self.o_proj(o)
+
+
+class Ministral3Layer(DecoderLayer):
+    """Llama's layer, its attention ``Ministral3Attention``."""
+
+    def __init__(self, c: Ministral3Config, i: int):
+        super().__init__(c, i)
+        self.self_attn = Ministral3Attention(c, i)
+
+
+class Ministral3(CausalLM):
+    """Ministral 3's text decoder on ``config``'s shape and a checkpoint's
+    ``weights``, its (untied) output head ``lm_head``.
+    """
+
+    config = Ministral3Config
+    layer_class = Ministral3Layer
+
+    def __init__(self, config: Ministral3Config, weights):
+        super().__init__(config, weights)
+        if config.llama_4_scaling_beta:
+            rope = QueryRope(config)
+            for layer in self.layers:
+                layer.self_attn.query_rope = rope

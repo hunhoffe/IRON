@@ -14,8 +14,8 @@ computes in bfloat16 and the reference in float32, so the logits agree to
 bf16 tolerance and the argmax exactly.
 """
 
-import base64
 import dataclasses
+import datetime
 import itertools
 import json
 import math
@@ -29,10 +29,10 @@ from ml_dtypes import bfloat16
 import iron
 from iron.lm import (
     DecoderConfig,
-    Model,
     OnHost as Host,
     Sampler,
     Tokenizer,
+    TokenizerJson,
     accuracy,
     determinism,
     generate_on_host,
@@ -42,7 +42,6 @@ from iron.lm.checkpoint import leaves
 from iron.lm.golden import Golden, HuggingFace
 from iron.lm.testing import assert_close
 from iron.applications.llama import Llama
-from iron.applications.llama.model import SPECIAL_TOKENS, tokenizer
 from iron.operators.copy import Copy
 from iron.operators.elementwise_add import ElementwiseAdd
 from iron.operators.rope import RoPE
@@ -206,7 +205,7 @@ class Decoder:
         C = cpu.config.prefill_chunk
         config = dataclasses.replace(cpu.config, max_seq_len=4 * C)
         model, reference = self.host(config, cpu.weights), cpu.golden
-        tokens = np.random.default_rng(3).integers(0, config.vocab_size, 150)
+        tokens = np.random.default_rng(3).integers(0, config.vocab_size, C + 150)
         first = reference.logits(tokens)
         assert_close(model.logits(tokens), first)
         tokens = np.append(tokens, first.argmax())
@@ -291,6 +290,34 @@ def test_a_model_runs_only_the_versions_it_loaded(cpu):
     assert not model._versions
 
 
+def test_a_model_places_every_version_before_loading_any(cpu, monkeypatch):
+    """A version placed after the arena's buffers exist grows them, copying
+    every weight once more, so ``load_versions`` compiles all before it
+    loads one.
+    """
+    model, events = Llama(cpu.config, cpu.weights), []
+
+    class Version:
+        emit = None
+
+        def __init__(self, shapes):
+            self.shapes = shapes
+
+        def load(self, release=None):
+            events.append(("load", self.shapes))
+
+    def compile(**kw):
+        shapes = {k: v for k, v in kw.items() if k not in ("dev", "feeds", "full_elf")}
+        events.append(("compile", shapes))
+        return Version(shapes)
+
+    monkeypatch.setattr(model, "compile", compile)
+    monkeypatch.setattr(model, "loaded", lambda versions: None)
+    model.load_versions(dev=object())
+    shapes = model.shapes()
+    assert events == [("compile", s) for s in shapes] + [("load", s) for s in shapes]
+
+
 def test_a_model_reads_as_its_context_and_whether_it_is_loaded(cpu):
     model = Llama(cpu.config, cpu.weights)
     assert repr(model) == f"Llama(max_seq_len={cpu.config.max_seq_len}, not loaded)"
@@ -371,13 +398,18 @@ def test_a_decoder_without_rope_places_its_positions_through_the_hook(cpu):
 
 def test_a_decoder_nested_in_its_checkpoint_is_read_where_it_is(cpu):
     """A checkpoint holding its decoder's embedding, layers and final norm
-    under ``model.decoder``: ``decoder=`` reads them there, and the model
-    gives the flat checkpoint's logits bit for bit.
+    under ``model.decoder``: with no ``layer_class``, ``decoder=`` reads
+    them there, and the model gives the flat checkpoint's logits bit for
+    bit.
     """
+
+    class Nested(OnHost):
+        layer_class = None
+
     m = cpu.weights.model
     decoder = SimpleNamespace(embed_tokens=m.embed_tokens, layers=m.layers, norm=m.norm)
     nested = SimpleNamespace(model=SimpleNamespace(decoder=decoder))
-    model = OnHost(cpu.config, nested, decoder)
+    model = Nested(cpu.config, nested, decoder)
     assert model.decoder is decoder
     np.testing.assert_array_equal(
         model.logits(cpu.prompt), OnHost(cpu.config, cpu.weights).logits(cpu.prompt)
@@ -395,12 +427,14 @@ def test_a_turn_runs_from_its_first_new_token(cpu):
     rng = np.random.default_rng(9)
     tokens = rng.integers(0, config.vocab_size, 300)
     model.logits(tokens)
-    before = np.array(model.keys[0].host)
+    before = np.array(model.model.layers[0].cache.keys.host)
     turn = np.concatenate([tokens[:270], rng.integers(0, config.vocab_size, 40)])
     assert model.resume(model._held(turn)) == 270
     assert [(v["start"], v["rows"]) for _, v in model._chunks(turn, 270)] == [(270, 40)]
     assert_close(model.logits(turn), reference.logits(turn))
-    np.testing.assert_array_equal(model.keys[0].host[:270], before[:270])
+    np.testing.assert_array_equal(
+        model.model.layers[0].cache.keys.host[:270], before[:270]
+    )
 
 
 def test_a_context_no_chunk_divides_runs_to_its_last_position(cpu):
@@ -435,13 +469,24 @@ def _repository(directory, weights):
         f.write(struct.pack("<Q", len(blob)) + blob)
         for _, t in leaves(weights):
             f.write(t.tobytes())
-    pairs = itertools.product(range(ord("a"), ord("z") + 1), range(32, 127))
-    pieces = [bytes([b]) for b in range(256)] + [bytes(p) for p in pairs][: V - 256]
-    ranks = "".join(
-        f"{base64.b64encode(p).decode()} {i}\n" for i, p in enumerate(pieces)
-    )
-    (directory / "original").mkdir()
-    (directory / "original" / "tokenizer.model").write_text(ranks)
+    _tokenizer_json(directory / "tokenizer.json", V)
+
+
+def _tokenizer_json(path, size=256, specials=()):
+    """A byte-level ``tokenizer.json`` at ``path``: every byte, two-letter
+    pieces up to ``size`` ids, then ``specials``; its encoding.
+    """
+    tokenizers = pytest.importorskip("tokenizers")
+    alphabet = sorted(tokenizers.pre_tokenizers.ByteLevel.alphabet())
+    letters = [chr(c) for c in range(33, 127)]
+    pairs = list(itertools.product(letters[64:90], letters))[: size - 256]
+    vocab = {c: i for i, c in enumerate(alphabet + [a + b for a, b in pairs])}
+    hf = tokenizers.Tokenizer(tokenizers.models.BPE(vocab, pairs))
+    hf.pre_tokenizer = tokenizers.pre_tokenizers.ByteLevel(add_prefix_space=False)
+    hf.decoder = tokenizers.decoders.ByteLevel()
+    hf.add_special_tokens(list(specials))
+    hf.save(str(path))
+    return TokenizerJson(path)
 
 
 QUESTION = "The capital of France is"
@@ -500,6 +545,38 @@ def test_no_sampler_is_greedy(toy):
     assert toy.generate(tokens, 6) == toy.generate(tokens, 6, Sampler(temperature=0))
 
 
+def test_generation_stops_at_an_eos_and_includes_it(cpu, tmp_path):
+    """As Hugging Face's ``generate``: the first of the checkpoint's eos ids
+    drawn is the last token, ``generation_config.json``'s list over
+    ``config.json``'s.
+    """
+    _repository(tmp_path, cpu.weights)
+    model = OnHost.load(tmp_path)
+    tokens = model.tokenizer(QUESTION)
+    drawn = model.generate(tokens, 6)
+    end = drawn.index(drawn[3]) + 1
+    (tmp_path / "generation_config.json").write_text(
+        json.dumps({"eos_token_id": [-1, drawn[3]]})
+    )
+    model = OnHost.load(tmp_path)
+    assert model.generate(tokens, 6) == drawn[:end]
+    assert list(model.stream(tokens, 6)) == drawn[:end]
+
+
+def test_a_run_that_draws_no_eos_draws_max_tokens(cpu, tmp_path):
+    """``config.json``'s eos, with no ``generation_config.json``."""
+    _repository(tmp_path, cpu.weights)
+    config = json.loads((tmp_path / "config.json").read_text())
+    model = OnHost.load(tmp_path)
+    tokens = model.tokenizer(QUESTION)
+    drawn = model.generate(tokens, 6)
+    unseen = next(t for t in range(SMALL.vocab_size) if t not in drawn)
+    config["eos_token_id"] = unseen
+    (tmp_path / "config.json").write_text(json.dumps(config))
+    model = OnHost.load(tmp_path)
+    assert model.eos == {unseen} and model.generate(tokens, 6) == drawn
+
+
 def test_a_generation_s_timings_are_the_model_s_stats(toy):
     toy.generate(QUESTION, 3)
     assert toy.stats.ttft > 0 and toy.stats.tokens_per_s > 0
@@ -511,82 +588,80 @@ HI = [{"role": "user", "content": "Hi"}]
 
 
 def test_chat_messages_are_rendered_by_the_checkpoint_s_template(toy):
+    """ChatML writes no BOS, so the chat has none."""
     pytest.importorskip("jinja2")
     text = "<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n"
-    assert toy.tokenizer.chat(HI) == toy.tokenizer(text)
-    assert toy.generate(HI, 4) == toy.generate(text, 4)
+    assert toy.tokenizer.chat(HI) == toy.tokenizer.encoding.encode(text)
+    drawn = toy.generate(toy.tokenizer.chat(HI), 4)
+    assert toy.generate(HI, 4) == toy.tokenizer.decode(drawn)
 
 
-def test_a_chat_template_s_raise_exception_raises_its_message():
+def test_a_chat_template_jinja_file_is_read_and_may_call_strftime_now(cpu, tmp_path):
+    pytest.importorskip("jinja2")
+    _repository(tmp_path, cpu.weights)
+    template = "{{ strftime_now('%Y') }}" + CHATML
+    (tmp_path / "chat_template.jinja").write_text(template)
+    tokenizer = OnHost.load(tmp_path).tokenizer
+    year = datetime.date.today().strftime("%Y")
+    assert tokenizer.decode(tokenizer.chat(HI)).startswith(year + "<|im_start|>")
+
+
+@pytest.mark.parametrize(
+    "given, written", [(None, ""), ("<s>", "<s>"), ({"content": "<s>"}, "<s>")]
+)
+def test_a_chat_template_writes_tokenizer_config_s_bos_token(
+    cpu, tmp_path, given, written
+):
+    pytest.importorskip("jinja2")
+    _repository(tmp_path, cpu.weights)
+    settings = {"chat_template": "{{ bos_token }}" + CHATML, "bos_token": given}
+    (tmp_path / "tokenizer_config.json").write_text(json.dumps(settings))
+    tokenizer = OnHost.load(tmp_path).tokenizer
+    text = written + "<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n"
+    assert tokenizer.chat(HI) == tokenizer.encoding.encode(text)
+
+
+def test_a_chat_template_s_raise_exception_raises_its_message(tmp_path):
     jinja2 = pytest.importorskip("jinja2")
     template = "{{ raise_exception('roles must alternate') }}"
+    encoding = _tokenizer_json(tmp_path / "tokenizer.json")
     with pytest.raises(jinja2.TemplateError, match="roles must alternate"):
-        Tokenizer(None, 0, template).chat(HI)
+        Tokenizer(encoding, 0, template).chat(HI)
 
 
-# Llama 3's chat turns, after a BOS the template writes as given.
-LLAMA3_CHAT = (
-    "{% for m in messages %}<|start_header_id|>{{ m['role'] }}<|end_header_id|>"
-    "\n\n{{ m['content'] }}<|eot_id|>{% endfor %}"
-    "{{ '<|start_header_id|>assistant<|end_header_id|>\\n\\n' }}"
+# Chat turns opened and closed by added tokens, after a BOS the template
+# writes as given.
+TURNS = (
+    "{% for m in messages %}<|turn|>{{ m['role'] }}<|role_end|>"
+    "\n\n{{ m['content'] }}<|turn_end|>{% endfor %}"
+    "{{ '<|turn|>assistant<|role_end|>\\n\\n' }}"
 )
 
 
-@pytest.mark.parametrize("bos", ["{{ bos_token }}", "<|begin_of_text|>"])
-def test_a_chat_s_special_tokens_are_their_ids_and_its_bos_comes_once(tmp_path, bos):
-    """Llama 3's tiktoken encoding: each ``<|...|>`` the template writes is
-    its special token, and the BOS is first once, whether the template
-    writes it or not.
+@pytest.mark.parametrize("bos", ["{{ bos_token }}", "<|bos|>", ""])
+def test_a_chat_s_added_tokens_are_their_ids_and_its_bos_is_the_template_s(
+    tmp_path, bos
+):
+    """Each added token the template writes is its id in the
+    ``tokenizer.json``, not split into bytes, and the BOS is there only
+    where the template writes it.
     """
     pytest.importorskip("jinja2")
-    path = tmp_path / "tokenizer.model"
-    ranks = (f"{base64.b64encode(bytes([b])).decode()} {b}\n" for b in range(256))
-    path.write_text("".join(ranks))
-    encoding, S = tokenizer(path), SPECIAL_TOKENS
-    begin, start, end = (
-        S[f"<|{t}|>"] for t in ("begin_of_text", "start_header_id", "end_header_id")
-    )
-    got = Tokenizer(encoding, begin, bos + LLAMA3_CHAT).chat(HI)
+    path = tmp_path / "tokenizer.json"
+    specials = ["<|bos|>", "<|turn|>", "<|role_end|>", "<|turn_end|>"]
+    encoding = _tokenizer_json(path, specials=specials)
+    hf = pytest.importorskip("tokenizers").Tokenizer.from_file(str(path))
+    begin, start, end, eot = (hf.token_to_id(t) for t in specials)
+    got = Tokenizer(encoding, begin, bos + TURNS).chat(HI)
     text = encoding.encode
-    assert got == [
-        begin,
+    assert got == [begin] * bool(bos) + [
         start,
         *text("user"),
         end,
         *text("\n\nHi"),
-        S["<|eot_id|>"],
+        eot,
         start,
         *text("assistant"),
         end,
         *text("\n\n"),
-    ]
-
-
-def test_a_chat_s_added_tokens_are_their_ids_in_a_tokenizer_json(tmp_path):
-    """A ``tokenizer.json``'s added tokens the template writes are their
-    ids, not split into bytes.
-    """
-    pytest.importorskip("jinja2")
-    tokenizers = pytest.importorskip("tokenizers")
-    alphabet = sorted(tokenizers.pre_tokenizers.ByteLevel.alphabet())
-    hf = tokenizers.Tokenizer(
-        tokenizers.models.BPE({c: i for i, c in enumerate(alphabet)}, [])
-    )
-    hf.pre_tokenizer = tokenizers.pre_tokenizers.ByteLevel(add_prefix_space=False)
-    hf.decoder = tokenizers.decoders.ByteLevel()
-    specials = ["<|endoftext|>", "<|im_start|>", "<|im_end|>"]
-    hf.add_special_tokens(specials)
-    hf.save(str(tmp_path / "tokenizer.json"))
-    encoding = Model.open_tokenizer(tmp_path / "tokenizer.json")
-    eot, start, end = (hf.token_to_id(t) for t in specials)
-    got = Tokenizer(encoding, eot, CHATML).chat(HI)
-    text = encoding.encode
-    assert got == [
-        eot,
-        start,
-        *text("user\nHi"),
-        end,
-        *text("\n"),
-        start,
-        *text("assistant\n"),
     ]

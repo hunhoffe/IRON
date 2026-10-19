@@ -44,7 +44,7 @@ model = Llama.load("meta-llama/Llama-3.2-1B")   # downloads, fits, compiles once
 print(model.generate("The capital of France is", 8))   # greedy; pass an iron.lm.Sampler to sample
 ```
 
-`Llama.load` also takes a local directory holding `config.json`, the checkpoint and `original/tokenizer.model`.
+`Llama.load` also takes a local directory holding `config.json`, the checkpoint and `tokenizer.json`.
 
 The IRON Python API for Ryzen™ AI NPUs is described in the following paper:
 
@@ -118,12 +118,17 @@ Each model is a package under [iron/applications/](./iron/applications/) over [i
 | SmolLM2 1.7B Instruct | [smollm2](./iron/applications/smollm2/) | `smollm2-1.7b-instruct` |
 | Phi-4-mini-instruct | [phi3](./iron/applications/phi3/) | `phi-4-mini-instruct` |
 | Granite 4.2 3B | [granite](./iron/applications/granite/) | `granite-4.2-3b` |
+| SmolLM3 3B | [smollm3](./iron/applications/smollm3/) | `smollm3-3b` |
+| Qwen3-30B-A3B (reference only) | [qwen3_moe](./iron/applications/qwen3_moe/) | `qwen3-30b-a3b` |
+| Granite 4.0-H (reference only) | [granite_hybrid](./iron/applications/granite_hybrid/) | none yet |
+| Ministral 3 text decoder (drawn weights) | [ministral3](./iron/applications/ministral3/) | none yet |
 | LFM2-1.2B | [lfm2](./iron/applications/lfm2/) | `lfm2-1.2b` |
 | SmolVLM-256M-Instruct | [idefics3](./iron/applications/idefics3/) | `smolvlm-256m-instruct` |
 | EmbeddingGemma 2 | [embedding_gemma2](./iron/applications/embedding_gemma2/) | `embeddinggemma-2` |
+| ResNet-50 | [resnet](./iron/applications/resnet/) | `resnet-50` |
 | YOLOX-Nano | [yolox](./iron/applications/yolox/) | `yolox-nano` |
 | Whisper (toy shape) | [whisper](./iron/applications/whisper/) | none: drawn weights |
-| Gemma 4 E2B in FastFlowLM | [gemma4_flm](./iron/applications/gemma4_flm/) | `$FLM_MODEL_PATH` (the tests default to `fastflowlm`) |
+| Gemma 4 E2B in FastFlowLM | [gemma4_engine](./iron/operators/flm/gemma4_engine/) | `$FLM_MODEL_PATH` (the tests default to `fastflowlm`) |
 
 What the text decoders (Llama to LFM2 above) share:
 

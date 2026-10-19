@@ -8,23 +8,27 @@ themselves are applications over it, each a package of
 """
 
 from .checkpoint import Checkpoint
-from .config import Config, DecoderConfig, rope_angles
-from .model import Model, OnHost, Tokenizer, prompt_text
+from .config import Config, DecoderConfig, not_json, rope_angles
+from .model import Model, OnHost, Tokenizer, TokenizerJson, prompt_text
 from .cli import main
 from .blocks import (
     MLP,
     Attention,
-    ConcatChannels,
+    AttentionSpec,
     Conv1d,
-    Conv2d,
     CrossDecoderLayer,
     DecoderLayer,
+    DecoderLayerSpec,
+    Embedding,
     ImagePatches,
+    LayerNorm,
+    Linear,
     LogMel,
-    MaxPool2d,
     Norm,
+    RMSNorm,
     filterbank,
 )
+from iron.common.feature_map import ConcatChannels, Conv2d, MaxPool2d
 from .causal import CausalLM, Checkpoints, DecodeStep
 from .encoder import EncodeStep, Encoder, Tower
 from .encoder_decoder import EncoderDecoder
@@ -34,8 +38,10 @@ from .multimodal import Multimodal
 
 __all__ = [
     "Attention",
+    "AttentionSpec",
     "CrossDecoderLayer",
     "DecoderLayer",
+    "DecoderLayerSpec",
     "MLP",
     "Norm",
     "CausalLM",
@@ -50,22 +56,28 @@ __all__ = [
     "EncodeStep",
     "Encoder",
     "EncoderDecoder",
+    "Embedding",
     "Golden",
     "HuggingFace",
     "ImagePatches",
+    "LayerNorm",
+    "Linear",
     "LogMel",
     "MaxPool2d",
     "Model",
     "Multimodal",
     "OnHost",
+    "RMSNorm",
     "Sampler",
     "Tokenizer",
+    "TokenizerJson",
     "Tower",
     "accuracy",
     "determinism",
     "filterbank",
     "generate_on_host",
     "main",
+    "not_json",
     "prompt_text",
     "rope_angles",
 ]

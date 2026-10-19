@@ -22,10 +22,6 @@ from .blocks import SandwichLayer, TextLayer
 PROFILES = Path(__file__).with_name("profiles")
 
 
-def _global_layers(layer_types: list[str]) -> tuple[int, ...]:
-    return tuple(i for i, kind in enumerate(layer_types) if kind == "full_attention")
-
-
 @dataclasses.dataclass(frozen=True)
 class Config(lm.Config):
     vocab_size: int = dataclasses.field(
@@ -55,9 +51,9 @@ class Config(lm.Config):
         default=10000.0,
         metadata={"json": "text_config.rope_parameters.sliding_attention.rope_theta"},
     )
-    global_layers: tuple[int, ...] = dataclasses.field(
-        default=(5, 11, 17, 23),
-        metadata={"json": "text_config.layer_types", "convert": _global_layers},
+    layer_types: tuple[str, ...] = dataclasses.field(
+        default=(("sliding_attention",) * 5 + ("full_attention",)) * 4,
+        metadata={"json": "text_config.layer_types", "convert": tuple},
     )
     global_kv_groups: int = dataclasses.field(
         default=1,
@@ -84,7 +80,7 @@ class Config(lm.Config):
         metadata={"json": "text_config.hidden_activation"},
     )
     # The Matryoshka truncations, each renormalized.
-    mrl_dims: tuple[int, ...] = (768, 512, 256, 128)
+    mrl_dims: tuple[int, ...] = lm.not_json((768, 512, 256, 128))
     eps: float = dataclasses.field(
         default=1e-6, kw_only=True, metadata={"json": "text_config.rms_norm_eps"}
     )
@@ -115,13 +111,13 @@ class Config(lm.Config):
     # other marker's "id".
     eoa: int = dataclasses.field(default=258883, metadata={"json": "eoa_token_index"})
     # The longest sequence a call takes, soft tokens included.
-    max_tokens: int = 2048
+    max_tokens: int = lm.not_json(2048)
     # An MHA query block: the mean over the sequence is one query, a block.
-    block: int = 64
+    block: int = lm.not_json(64)
 
     def heads(self, i: int) -> tuple[int, int, float]:
         """Layer ``i``'s KV groups, head size and RoPE base."""
-        if i in self.global_layers:
+        if self.layer_types[i] == "full_attention":
             return self.global_kv_groups, self.global_head_dim, self.global_rope_base
         return self.num_key_value_heads, self.head_dim, self.rope_theta
 
@@ -130,9 +126,11 @@ class Config(lm.Config):
         layer's within ``sliding_window`` positions.
         """
         G, D, _ = self.heads(i)
-        window = None if i in self.global_layers else self.sliding_window
+        window = (
+            None if self.layer_types[i] == "full_attention" else self.sliding_window
+        )
         return TextLayer(
-            lm.Attention(
+            lm.AttentionSpec(
                 self.num_attention_heads,
                 G,
                 D,
@@ -159,8 +157,8 @@ class AudioConfig(lm.Config):
     num_attention_heads: int = dataclasses.field(
         default=8, metadata={"json": "audio_config.num_attention_heads"}
     )
-    intermediate_size: int = 4096
-    mels: int = 128
+    intermediate_size: int = lm.not_json(4096)
+    mels: int = lm.not_json(128)
     # The two subsampling convolutions' output channels.
     channels: tuple[int, int] = dataclasses.field(
         default=(128, 32),
@@ -170,10 +168,10 @@ class AudioConfig(lm.Config):
         },
     )
     # A query attends to itself and the `window - 1` positions before it.
-    window: int = 12
+    window: int = lm.not_json(12)
     # The key columns a query's band spans: its window, then the zeros that
     # make the row a whole Softmax line.
-    band: int = 32
+    band: int = lm.not_json(32)
     logit_cap: float = dataclasses.field(
         default=50.0, metadata={"json": "audio_config.attention_logit_cap"}
     )
@@ -186,21 +184,21 @@ class AudioConfig(lm.Config):
     output_dim: int = dataclasses.field(
         default=1536, metadata={"json": "audio_config.output_proj_dims"}
     )
-    text_dim: int = 512
+    text_dim: int = lm.not_json(512)
     eps: float = dataclasses.field(
         default=1e-6, kw_only=True, metadata={"json": "audio_config.rms_norm_eps"}
     )
     # The feature extractor's: samples per second, per frame and per hop.
-    sample_rate: int = 16000
-    frame: int = 320
-    hop: int = 160
-    fft: int = 512
-    mel_floor: float = 1e-3
-    max_hz: float = 8000.0
-    max_samples: int = 480000
-    pad_to: int = 128
+    sample_rate: int = lm.not_json(16000)
+    frame: int = lm.not_json(320)
+    hop: int = lm.not_json(160)
+    fft: int = lm.not_json(512)
+    mel_floor: float = lm.not_json(1e-3)
+    max_hz: float = lm.not_json(8000.0)
+    max_samples: int = lm.not_json(480000)
+    pad_to: int = lm.not_json(128)
     # The soft tokens a call takes at most: 30 s of audio gives 750.
-    max_tokens: int = 768
+    max_tokens: int = lm.not_json(768)
 
     @property
     def head_dim(self) -> int:
@@ -265,31 +263,31 @@ class VisionConfig(lm.Config):
         default="gelu_pytorch_tanh",
         metadata={"json": "vision_config.hidden_activation"},
     )
-    text_dim: int = 512
+    text_dim: int = lm.not_json(512)
     # The processor's soft-token budgets.
     image_tokens: int = dataclasses.field(
         default=280, metadata={"json": "vision_soft_tokens_per_image"}
     )
-    video_tokens: int = 140
+    video_tokens: int = lm.not_json(140)
     eps: float = dataclasses.field(
         default=1e-6, kw_only=True, metadata={"json": "vision_config.rms_norm_eps"}
     )
     # The patch rows of a call, an image's budget, and the largest image it
     # takes either way up, 12.6 MP.
-    patches: int = 2560
-    largest: tuple[int, int] = (3072, 4096)
+    patches: int = lm.not_json(2560)
+    largest: tuple[int, int] = lm.not_json((3072, 4096))
     # A GEMM's row block at its default tile: the pooled rows are whole blocks.
-    rows: int = 256
+    rows: int = lm.not_json(256)
     # The bytes of an image row Resample receives at a time, and a core's
     # patch columns, as many as its memory holds: 127 across on 16 cores.
-    chunk: int = 4096
-    patch_columns: int = 8
+    chunk: int = lm.not_json(4096)
+    patch_columns: int = lm.not_json(8)
 
     def layer(self, i: int) -> SandwichLayer:
         """Layer ``i``: unscaled attention over RMS-normed values."""
         H = self.num_attention_heads
         return SandwichLayer(
-            lm.Attention(
+            lm.AttentionSpec(
                 H,
                 H,
                 self.head_dim,
