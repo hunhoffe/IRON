@@ -4,9 +4,9 @@
 import numpy as np
 from aie.dialects._aie_enum_gen import AIEArch
 from aie.helpers.taplib import TensorAccessPattern
-from aie.iron import Buffer, ExternalFunction, In, ObjectFifo, Out, TaskGroup, Worker
+from aie.iron import Buffer, In, ObjectFifo, Out, TaskGroup, Worker
 from aie.iron.controlflow import range_
-from aie.utils import config
+from aie.iron.kernels import flm_gemma4
 from aie.utils.compile.jit.params import param, tunable, widths
 from aie.utils.verify import Tolerance
 from ml_dtypes import bfloat16
@@ -23,33 +23,6 @@ PROJECTION_ERROR = 0.025
 # The sequence finishes each round's TaskGroup DEPTH rounds later, freeing
 # its BDs; a shim tile holds 16.
 DEPTH = 2
-
-# mlir-aie's q4nx block product (flm_gemma4/q4nx.h), the LM head's, without
-# its RMS norm and softcap.
-SOURCE = """
-#include "common/zero.h"
-#include "flm_gemma4/q4nx.h"
-
-#include <aie_api/aie.hpp>
-
-using block_t = q4nx_block<32, 256>;
-
-extern "C" {
-void q4nx_gemv_sums(const bf16 *x, bf16 *sums, int k_tiles) {
-  for (int k = 0; k < k_tiles; k++)
-    group_sums_32<256>(sums + k * 8, x + k * 256);
-}
-
-void q4nx_gemv_zero(float *y_acc) { zero_vectorized<float, 32, 1, false>(y_acc); }
-
-void q4nx_gemv_block(const block_t *w, const bf16 *x, float *y_acc,
-                     const bf16 *sums, int k) {
-  q4nx_accumulate<32, 256>(w, x + k * 256, y_acc, sums + k * 8);
-}
-
-void q4nx_gemv_store(bf16 *y, const float *y_acc) { narrow_to_bf16<32>(y, y_acc); }
-}
-"""
 
 
 def _draw(op):
@@ -117,31 +90,22 @@ class Q4nxGEMV(Operator):
 
     def build(self) -> Built:
         K = self.K
-        x_ty = self.x.obj_type
-        y_ty = self.y.obj_type
-        w_ty = self.w.obj_type
-        acc_ty = np.ndarray[(M_TILE,), np.dtype[np.float32]]
-        sums_ty = np.ndarray[(K // GROUP,), np.dtype[bfloat16]]
-        block = ExternalFunction(
-            "q4nx_gemv_block",
-            source_string=SOURCE,
-            arg_types=[w_ty, x_ty, acc_ty, sums_ty, np.int32],
-            include_dirs=[config.aie_kernels_dir()],
-            # As the LM head's: the bf16 products otherwise run about 8x slower.
-            compile_flags=["-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16"],
+        kernel = flm_gemma4.flm_gemma4_q4nx_gemv(
+            dim=K, m_tile=M_TILE, k_tile=K_TILE, group=GROUP
         )
-        bind = block.object_file.bind
+        w_ty, x_ty, acc_ty, sums_ty, _ = kernel.arg_types()
+        y_ty, _ = kernel.q4nx_gemv_store.arg_types()
         kernels = [
-            bind("q4nx_gemv_sums", [x_ty, sums_ty, np.int32]),
-            bind("q4nx_gemv_zero", [acc_ty]),
-            block,
-            bind("q4nx_gemv_store", [y_ty, acc_ty]),
+            kernel.q4nx_gemv_sums,
+            kernel.q4nx_lm_head_zero,
+            kernel,
+            kernel.q4nx_gemv_store,
         ]
 
         def core(rounds):
             def core_fn(x_in, w_in, y_out, k_sums, k_zero, k_block, k_store, acc, sums):
                 x = x_in.acquire(1)
-                k_sums(x, sums, K // K_TILE)
+                k_sums(x, sums)
                 for _ in range_(rounds):
                     k_zero(acc)
                     for k in range_(K // K_TILE):
@@ -160,6 +124,7 @@ class Q4nxGEMV(Operator):
         self.x.bind(of_x.prod())
         workers, ws, ys = [], [], []
         for c in range(self.cols):
+            # w moves the host's bytes as the bf16 words the kernel reads.
             of_w, of_y = ObjectFifo(w_ty), ObjectFifo(y_ty)
             ws.append(of_w.prod())
             ys.append(of_y.cons())

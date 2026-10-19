@@ -18,9 +18,9 @@ Q4nxGEMV(K=2048, N=512)(y, q4nx.quantize(w).reshape(-1), x)
 
 This is IRON's own operator, not a FastFlowLM port. Each column's core
 takes 32 out-features a round: it sums each 32 values of `x` once, then
-streams those out-features' blocks past `x` through mlir-aie's q4nx block
-product, the one the [LM head](../lm_head) runs, without its RMS norm and
-softcap.
+streams those out-features' blocks past `x` through mlir-aie's
+`flm_gemma4_q4nx_gemv`, the [LM head](../lm_head)'s block product without
+its RMS norm and softcap.
 
 ## Numerics
 
