@@ -30,6 +30,10 @@ public API adds its entry under Unreleased.
   `F.gelu`'s default and `hidden_act` `"gelu"`. `Whisper.load` builds
   large-v3-turbo from its checkpoint (`Whisper.config`, `WhisperConfig`'s
   `decoder_start_token_id` its `bos`).
+- A BERT cross-encoder (`BertCrossEncoder.score`): a query and a passage
+  as one sequence, post-norm layers with learned position and segment
+  embeddings, scored by `BertForSequenceClassification`'s head, with a toy
+  golden.
 - SmolVLA (`SmolVLA.sample`): one camera, a task and a state cached
   through the VLM's layers once (`observe`), then the action expert's
   Euler steps over that cache (`denoise`), with toy goldens of the
