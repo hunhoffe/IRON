@@ -31,10 +31,8 @@ from ml_dtypes import bfloat16
 import iron
 from iron.applications.qwen3.model import Qwen3, Qwen3Layer
 from iron.applications.qwen3_vl.vision import VisionConfig, VisionTower
-from iron.lm import Call, CausalLM, DecoderConfig, Multimodal, not_json
 from iron.common.graph.handle import State
-from iron.lm.blocks import Rope
-from iron.lm.checkpoint import subtree
+from iron.lm import Call, CausalLM, DecoderConfig, Multimodal, Rope, not_json, subtree
 from iron.operators.copy import Copy
 from iron.operators.merge import Merge
 

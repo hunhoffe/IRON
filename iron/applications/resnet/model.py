@@ -27,7 +27,7 @@ from ml_dtypes import bfloat16
 import iron
 import iron.functional as F
 from iron.lm import BatchNorm2d, Linear
-from iron.lm.config import Config, not_json
+from iron.lm import Config, not_json
 from iron.operators.relu import ReLU
 
 #: An image pixel's channels as the graph takes them: RGB and a zero.
