@@ -656,9 +656,16 @@ class Graph:
                     f"{self.name}: a graph called in another's body carries "
                     f"no values of its own; its caller carries them"
                 )
-            return self.inline(
-                self.body, *(given.get(n) for n in self._parameters.inputs), **values
-            )
+            try:
+                return self.inline(
+                    self.body,
+                    *(given.get(n) for n in self._parameters.inputs),
+                    **values,
+                )
+            except (ValueError, TypeError) as e:
+                # Each graph it passes through says so, innermost first.
+                e.add_note(f"in {self.name}")
+                raise
         shapes: dict[str, Any] = {
             name: (tuple(int(n) for n in t.shape), np.dtype(t.dtype).type)
             for name, t in given.items()

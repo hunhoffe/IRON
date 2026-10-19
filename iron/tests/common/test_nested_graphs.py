@@ -77,6 +77,12 @@ def test_a_called_graph_records_into_its_caller():
     assert names == {"ffn.w_gate", "ffn.w_up", "ffn.w_down"}
 
 
+def test_an_error_in_a_called_graph_names_it():
+    with pytest.raises(ValueError) as error:
+        Block().record(x=((256, E + 64), bfloat16))
+    assert error.value.__notes__ == ["in FeedForward"]
+
+
 def test_a_called_graph_writes_a_given_output_bounded_by_its_callers_value():
     recording = Features().record(wave=((SAMPLES,), np.float32))
     assert [type(s.op) for s in recording.steps] == [
