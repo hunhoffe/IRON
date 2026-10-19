@@ -5,6 +5,7 @@
 
 from .dequant.op import DequantBFP
 from .gemm.op import ProjectionGEMM
+from .gemv.op import Q4nxGEMV
 from .layer.op import DecodeLayer
 from .lm_head.op import LMHead
 from .prefill_attn.op import PrefillAttention, PrefillSlidingAttention
