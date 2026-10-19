@@ -34,6 +34,10 @@ public API adds its entry under Unreleased.
   through the VLM's layers once (`observe`), then the action expert's
   Euler steps over that cache (`denoise`), with toy goldens of the
   observation's keys and values and of the action chunk.
+- `F.gelu` computes the exact form by default, as torch's does
+  (`GELU(approximate="none")`, over mlir-aie's `gelu_erf`), and the tanh
+  form at `approximate="tanh"`; a `hidden_act` of `"gelu"` runs, Whisper's
+  among them.
 - Qwen3-VL (`Qwen3VL`, its text model `Qwen3VLText`), one square image:
   the host writes each position's three-part RoPE row into a table the
   decoder reads (`Qwen3VLText.place`), and the vision tower's DeepStack

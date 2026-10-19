@@ -133,7 +133,7 @@ Each model is a package under [iron/applications/](./iron/applications/) over [i
 | Ministral 3 text decoder (drawn weights) | [ministral3](./iron/applications/ministral3/) | none yet |
 | LFM2-1.2B | [lfm2](./iron/applications/lfm2/) | `lfm2-1.2b` |
 | SmolVLM-256M-Instruct | [idefics3](./iron/applications/idefics3/) | `smolvlm-256m-instruct` |
-| Qwen3-VL 2B | [qwen3_vl](./iron/applications/qwen3_vl/) | `qwen3-vl-2b-instruct` |
+| Qwen3-VL (toy shape) | [qwen3_vl](./iron/applications/qwen3_vl/) | none: drawn weights |
 | SmolVLA (toy shape) | [smolvla](./iron/applications/smolvla/) | none: drawn weights |
 | EmbeddingGemma 2 | [embedding_gemma2](./iron/applications/embedding_gemma2/) | `embeddinggemma-2` |
 | ResNet-50 | [resnet](./iron/applications/resnet/) | `resnet-50` |
