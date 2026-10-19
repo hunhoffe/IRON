@@ -123,7 +123,7 @@ def test_settings_keep_a_width_whose_bounded_tile_count_moves_to_d2(npu2):
 
 
 def test_derived_fields_are_not_widths(npu2, monkeypatch):
-    monkeypatch.setattr(tuning, "refusal", lambda op: None)  # the search alone
+    monkeypatch.setattr(tuning, "refusal", lambda op, dev: None)  # the search alone
     # resolve() sets GEMM's A shims and MHA's lanes from the other fields
     # whatever it is given, so a width there would be timed once per value
     # and built alike.
@@ -306,6 +306,19 @@ def test_cache_keys_follow_the_build_the_values_and_the_inputs(npu2):
     assert len({key, *others}) == 1 + len(others)
 
 
+def test_a_placer_verdict_is_kept_per_device(monkeypatch, npu1, npu2):
+    """One recipe placed once on each device, whatever device is current."""
+    placed = []
+    monkeypatch.setattr(tuning, "VERDICTS", {})
+    monkeypatch.setattr(
+        tuning, "fits", lambda _: placed.append(aie_utils.get_current_device())
+    )
+    add = ElementwiseAdd(size=SIZE, tile_size=TILE, num_aie_columns=1)
+    for dev in (npu2, npu2, npu1, npu1):
+        assert tuning.refusal(add, dev) is None
+    assert placed == [npu2, npu1]
+
+
 def test_cache_entries_round_trip_per_platform_and_mode(tmp_path):
     m = Measurement(
         4.0, (4.1, 3.9), "ab" * 32, "run", "turbo", 50, (4.0, 4.2), "2026-10-06"
@@ -457,7 +470,7 @@ def _fake(monkeypatch, step_us, output=lambda op: "same"):
         }
 
     monkeypatch.setattr(tuning, "measure", measure)
-    monkeypatch.setattr(tuning, "refusal", lambda op: None)
+    monkeypatch.setattr(tuning, "refusal", lambda op, dev: None)
 
 
 def _tune(recording, dev, profile=None):
@@ -523,7 +536,7 @@ def test_an_operator_is_timed_at_each_point_its_extents_move(monkeypatch, npu2):
         }
 
     monkeypatch.setattr(tuning, "measure", measure)
-    monkeypatch.setattr(tuning, "refusal", lambda op: None)
+    monkeypatch.setattr(tuning, "refusal", lambda op, dev: None)
     call = Timed(
         Rotate().record(x=(64, 64), angles=(64, 64)),
         points=[Point(0.5, {"n": 16}), Point(0.5, {"n": 64})],
@@ -565,7 +578,7 @@ def test_a_gemm_setting_slower_by_its_kernel_alone_is_never_timed(
         }
 
     monkeypatch.setattr(tuning, "measure", measure)
-    monkeypatch.setattr(tuning, "refusal", lambda op: None)
+    monkeypatch.setattr(tuning, "refusal", lambda op, dev: None)
     op = GEMM(M=256, K=256, N=256, precision=Precision.HIGH)
     shape = Shape(op)
     shape.members.append((op, [(1.0, {})], {}))
@@ -614,7 +627,7 @@ def test_every_gemm_tile_searched_is_one_the_nightly_times(name, request, monkey
     reaches outside them has no cycles to skip it by.
     """
     dev = request.getfixturevalue(name)
-    monkeypatch.setattr(tuning, "refusal", lambda op: None)  # the search alone
+    monkeypatch.setattr(tuning, "refusal", lambda op, dev: None)  # the search alone
     for precision in Precision:
         op = GEMM(M=4096, K=4096, N=4096, precision=precision)
         least_m = 8 if name == "npu2" and precision != Precision.MEDIUM else 16

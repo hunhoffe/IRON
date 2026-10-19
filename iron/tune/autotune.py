@@ -21,6 +21,7 @@ from collections.abc import Callable, Hashable, Mapping, Sequence
 from typing import Any
 
 import numpy as np
+from aie.utils import set_current_device
 
 from iron.common.declare import Operator, Profile
 from iron.common.design import OperatorDesign
@@ -185,7 +186,7 @@ def settings(
         else:
             if identity in out:
                 continue
-            why = refusal(moved)
+            why = refusal(moved, dev)
             if why is None:
                 out[identity] = tunables
                 continue
@@ -205,16 +206,19 @@ def _identity(op: Operator, dev) -> str:
     return OperatorDesign(op.resolved(dev)).identity
 
 
-# Each design's placer verdict, by its identity, for the life of the process.
-VERDICTS: dict[str, str | None] = {}
+# Each design's placer verdict for the life of the process, by its identity
+# and its build environment (the device and the tools).
+VERDICTS: dict[tuple[str, str], str | None] = {}
 
 
-def refusal(op: Operator) -> str | None:
-    """Why ``op`` alone does not build or place on its device, or None."""
-    design = OperatorDesign(op.resolved())
-    if design.identity not in VERDICTS:
-        VERDICTS[design.identity] = fits({design.identity: design})
-    return VERDICTS[design.identity]
+def refusal(op: Operator, dev) -> str | None:
+    """Why ``op`` alone does not build or place on ``dev``, or None."""
+    with set_current_device(dev):
+        design = OperatorDesign(op.resolved(dev))
+        key = (design.identity, design.compilable().artifact_hash)
+        if key not in VERDICTS:
+            VERDICTS[key] = fits({design.identity: design})
+    return VERDICTS[key]
 
 
 def line(found: Sequence[dict[str, Any]], through: dict[str, Any], name: str):
