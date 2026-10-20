@@ -43,7 +43,9 @@ two demonstration circuits.
 - **Copies move qubits into the row.** Before a run, copies bring the
   qubits it touches into the lowest five positions. Each copy swaps two
   adjacent blocks of qubit positions, which is one access pattern of at most
-  four dimensions. The GEMM writes its row in the order the next run wants,
+  four dimensions. Past 20 qubits, a qubit's stride can exceed what a DMA
+  descriptor holds, so that copy is cut into one pattern per step of the
+  qubit. The GEMM writes its row in the order the next run wants,
   so the qubits that leave the row are always its highest. Copies at the
   end put the state back in the circuit's qubit order.
 

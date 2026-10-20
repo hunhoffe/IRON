@@ -22,6 +22,7 @@ from aie.helpers.taplib import TensorAccessPattern
 import iron
 from iron.common import Precision
 from iron.common.graph import Handle
+from iron.common.image.packaging import require_device
 from iron.operators.copy import Copy
 from iron.operators.gemm import GEMM
 from iron.operators.limbs import Limbs, stacked
@@ -56,7 +57,10 @@ class Simulator(iron.Graph):
         size, rows = 2 << self.num_qubits, 1 << self.num_qubits - WIDTH
         for step in self.steps:
             if isinstance(step, TensorAccessPattern):
-                state = Copy.step(state, src=step, dtype=np.float32)
+                strides = np.cumprod((1,) + step.sizes[:0:-1])[::-1]
+                dst = TensorAccessPattern((size,), 0, step.sizes, strides.tolist())
+                src, dst = zip(*descriptors(step, dst, require_device()))
+                state = Copy.step(state, src=src, dst=dst, dtype=np.float32)
             else:
                 a = Limbs.step(state.reshape(rows, 2 << WIDTH))
                 state = GEMM.step(a, step, **exact).reshape(size)
@@ -156,6 +160,31 @@ def real(u: np.ndarray) -> np.ndarray:
     w[:, 0, :, 1] = u.imag.T
     w[:, 1, :, 0] = -u.imag.T
     return w.reshape(2 * size, 2 * size)
+
+
+def descriptors(src, dst, dev) -> list:
+    """``(src, dst)``, two walks of one shape, as pairs a shim descriptor
+    holds each of, in order: the dimension with the widest stride on
+    either side taken one step a pair, until each fits."""
+    if all(dev.dma_bd_fits(0, 0, t, np.float32) for t in (src, dst)):
+        return [(src, dst)]
+    d = max(range(len(src.sizes)), key=lambda i: max(src.strides[i], dst.strides[i]))
+    return [
+        pair
+        for j in range(src.sizes[d])
+        for pair in descriptors(*(_fix(t, d, j) for t in (src, dst)), dev)
+    ]
+
+
+def _fix(tap: TensorAccessPattern, d: int, j: int) -> TensorAccessPattern:
+    """``tap`` with dimension ``d`` held at step ``j``."""
+    keep = [i for i in range(len(tap.sizes)) if i != d]
+    return TensorAccessPattern(
+        tap.tensor_dims,
+        tap.offset + j * tap.strides[d],
+        [tap.sizes[i] for i in keep],
+        [tap.strides[i] for i in keep],
+    )
 
 
 def permutation(order: list[int], new: list[int]) -> TensorAccessPattern:
