@@ -165,24 +165,38 @@ def real(u: np.ndarray) -> np.ndarray:
 
 
 def descriptors(src, dst, dev) -> list:
-    """``(src, dst)``, two walks of one shape, as pairs with no stride a
-    shim descriptor cannot step: each dimension that strides past it on
-    either side taken one step a pair."""
+    """``(src, dst)``, two walks of one shape, as pairs within a shim
+    descriptor's wraps and steps: a dimension past a wrap's 512 split in
+    two, then dimensions taken one step a pair, each striding past a step
+    and then the smallest, until four remain. ``Copy`` cuts each pair's
+    length to its channels and memory tiles."""
     limit = 1 << dev.get_dma_bd_step_bits(0, 0)
-    wide = [i for i, s in enumerate(zip(src.strides, dst.strides)) if max(s) > limit]
-    keep = [i for i in range(len(src.sizes)) if i not in wide]
-    return [
-        tuple(
-            TensorAccessPattern(
-                t.tensor_dims,
-                t.offset + sum(j * t.strides[i] for i, j in zip(wide, steps)),
-                [t.sizes[i] for i in keep],
-                [t.strides[i] for i in keep],
-            )
-            for t in (src, dst)
+    dims = []
+    for size, a, b in zip(src.sizes, src.strides, dst.strides):
+        while size > 512:
+            dims.append((size // 512, a * 512, b * 512))
+            size = 512
+        dims.append((size, a, b))
+    taken = [d for d in dims if max(d[1:]) > limit]
+    dims = [d for d in dims if d not in taken]
+    while len(dims) > 4:
+        taken.append(min(dims[:-1], key=lambda d: d[0]))
+        dims.remove(taken[-1])
+    pairs = []
+    for steps in itertools.product(*(range(d[0]) for d in taken)):
+        offsets = (
+            t.offset + sum(j * d[i] for j, d in zip(steps, taken))
+            for t, i in ((src, 1), (dst, 2))
         )
-        for steps in itertools.product(*(range(src.sizes[i]) for i in wide))
-    ]
+        pairs.append(
+            tuple(
+                TensorAccessPattern(
+                    t.tensor_dims, o, [d[0] for d in dims], [d[i] for d in dims]
+                )
+                for t, o, i in zip((src, dst), offsets, (1, 2))
+            )
+        )
+    return pairs
 
 
 def permutation(order: list[int], new: list[int]) -> TensorAccessPattern:

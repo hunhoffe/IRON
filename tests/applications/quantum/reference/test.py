@@ -12,10 +12,11 @@ import functools
 import numpy as np
 import pytest
 from aie.helpers.taplib import TensorAccessPattern
+from aie.iron.device import from_name
 
 from iron.applications.quantum import Circuit, Simulator, ghz, qft
 from iron.applications.quantum.circuit import fuse
-from iron.applications.quantum.simulator import plan
+from iron.applications.quantum.simulator import descriptors, plan
 
 #: The simulator's error against complex128, both in units of the state's
 #: norm: measured under 1e-7 and 3e-7 on the circuits here, float32 limbs
@@ -135,3 +136,34 @@ def test_simulator_reference_matches_complex128(name):
     want = circuit.apply(psi)
     assert np.abs(got - want).max() < MAX_ERROR
     assert 1 - abs(np.vdot(want, got)) ** 2 < INFIDELITY
+
+
+def indices(tap):
+    """The elements ``tap`` walks, in order."""
+    index = np.zeros(tap.sizes, np.int64) + tap.offset
+    for axis, stride in enumerate(tap.strides):
+        shape = [1] * len(tap.sizes)
+        shape[axis] = tap.sizes[axis]
+        index += (np.arange(tap.sizes[axis]) * stride).reshape(shape)
+    return index.reshape(-1)
+
+
+def test_descriptors_move_what_the_copy_moves():
+    """Past 20 qubits a copy is cut into pairs; together they send each
+    element where the whole walk does, each within four dimensions."""
+    n = 22
+    dev = from_name("npu2", n_cols=8)
+    copies = [s for s in plan(qft(n)) if isinstance(s, TensorAccessPattern)]
+    cut = 0
+    for src in copies[:12]:
+        strides = np.cumprod((1,) + src.sizes[:0:-1])[::-1].tolist()
+        dst = TensorAccessPattern((2 << n,), 0, src.sizes, strides)
+        pairs = descriptors(src, dst, dev)
+        cut += len(pairs) > 1
+        assert all(len(t.sizes) <= 4 for pair in pairs for t in pair)
+        moved = np.empty(2 << n, np.int64)
+        moved[np.concatenate([indices(d) for _, d in pairs])] = np.concatenate(
+            [indices(s) for s, _ in pairs]
+        )
+        assert np.array_equal(moved[indices(dst)], indices(src))
+    assert cut
