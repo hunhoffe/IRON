@@ -36,6 +36,7 @@ from .sigmoid import Sigmoid
 from .silu import SiLU
 from .softmax import Softmax
 from .tanh import Tanh
+from .ternary import TernaryDequant, TernaryGEMV
 from .transpose import Transpose
 
 __all__ = sorted(name for name in dir() if name[0].isupper())
