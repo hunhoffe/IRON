@@ -34,8 +34,8 @@ def main(args=None):
         "--max-seq-len",
         type=int,
         default=2048,
-        help="the tokens coded per block; decompressing needs the same "
-        "(default: %(default)s)",
+        help="the context each block of tokens is coded in; decompressing "
+        "needs the same (default: %(default)s)",
     )
     args = parse_args(parser, args)
     if args.decompress and args.file.suffix != SUFFIX:

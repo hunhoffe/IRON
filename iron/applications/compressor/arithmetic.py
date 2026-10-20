@@ -24,14 +24,7 @@ LOG2E = 1.4426950408889634
 #: every host builds the same table.
 with localcontext(prec=40):
     EXP2 = np.array(
-        [
-            int(
-                (Decimal(2) ** (32 - Decimal(j) / STEPS)).to_integral_value(
-                    ROUND_HALF_EVEN
-                )
-            )
-            for j in range(STEPS)
-        ],
+        [round(Decimal(2) ** (32 - Decimal(j) / STEPS)) for j in range(STEPS)],
         dtype=np.int64,
     )
 
@@ -42,8 +35,8 @@ def cdf(logits) -> np.ndarray:
 
     Each logit is floored to 1/STEPS of a bit by one float64 multiply, which
     IEEE rounds the same everywhere; everything after it is integer. A
-    symbol's frequency is ``2^32`` times two to the power of its distance
-    below the largest logit, plus one, so every symbol stays codable.
+    symbol's frequency is ``2^32 * 2^-d``, ``d`` its distance in bits below
+    the largest logit, plus one, so every symbol stays codable.
 
     Raises:
         ValueError: A logit is not finite.

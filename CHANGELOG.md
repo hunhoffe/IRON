@@ -30,6 +30,11 @@ public API adds its entry under Unreleased.
   `F.gelu`'s default and `hidden_act` `"gelu"`. `Whisper.load` builds
   large-v3-turbo from its checkpoint (`Whisper.config`, `WhisperConfig`'s
   `decoder_start_token_id` its `bos`).
+- A lossless text compressor, `iron.applications.compressor`:
+  `compress(data, model)` codes each token against a decoder's prediction
+  with an arithmetic coder, and `decompress(blob, model)` reruns the model
+  to get the text back. `python -m iron.applications.compressor FILE` runs it
+  on Qwen3 0.6B.
 - Ternary weights, Ternary Bonsai's: `iron.lm.quantize(model, ternary.layout)`
   holds each `Linear` weight on the layout's grid as -1, 0 or +1 times a bf16
   scale per 128 in-features, 2.125 bits a weight. `F.linear` runs one row on
