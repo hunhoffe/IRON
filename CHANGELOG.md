@@ -30,6 +30,11 @@ public API adds its entry under Unreleased.
   `F.gelu`'s default and `hidden_act` `"gelu"`. `Whisper.load` builds
   large-v3-turbo from its checkpoint (`Whisper.config`, `WhisperConfig`'s
   `decoder_start_token_id` its `bos`).
+- Prebuilt full ELFs (`iron.common.image.prebuilt`): with `IRON_PREBUILT`
+  naming stores of images, a full ELF is found by its composed text, aiecc
+  flags, mlir-aie release and kernel sources, and loaded with no toolchain;
+  a build adds its image to the first store. Exporting a model is loading
+  it once with an empty store.
 - `iron-serve` (`iron.lm.serve`): a loaded model behind an
   OpenAI-compatible HTTP API, as Lemonade's backends speak it, on the
   standard library alone: chat completions, streamed or not, for a causal
