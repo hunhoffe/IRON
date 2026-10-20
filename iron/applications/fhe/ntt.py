@@ -21,6 +21,7 @@ arXiv 2501.07047, MIT) on IRON's int8 ``GEMM``.
 
 import functools
 
+import aie.utils as aie_utils
 import numpy as np
 
 from iron.operators.gemm import GEMM
@@ -47,8 +48,10 @@ def centred(x: np.ndarray, p: int) -> np.ndarray:
 
 
 def cpu_matmul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """``a @ b`` of int8 operands in int32, on the host."""
-    return a.astype(np.int32) @ b.astype(np.int32)
+    """``a @ b`` of int8 operands in int32, on the host. BLAS's float64 is
+    exact: every partial sum is an integer far below 2^53.
+    """
+    return (a.astype(np.float64) @ b.astype(np.float64)).astype(np.int32)
 
 
 @functools.cache
@@ -59,7 +62,10 @@ def gemm(M: int, K: int, N: int) -> GEMM:
 
 def npu_matmul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """``a @ b`` of int8 operands in int32, on the NPU."""
-    return gemm(*a.shape, b.shape[1])(a, b)
+    tensor = aie_utils.DEFAULT_TENSOR_CLASS
+    c = tensor((a.shape[0], b.shape[1]), dtype=np.int32)
+    gemm(*a.shape, b.shape[1])(tensor(a), tensor(b), c)
+    return c.numpy()
 
 
 class ModMatmul:
