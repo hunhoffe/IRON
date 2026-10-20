@@ -174,7 +174,11 @@ def test_every_decoder_application_is_held_to_its_context():
         module = importlib.import_module(f"iron.applications.{package.name}")
         for name in getattr(module, "__all__", ()):
             model = getattr(module, name)
-            if issubclass(model, CausalLM) and not issubclass(model, EncoderDecoder):
+            if (
+                isinstance(model, type)
+                and issubclass(model, CausalLM)
+                and not issubclass(model, EncoderDecoder)
+            ):
                 found.add(package.name)
     held = {a.model.__module__.split(".")[2] for a in APPLICATIONS.values()}
     assert found == held | UNHELD.keys()
