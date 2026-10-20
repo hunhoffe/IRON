@@ -16,6 +16,8 @@ GEMM writes its row's qubits in the order the next run wants them, so the
 qubits leaving the row are always its highest.
 """
 
+import itertools
+
 import numpy as np
 from aie.helpers.taplib import TensorAccessPattern
 
@@ -163,28 +165,24 @@ def real(u: np.ndarray) -> np.ndarray:
 
 
 def descriptors(src, dst, dev) -> list:
-    """``(src, dst)``, two walks of one shape, as pairs a shim descriptor
-    holds each of, in order: the dimension with the widest stride on
-    either side taken one step a pair, until each fits."""
-    if all(dev.dma_bd_fits(0, 0, t, np.float32) for t in (src, dst)):
-        return [(src, dst)]
-    d = max(range(len(src.sizes)), key=lambda i: max(src.strides[i], dst.strides[i]))
+    """``(src, dst)``, two walks of one shape, as pairs with no stride a
+    shim descriptor cannot step: each dimension that strides past it on
+    either side taken one step a pair."""
+    limit = 1 << dev.get_dma_bd_step_bits(0, 0)
+    wide = [i for i, s in enumerate(zip(src.strides, dst.strides)) if max(s) > limit]
+    keep = [i for i in range(len(src.sizes)) if i not in wide]
     return [
-        pair
-        for j in range(src.sizes[d])
-        for pair in descriptors(*(_fix(t, d, j) for t in (src, dst)), dev)
+        tuple(
+            TensorAccessPattern(
+                t.tensor_dims,
+                t.offset + sum(j * t.strides[i] for i, j in zip(wide, steps)),
+                [t.sizes[i] for i in keep],
+                [t.strides[i] for i in keep],
+            )
+            for t in (src, dst)
+        )
+        for steps in itertools.product(*(range(src.sizes[i]) for i in wide))
     ]
-
-
-def _fix(tap: TensorAccessPattern, d: int, j: int) -> TensorAccessPattern:
-    """``tap`` with dimension ``d`` held at step ``j``."""
-    keep = [i for i in range(len(tap.sizes)) if i != d]
-    return TensorAccessPattern(
-        tap.tensor_dims,
-        tap.offset + j * tap.strides[d],
-        [tap.sizes[i] for i in keep],
-        [tap.strides[i] for i in keep],
-    )
 
 
 def permutation(order: list[int], new: list[int]) -> TensorAccessPattern:
