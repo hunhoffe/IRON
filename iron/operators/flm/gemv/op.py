@@ -4,8 +4,7 @@
 import numpy as np
 from aie.dialects._aie_enum_gen import AIEArch
 from aie.helpers.taplib import TensorAccessPattern
-from aie.iron import Buffer, In, ObjectFifo, Out, TaskGroup, Worker
-from aie.iron.controlflow import range_
+from aie.iron import In, Out
 from aie.iron.kernels import flm_gemma4
 from aie.utils.compile.jit.params import param, tunable, widths
 from aie.utils.verify import Tolerance
@@ -13,16 +12,13 @@ from ml_dtypes import bfloat16
 
 from iron.common import Built, Operator, Unresolvable
 from iron.common.testing import Case, Testing
+from iron.operators import quantized
 from iron.operators.flm import q4nx
 from iron.operators.flm.q4nx import BLOCK_BYTES, GROUP, K_TILE, M_TILE, packed_bytes
 
 # The error bound, a share of the largest output: the cores narrow each
 # 32-column dot product and each 32-column sum of x to bf16, as LMHead's.
 PROJECTION_ERROR = 0.025
-
-# The sequence finishes each round's TaskGroup DEPTH rounds later, freeing
-# its BDs; a shim tile holds 16.
-DEPTH = 2
 
 
 def _draw(op):
@@ -72,116 +68,43 @@ class Q4nxGEMV(Operator):
             )
 
     def resolve(self, dev):
-        if dev is None:
-            raise Unresolvable(
-                "Q4nxGEMV: the grid defaults from the device; none given"
-            )
-        if dev.arch != AIEArch.AIE2p:
+        if dev is not None and dev.arch != AIEArch.AIE2p:
             raise Unresolvable("Q4nxGEMV: the q4nx block product is AIE2P only")
-        cols = min(dev.cols, self.N // M_TILE)
-        return self.replace(cols=cols if self.cols is None else self.cols)
+        return self.replace(cols=quantized.cols(self, dev))
 
-    def lane_tiles(self, lane: int) -> range:
-        """The 32-out-feature tiles lane ``lane``'s core takes, in order."""
-        return range(lane, self.N // M_TILE, self.cols)
+    lane_tiles = quantized.lane_tiles
 
     def ops(self) -> int:
         return 2 * self.N * self.K
 
     def build(self) -> Built:
-        K = self.K
         kernel = flm_gemma4.flm_gemma4_q4nx_gemv(
-            dim=K, m_tile=M_TILE, k_tile=K_TILE, group=GROUP
+            dim=self.K, m_tile=M_TILE, k_tile=K_TILE, group=GROUP
         )
-        w_ty, x_ty, acc_ty, sums_ty, _ = kernel.arg_types()
-        y_ty, _ = kernel.q4nx_gemv_store.arg_types()
-        kernels = [
-            kernel.q4nx_gemv_sums,
+        sums_ty = kernel.arg_types()[3]
+        return quantized.gemv_build(
+            self,
+            K_TILE,
             kernel.q4nx_lm_head_zero,
             kernel,
             kernel.q4nx_gemv_store,
-        ]
+            sums=(kernel.q4nx_gemv_sums, sums_ty),
+        )
 
-        def core(rounds):
-            def core_fn(x_in, w_in, y_out, k_sums, k_zero, k_block, k_store, acc, sums):
-                x = x_in.acquire(1)
-                k_sums(x, sums)
-                for _ in range_(rounds):
-                    k_zero(acc)
-                    for k in range_(K // K_TILE):
-                        w = w_in.acquire(1)
-                        k_block(w, x, acc, sums, k)
-                        w_in.release(1)
-                    y = y_out.acquire(1)
-                    k_store(y, acc)
-                    y_out.release(1)
-                x_in.release(1)
-
-            return core_fn
-
-        # Acquired once a call, so one buffer: a second would cap K.
-        of_x = ObjectFifo(x_ty, depth=1)
-        self.x.bind(of_x.prod())
-        workers, ws, ys = [], [], []
-        for c in range(self.cols):
-            # w moves the host's bytes as the bf16 words the kernel reads.
-            of_w, of_y = ObjectFifo(w_ty), ObjectFifo(y_ty)
-            ws.append(of_w.prod())
-            ys.append(of_y.cons())
-            workers.append(
-                Worker(
-                    core(len(self.lane_tiles(c))),
-                    [
-                        of_x.cons(),
-                        of_w.cons(),
-                        of_y.prod(),
-                        *kernels,
-                        Buffer(type=acc_ty, name=f"acc_{c}"),
-                        Buffer(type=sums_ty, name=f"sums_{c}"),
-                    ],
-                )
-            )
-        self.w.bind(ws)
-        self.y.bind(ys)
-        return Built(workers)
-
-    def sequence(self, rt):
-        x = self.x.fill(managed=False)
+    def w_tap(self, t: int) -> TensorAccessPattern:
+        """Tile t's blocks, k-tile by k-tile, in q4nx.quantize's order: its
+        column block, its half of it, then every other block. A block is
+        split 10 x 512 to keep the innermost size inside the BD's field.
+        """
         k_tiles = self.K // K_TILE
-        window = []
-        for r in range(len(self.lane_tiles(0))):
-            tg = TaskGroup()
-            for col in range(self.cols):
-                if r >= len(self.lane_tiles(col)):
-                    break
-                t = self.lane_tiles(col)[r]
-                self.y.drain(
-                    TensorAccessPattern((self.N,), t * M_TILE, [M_TILE], [1]),
-                    lane=col,
-                    wait=True,
-                    group=tg,
-                )
-                # Tile t's blocks, k-tile by k-tile, in q4nx.quantize's order:
-                # its column block, its half of it, then every other block.
-                # A block is split 10 x 512 to keep the innermost size inside
-                # the BD's field.
-                offset = (t // 2 * 2 * k_tiles + t % 2) * BLOCK_BYTES
-                self.w.fill(
-                    TensorAccessPattern(
-                        (self.w_bytes,),
-                        offset,
-                        [k_tiles, BLOCK_BYTES // 512, 512],
-                        [2 * BLOCK_BYTES, 512, 1],
-                    ),
-                    lane=col,
-                    group=tg,
-                )
-            window.append(tg)
-            if len(window) > DEPTH:
-                window.pop(0).finish()
-        for tg in window:
-            tg.finish()
-        x.free()
+        return TensorAccessPattern(
+            (self.w_bytes,),
+            (t // 2 * 2 * k_tiles + t % 2) * BLOCK_BYTES,
+            [k_tiles, BLOCK_BYTES // 512, 512],
+            [2 * BLOCK_BYTES, 512, 1],
+        )
+
+    sequence = quantized.gemv_sequence
 
     def tolerance(self) -> Tolerance:
         return Tolerance.bounded(

@@ -18,6 +18,7 @@ from ml_dtypes import bfloat16
 from iron.common.declare.operand import Operand
 from iron.common.design import OperatorDesign
 from iron.common.image.coresidence import fits
+from iron.operators import quantized
 from iron.operators.flm import q4nx
 from iron.operators.flm.gemv import op as gemv
 from iron.operators.flm.gemv.op import Q4nxGEMV
@@ -37,7 +38,7 @@ class _Fifo:
 
 def _rounds(op, monkeypatch):
     """Each core's (w blocks, y tiles) taken, its body run on the host."""
-    monkeypatch.setattr(gemv, "range_", range)
+    monkeypatch.setattr(quantized, "range_", range)
     taken = []
     for worker in op.build().objects:
         x, w, y = _Fifo(), _Fifo(), _Fifo()
@@ -61,7 +62,7 @@ def _replay(op, monkeypatch):
     monkeypatch.setattr(Operand, "fill", record("fill"))
     monkeypatch.setattr(Operand, "drain", record("drain"))
     monkeypatch.setattr(
-        gemv, "TaskGroup", lambda: types.SimpleNamespace(finish=lambda: None)
+        quantized, "TaskGroup", lambda: types.SimpleNamespace(finish=lambda: None)
     )
     op.sequence(None)
     return moves
