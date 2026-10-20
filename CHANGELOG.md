@@ -30,6 +30,9 @@ public API adds its entry under Unreleased.
   `F.gelu`'s default and `hidden_act` `"gelu"`. `Whisper.load` builds
   large-v3-turbo from its checkpoint (`Whisper.config`, `WhisperConfig`'s
   `decoder_start_token_id` its `bos`).
+- NeuCodec's decoder (`NeuCodecDecoder`), NeuTTS's vocoder: a clip's
+  speech codes to 24 kHz audio, the graph from the codes' rows to their
+  spectra, with a toy golden from neucodec's own modules.
 - q4nx weights for a language model: `iron.lm.quantize(model)` holds every
   `Linear` weight as q4nx, 5 bits a weight. `F.linear` runs a uint8 weight as q4nx: one row on
   `flm.Q4nxGEMV`, several on `flm.ProjectionGEMM` over what
