@@ -30,6 +30,11 @@ public API adds its entry under Unreleased.
   `F.gelu`'s default and `hidden_act` `"gelu"`. `Whisper.load` builds
   large-v3-turbo from its checkpoint (`Whisper.config`, `WhisperConfig`'s
   `decoder_start_token_id` its `bos`).
+- `iron-serve` (`iron.lm.serve`): a loaded model behind an
+  OpenAI-compatible HTTP API, as Lemonade's backends speak it, on the
+  standard library alone: chat completions, streamed or not, for a causal
+  model; embeddings for one with `embed`; `/v1/rerank` for one with `score`.
+  `Stats` counts the tokens drawn.
 - Ternary weights, Ternary Bonsai's: `iron.lm.quantize(model, ternary.layout)`
   holds each `Linear` weight on the layout's grid as -1, 0 or +1 times a bf16
   scale per 128 in-features, 2.125 bits a weight. `F.linear` runs one row on

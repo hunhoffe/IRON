@@ -21,6 +21,10 @@ dependencies = [
 # Model.load: a Hugging Face download, its tokenizer and its chat template.
 models = ["huggingface_hub", "jinja2", "tokenizers"]
 
+[project.scripts]
+# A model behind an OpenAI-compatible API, as Lemonade's iron backend runs it.
+iron-serve = "iron.lm.serve:main"
+
 [tool.setuptools.packages.find]
 include = ["iron*"]
 
