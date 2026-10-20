@@ -1714,7 +1714,7 @@ def test_the_emit_program_follows_the_target_parameters():
 
     words, _ = _words(recording)
     # A target laying the two out the other way, one as a core read.
-    by_value = {w.linear.value: w.symbol for w in words if w.linear is not None}
+    by_value = {w.ratio.value: w.symbol for w in words if w.ratio is not None}
     parameters = [
         Parameter(by_value["steps"], 0, "i32", "core"),
         Parameter(by_value["node"], 1, "i32", "addr"),
@@ -1748,7 +1748,7 @@ def _emitted(graph, positions):
     """
     recording = graph.record()
     words, _ = _words(recording)
-    assert all(w.linear is None for w in words)
+    assert all(w.ratio is None for w in words)
     site = attach_emit(
         recording, graph._parameters.carried, graph._carry, slots=len(words)
     )
@@ -1844,7 +1844,7 @@ def test_an_extent_bounded_by_a_clamped_carried_count_stays_clamped(npu2):
 
     words, _ = _words(Window().record())
     tiles = [w for w in words if w.symbol.endswith(("valid_x", "valid_y"))]
-    assert tiles and all(w.linear is None for w in tiles)
+    assert tiles and all(w.ratio is None for w in tiles)
     for w in tiles:
         assert [w(dict(position=p)) for p in (0, 39, 50)] == [1, 2, 2]
 

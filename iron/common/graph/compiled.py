@@ -1025,14 +1025,14 @@ class Ratio:
 
 @dataclasses.dataclass(frozen=True)
 class Word:
-    """A scratchpad word a call writes; words with one ``linear`` form, or one
+    """A scratchpad word a call writes; words with one ``ratio`` form, or one
     clamped ``form``, share a word.
     """
 
     symbol: str
     dtype: Any
     compute: Callable[[Mapping[str, int]], Any]
-    linear: Ratio | None
+    ratio: Ratio | None
     form: Affine | None = None
 
     def __call__(self, values: Mapping[str, int]) -> Any:
@@ -1063,16 +1063,16 @@ def _words(
         if not extents and b.member.bounds is not None:
             continue
         e = b.expression
-        linear = None
+        ratio = None
         if e.linear:
-            linear = Ratio(
+            ratio = Ratio(
                 e.value.name,
                 Fraction(e.scale),
                 Fraction(e.bias),
                 np.dtype(b.member.dtype).name,
             )
         words.append(
-            Word(b.symbol, e.scalar_type, lambda v, e=e: e.evaluate(v), linear, e)
+            Word(b.symbol, e.scalar_type, lambda v, e=e: e.evaluate(v), ratio, e)
         )
     seen: set[int] = set()
     derived: set[str] = set()
@@ -1096,12 +1096,12 @@ def _words(
             if symbol in derived:
                 continue  # another instance of the design, bound alike
             derived.add(symbol)
-            linear = None
+            ratio = None
             spec = word
             count = counts.get(getattr(spec, "extent", None))
             if isinstance(spec, ExtentWord) and count is not None and count.linear:
                 divisor = spec.divisor(op)
-                linear = Ratio(
+                ratio = Ratio(
                     count.value.name,
                     Fraction(count.scale, divisor),
                     Fraction(count.bias, divisor),
@@ -1112,7 +1112,7 @@ def _words(
                     symbol,
                     word.dtype,
                     lambda v, op=op, name=name, at=at: op.derived_at(name, **at(v)),
-                    linear,
+                    ratio,
                     _derived_form(op, name, counts),
                 )
             )
@@ -1151,7 +1151,7 @@ def _shared(words: list[Word]) -> dict[str, str]:
     shared: dict[str, str] = {}
     forms: dict[str, set[Ratio | str | None]] = {}
     for w in words:
-        found, e = w.linear, w.form
+        found, e = w.ratio, w.form
         if (
             found is None
             and e is not None
