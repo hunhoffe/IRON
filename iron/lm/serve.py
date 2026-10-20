@@ -155,8 +155,16 @@ def serve(model, name: str, host: str = "127.0.0.1", port: int = 8000):
                 return self.error(404, f"{name} serves no {self.path}")
             with device:
                 try:
-                    reply = route(model, name, json.loads(body))
-                except (KeyError, TypeError, ValueError, IndexError) as e:
+                    request = json.loads(body)
+                    # A reply names the model as its request did (Lemonade's name).
+                    reply = route(model, request.get("model", name), request)
+                except (
+                    AttributeError,
+                    KeyError,
+                    TypeError,
+                    ValueError,
+                    IndexError,
+                ) as e:
                     return self.error(400, f"{type(e).__name__}: {e}")
                 except Exception as e:
                     logger.exception("%s failed", self.path)

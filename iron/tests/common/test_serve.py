@@ -61,9 +61,9 @@ def llama(tmp_path_factory):
 
 def test_a_chat_completion_is_what_generate_gives(llama):
     model, url = llama
-    status, reply = _post(
-        f"{url}/chat/completions", dict(messages=HI, max_tokens=5, seed=3)
-    )
+    body = dict(model="Qwen3-0.6B-IRON", messages=HI, max_tokens=5, seed=3)
+    status, reply = _post(f"{url}/chat/completions", body)
+    assert reply["model"] == "Qwen3-0.6B-IRON"
     want = model.generate(HI, 5, Sampler(seed=3))
     assert status == 200 and reply["choices"][0]["message"]["content"] == want
     usage = reply["usage"]
@@ -90,13 +90,15 @@ def test_a_streamed_chat_s_deltas_join_to_the_completion(llama):
 
 @pytest.mark.parametrize(
     "body",
-    [dict(max_tokens=5), dict(messages=HI, max_tokens=1 << 20)],
-    ids=["no messages", "past the context"],
+    [[HI], dict(max_tokens=5), dict(messages=HI, max_tokens=1 << 20)],
+    ids=["not an object", "no messages", "past the context"],
 )
 def test_a_request_the_model_refuses_is_a_400(llama, body):
     _, url = llama
     for stream in (False, True):
-        status, reply = _post(f"{url}/chat/completions", body | dict(stream=stream))
+        if isinstance(body, dict):
+            body = body | dict(stream=stream)
+        status, reply = _post(f"{url}/chat/completions", body)
         assert status == 400 and reply["error"]["message"]
 
 
