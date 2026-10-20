@@ -23,6 +23,7 @@ from iron.lm.golden import Golden, HuggingFace
 from iron.lm.testing import assert_close
 from iron.applications.llama import Llama
 from iron.operators.flm import q4nx
+from iron.operators.ternary import layout as ternary
 from iron.tests.support.llama_model import PROFILE, checkpoint, shapes
 
 
@@ -221,17 +222,25 @@ class Q4nx:
     """A ``Decoder`` subclass's tests over q4nx linear weights, before it in
     the bases: transformers' model over what each matrix dequantizes to (the
     embedding too, which a tied head reads), the graph quantizing those
-    again (``quantize``).
+    again (``quantize``). A matrix off the layout's grid stays as drawn.
     """
 
     name = "q4nx"
+    layout = q4nx
+
+    @staticmethod
+    def held(w):
+        return q4nx.dequantize(q4nx.grid(q4nx.quantize(w)))
 
     @classmethod
     def weights(cls) -> SimpleNamespace:
         tree = super().weights()
         for name, w, parent, key in list(walk(tree)):
             if np.ndim(w) == 2:
-                q = q4nx.dequantize(q4nx.grid(q4nx.quantize(w)))
+                try:
+                    q = cls.held(w)
+                except ValueError:
+                    continue
                 q = iron.param(q.astype(w.dtype, order="C"))
                 if isinstance(parent, list):
                     parent[key] = q
@@ -241,5 +250,16 @@ class Q4nx:
 
     def host(self, config, weights):
         model = super().host(config, weights)
-        quantize(model)
+        quantize(model, self.layout)
         return model
+
+
+class Ternary(Q4nx):
+    """``Q4nx``'s tests over ternary linear weights."""
+
+    name = "ternary"
+    layout = ternary
+
+    @staticmethod
+    def held(w):
+        return ternary.dequantize(ternary.quantize(w))

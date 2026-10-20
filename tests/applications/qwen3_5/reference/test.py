@@ -18,7 +18,7 @@ from iron.applications.qwen3_5.model import Qwen35, Qwen35Config
 from iron.lm import TokenizerJson
 from iron.lm.checkpoint import leaves
 from iron.lm.testing import require, weights_dir
-from iron.tests.support.llama_reference import Decoder
+from iron.tests.support.llama_reference import Decoder, Ternary
 
 #: Qwen3.5's proportions at toy size: Gated DeltaNet layers of twice as
 #: many value heads as key heads, and gated attention layers of one KV head
@@ -113,6 +113,13 @@ class TestQwen35(Decoder):
                 dt = np.exp(rng.uniform(np.log(1e-3), np.log(1e-1), weight.size))
                 weight[...] = dt + np.log(-np.expm1(-dt))
         return tree
+
+
+class TestQwen35Ternary(Ternary, TestQwen35):
+    """Ternary Bonsai's weights: Qwen3.5's layout, its linear weights ternary."""
+
+    # Seed 1's second step is a near-tie over ternary weights.
+    seed = 2
 
 
 def test_a_quarter_of_each_head_turns():

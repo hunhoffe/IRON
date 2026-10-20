@@ -48,6 +48,7 @@ from iron.operators.layer_norm import LayerNorm
 from iron.operators.rms_norm import RMSNorm
 from iron.operators.rope import RoPE
 from iron.operators.silu import SiLU
+from iron.operators.ternary import TernaryDequant, TernaryGEMV
 
 # mlir-aie's layer_norm kernel always uses this epsilon.
 LAYER_NORM_EPS = 1e-5
@@ -74,21 +75,33 @@ def linear(x: Handle | State, weight, bias=None, *, precision=None, **gemv) -> H
     A uint8 ``weight`` is q4nx, as ``q4nx.quantize`` holds it: one row runs
     on flm.Q4nxGEMV, which takes no ``gemv``, and several on
     flm.ProjectionGEMM over the weight flm.DequantBFP dequantizes, at its
-    default precision.
+    default precision. A uint8 ``weight`` of ``in * 17 // 64`` bytes a row
+    is ternary, as ``ternary.layout.quantize`` holds it, and runs the same
+    way on TernaryGEMV and TernaryDequant.
 
     Raises:
         ValueError: ``x`` of another rank, GEMV tunables for several rows,
-            or a q4nx weight at another precision.
+            or a quantized weight at another precision.
     """
     one_row = len(x.shape) == 1 or (len(x.shape) == 2 and x.shape[0] == 1)
     if len(x.shape) not in (1, 2):
         raise ValueError(f"linear(): x {tuple(x.shape)} is not (in,) or (rows, in)")
     if weight.dtype == np.uint8:
         K, N = x.shape[-1], weight.shape[0]
+        ternary = weight.shape[1] == K * 17 // 64
         if one_row:
-            y = Q4nxGEMV.step(weight.reshape(-1), x, N=N)
+            gemv_op = TernaryGEMV if ternary else Q4nxGEMV
+            # (out,) as GEMV's output, for ``x`` (1, in) too.
+            y = gemv_op.step(weight.reshape(-1), x, N=N).reshape(*x.shape[:-1], N)
         elif precision not in (None, Precision.MEDIUM):
-            raise ValueError(f"linear(): a q4nx weight runs at MEDIUM, not {precision}")
+            raise ValueError(
+                f"linear(): a quantized weight runs at MEDIUM, not {precision}"
+            )
+        elif ternary:
+            B = TernaryDequant.step(weight.reshape(-1), K=K, N=N)
+            y = ProjectionGEMM.step(
+                x, B.reshape(N, K), b_col_maj=True, epilogue_modes=(Epilogue.NONE,)
+            )
         else:
             B = DequantBFP.step(weight.reshape(-1), K=K, N=N)
             # Resolved here: whether B is packed is the device's, and the

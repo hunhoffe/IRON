@@ -30,6 +30,12 @@ public API adds its entry under Unreleased.
   `F.gelu`'s default and `hidden_act` `"gelu"`. `Whisper.load` builds
   large-v3-turbo from its checkpoint (`Whisper.config`, `WhisperConfig`'s
   `decoder_start_token_id` its `bos`).
+- Ternary weights, Ternary Bonsai's: `iron.lm.quantize(model, ternary.layout)`
+  holds each `Linear` weight on the layout's grid as -1, 0 or +1 times a bf16
+  scale per 128 in-features, 2.125 bits a weight. `F.linear` runs one row on
+  `TernaryGEMV` and several on `flm.ProjectionGEMM` over what
+  `TernaryDequant` writes. `quantize` leaves a weight off its layout's grid
+  in bf16, q4nx's too.
 - NeuCodec's decoder (`NeuCodecDecoder`), NeuTTS's vocoder: a clip's
   speech codes to 24 kHz audio, the graph from the codes' rows to their
   spectra, with a toy golden from neucodec's own modules.

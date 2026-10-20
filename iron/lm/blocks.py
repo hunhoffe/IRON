@@ -602,16 +602,21 @@ class Linear(iron.Graph):
         ]
 
 
-def quantize(graph: iron.Graph) -> None:
-    """Hold each ``Linear`` weight under the loaded ``graph`` as q4nx, 5
-    bits a weight where bf16 takes 16 (``q4nx.quantize``; ``F.linear`` runs
-    it); a weight two of them share is quantized once. AIE2P only.
+def quantize(graph: iron.Graph, layout=q4nx) -> None:
+    """Hold each ``Linear`` weight under the loaded ``graph`` in ``layout``,
+    which ``F.linear`` runs: q4nx, 5 bits a weight where bf16 takes 16 (AIE2P
+    only), or ``ternary.layout``, 2.125. A weight two of them share is
+    quantized once; one off the layout's block grid stays bf16.
     """
     held: dict[int, np.ndarray] = {}
     for _, w, linear, key in list(walk(graph)):
         if isinstance(linear, Linear) and key == "weight":
-            q = held.setdefault(id(w), iron.param(q4nx.quantize(w)))
-            setattr(linear, key, q)
+            if id(w) not in held:
+                try:
+                    held[id(w)] = iron.param(layout.quantize(w))
+                except ValueError:
+                    held[id(w)] = w
+            setattr(linear, key, held[id(w)])
 
 
 class Embedding(iron.Graph):
