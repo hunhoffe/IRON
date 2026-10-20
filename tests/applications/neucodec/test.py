@@ -163,3 +163,15 @@ def test_the_decoder_on_the_device(clip, reference):
     want = reference.logits(codes)
     err, scale = np.abs(got - want).max(), np.abs(want).max()
     assert err <= 0.03 * scale, f"|diff| {err:.4f} against {scale:.3f}"
+
+
+def test_audio_caps_each_magnitude_at_100(clip):
+    """NeuCodec's own clip: a log-magnitude past ln 100 sounds as 100."""
+    decoder = NeuCodecDecoder(TOY, clip[0], FRAMES)
+    half = TOY.n_fft // 2 + 1
+    # Drawn phases: at phase 0 each frame is an impulse the window zeroes.
+    phases = np.random.default_rng(2).uniform(-np.pi, np.pi, (FRAMES, half))
+    spectra = np.concatenate([np.zeros_like(phases), phases], axis=1)
+    capped = spectra.copy()
+    spectra[:, :half], capped[:, :half] = 10, np.log(100)
+    np.testing.assert_array_equal(decoder.audio(spectra), decoder.audio(capped))

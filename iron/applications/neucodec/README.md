@@ -15,7 +15,8 @@ The shared library is [AGENTS.md](../../../AGENTS.md#language-models).
 The decoder runs at a toy shape on drawn weights
 (`tests/applications/neucodec/test.py`): device-free, the graph's reference
 against neucodec's own modules' audio recorded in
-`tests/applications/neucodec/goldens/`, and the same check on the NPU.
+`tests/applications/neucodec/goldens/`. The same check on the NPU
+(`test_the_decoder_on_the_device`) has not run on a device.
 
 Two gaps stand before the real checkpoint:
 
