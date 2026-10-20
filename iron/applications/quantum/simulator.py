@@ -53,12 +53,13 @@ class Simulator(iron.Graph):
 
     def body(self, state: Handle) -> Handle:
         exact = dict(tile_m=32, output_dtype=np.float32, precision=Precision.HIGHEST)
+        size, rows = 2 << self.num_qubits, 1 << self.num_qubits - WIDTH
         for step in self.steps:
             if isinstance(step, TensorAccessPattern):
                 state = Copy.step(state, src=step, dtype=np.float32)
             else:
-                rows = state.reshape(-1, 2 << WIDTH)
-                state = GEMM.step(Limbs.step(rows), step, **exact).reshape(-1)
+                a = Limbs.step(state.reshape(rows, 2 << WIDTH))
+                state = GEMM.step(a, step, **exact).reshape(size)
         return state
 
 

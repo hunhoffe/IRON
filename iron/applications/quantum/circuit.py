@@ -130,3 +130,24 @@ def fuse(gates: list[Gate], width: int) -> list[list[Gate]]:
         runs[-1].append(gate)
         touched |= set(gate.qubits)
     return runs
+
+
+def ghz(num_qubits: int) -> Circuit:
+    """``(|0...0> + |1...1>) / sqrt(2)`` from ``|0...0>``."""
+    circuit = Circuit(num_qubits).h(0)
+    for q in range(num_qubits - 1):
+        circuit.cx(q, q + 1)
+    return circuit
+
+
+def qft(num_qubits: int) -> Circuit:
+    """The quantum Fourier transform: ``|x>`` to the sum over ``y`` of
+    ``exp(2 pi i x y / 2**num_qubits) |y>``, normalized."""
+    circuit = Circuit(num_qubits)
+    for j in reversed(range(num_qubits)):
+        circuit.h(j)
+        for m in reversed(range(j)):
+            circuit.cp(math.pi / 2 ** (j - m), m, j)
+    for q in range(num_qubits // 2):
+        circuit.swap(q, num_qubits - 1 - q)
+    return circuit

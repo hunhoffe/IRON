@@ -30,6 +30,10 @@ public API adds its entry under Unreleased.
   `F.gelu`'s default and `hidden_act` `"gelu"`. `Whisper.load` builds
   large-v3-turbo from its checkpoint (`Whisper.config`, `WhisperConfig`'s
   `decoder_start_token_id` its `bos`).
+- A state-vector quantum circuit simulator, `iron.applications.quantum`:
+  `Circuit(n).h(0).cx(0, 1)...` builds a circuit, and `Simulator(circuit)`
+  applies it to a complex64 state as GEMMs of fused 5-qubit gates, float32
+  through `Limbs`, with copies moving each run's qubits into a row.
 - Ternary weights, Ternary Bonsai's: `iron.lm.quantize(model, ternary.layout)`
   holds each `Linear` weight on the layout's grid as -1, 0 or +1 times a bf16
   scale per 128 in-features, 2.125 bits a weight. `F.linear` runs one row on
