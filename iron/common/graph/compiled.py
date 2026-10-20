@@ -1014,7 +1014,7 @@ def _results(outputs: list, carry: Carry | None):
 
 
 @dataclasses.dataclass(frozen=True)
-class Linear:
+class Ratio:
     """A word as one graph value times a ratio plus an offset, rounded up."""
 
     value: str
@@ -1032,7 +1032,7 @@ class Word:
     symbol: str
     dtype: Any
     compute: Callable[[Mapping[str, int]], Any]
-    linear: Linear | None
+    linear: Ratio | None
     form: Affine | None = None
 
     def __call__(self, values: Mapping[str, int]) -> Any:
@@ -1065,7 +1065,7 @@ def _words(
         e = b.expression
         linear = None
         if e.linear:
-            linear = Linear(
+            linear = Ratio(
                 e.value.name,
                 Fraction(e.scale),
                 Fraction(e.bias),
@@ -1101,7 +1101,7 @@ def _words(
             count = counts.get(getattr(spec, "extent", None))
             if isinstance(spec, ExtentWord) and count is not None and count.linear:
                 divisor = spec.divisor(op)
-                linear = Linear(
+                linear = Ratio(
                     count.value.name,
                     Fraction(count.scale, divisor),
                     Fraction(count.bias, divisor),
@@ -1145,11 +1145,11 @@ def _step_words(recording: Recording) -> list[frozenset[str]]:
 
 def _shared(words: list[Word]) -> dict[str, str]:
     """The symbol each word shares with the words of its one form: a
-    ``Linear``, or the name of a clamped or wrapped expression or of a
+    ``Ratio``, or the name of a clamped or wrapped expression or of a
     floor scaled past one.
     """
     shared: dict[str, str] = {}
-    forms: dict[str, set[Linear | str | None]] = {}
+    forms: dict[str, set[Ratio | str | None]] = {}
     for w in words:
         found, e = w.linear, w.form
         if (
@@ -1157,22 +1157,22 @@ def _shared(words: list[Word]) -> dict[str, str]:
             and e is not None
             and (e.clamped or e.mod is not None or e.mul not in (1, -1))
         ):
-            # None of these has a Linear form; its name spells it whole.
+            # None of these has a Ratio form; its name spells it whole.
             found = f"{e.name}_{np.dtype(w.dtype).name}"
         elif found is None and e is not None and e.mul in (1, -1):
-            # ((s v + b) >> k) * m + a as a Linear, which rounds up: a
+            # ((s v + b) >> k) * m + a as a Ratio, which rounds up: a
             # floor is the ceiling of (s v + b - 2^k + 1) / 2^k, and
             # -floor(x) is ceil(-x).
             d = 1 << e.down
             bias = e.bias * e.mul - (d - 1 if e.mul == 1 else 0)
-            found = Linear(
+            found = Ratio(
                 e.value.name,
                 Fraction(e.scale * e.mul, d),
                 Fraction(bias, d) + e.add,
                 np.dtype(w.dtype).name,
             )
         forms.setdefault(w.symbol, set()).add(found)
-    groups: dict[Linear | str, list[str]] = {}
+    groups: dict[Ratio | str, list[str]] = {}
     for symbol, found in forms.items():
         form = next(iter(found))
         if len(found) == 1 and form is not None:

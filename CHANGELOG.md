@@ -579,9 +579,6 @@ public API adds its entry under Unreleased.
 
 ### Removed
 
-- `AdjacentPacking(max_members=)`: a pack grows while the placer takes it.
-  `time_shape(fit_cache=)` and `autotune.FIT_CACHE`: a placer verdict
-  is kept for the process.
 - `iron.lm.EncodeStep`: an encoder's layers are called with a `Call`, one
   prompt of `rows` from position 0, its `ropes` and `embeddings` as before.
 - A graph body's `aie.iron.DispatchTime[T]` per-call value, which no view
@@ -611,16 +608,8 @@ public API adds its entry under Unreleased.
   `aie.utils.benchmark.other_npu_users` and `wait_idle` replace them.
 - `iron.tune.measure.CPU_WAIT_US` and `Awake`: mlir-aie's
   `aie.utils.benchmark.CPU_WAIT_US` and `CompletionCores` replace them.
-- `PerStep.KERNELS` (`XclbinChain`'s, before its rename): mlir-aie's
-  `CompilableDesign.chain` splits a chain at the hardware context's kernel
-  limit.
 - `field(probe=)`: the tuner times each distinct value of such a field, as
   it does every other (Clamp's `low` and `high`).
-- `CausalLM`'s `layer_class = None` path: its `decoder=` argument,
-  `caches`, `attend`, `final_norm`, and `Call.angles` (a layer reads
-  its own `Rope`'s rows in `Call.ropes`). Also `Encoder.attend`'s
-  MHA (it is `NoCache.attend`), `EncoderDecoder.cross` and `layer`,
-  `Config.layer`, `DecoderConfig.attention` and `layer`.
 - Llama's tiktoken tokenizer, `SPECIAL_TOKENS` and `tokenizer()`: Llama
   reads its checkpoint's `tokenizer.json` like every model, and tiktoken is
   no longer a dependency.
