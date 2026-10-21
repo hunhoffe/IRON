@@ -42,6 +42,17 @@ brute force, a planted ground state and one-variable-at-a-time annealing.
 `tests/applications/anneal/test.py` finds a planted ground state of 1024
 variables on the NPU.
 
+## Prior work
+
+No code is copied. The temperature range is
+[dwave-samplers](https://github.com/dwavesystems/dwave-samplers)'
+simulated annealer's default (Apache-2.0), which suits a comparison against
+it. Updating one group of variables at a time with matrix products follows
+Yang et al.'s Ising model on TPUs
+([SC19](https://arxiv.org/abs/1903.11714), code in google-research,
+Apache-2.0), which used a lattice's two colours where dense couplings have
+none.
+
 ## Limits
 
 - Couplings are bf16 on the device; `energies` scores the samples in
