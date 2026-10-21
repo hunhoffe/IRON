@@ -14,6 +14,7 @@ from aie.utils.compile.jit.params import param, tunable, widths
 
 from iron.common import Built, Operator, Unresolvable
 from iron.common.testing import Case, Testing
+from iron.operators.flm import q4nx
 from iron.operators.flm.aie2p_math_emulation import f32_to_bf16_floor
 
 # flm.ProjectionGEMM's B tiling, imported rather than restated: this design has to write
@@ -256,7 +257,13 @@ class DequantBFP(Operator):
         # The factory declares both operands in bytes; the output FIFO carries
         # bfp16ebs8 blocks.
         kernel = quant.q4nx_dequant(
-            m_tile=M_TILE, k_tile=K_TILE, group=GROUP, ct_k=CT_K, s=S, t=T
+            m_tile=M_TILE,
+            k_tile=K_TILE,
+            group=GROUP,
+            ct_k=CT_K,
+            s=S,
+            t=T,
+            rounding="conv_even",
         ).object_file.bind("q4nx_dequant_bfp", [qw_blk_ty, out_blk_ty])
 
         def core_body(qw_in, out_of, k):
@@ -379,23 +386,16 @@ class DequantBFP(Operator):
         return Tolerance.exact()
 
     def grid(self, qw):
-        """The weight's q4nx blocks in the blob ``qw``, as ``q4nx.unpack``'s grid.
-
-        A column block is its k-tiles in order, each k-tile its two k-halves,
-        each of those its two n-halves: README.md layers 6-9.
-        """
+        """The weight's q4nx blocks in the blob ``qw``, as ``q4nx.unpack``'s grid."""
         cb_bytes = packed_bytes(N_TILE * self.K)
         qw = np.asarray(qw, np.uint8).reshape(-1, cb_bytes)[self.column_blocks]
-        qw = qw.reshape(self.N // N_TILE, self.K // K_TILE_B, 2, 2, BLOCK_BYTES)
-        return qw.transpose(0, 3, 1, 2, 4).reshape(
-            self.N // M_TILE, self.K // K_TILE, BLOCK_BYTES
-        )
+        return q4nx.grid(qw.reshape(self.N, -1))
 
     def reference(self, qw):
         """The bytes the operator must produce from the blob ``qw``, as a flat
         uint8 array: bit-exact against the device, as the cores round to bf16
-        toward negative infinity. See README.md for the layout and the
-        rounding.
+        and then to bfp16, to nearest even. See README.md for the layout and
+        the rounding.
         """
         K, N = self.K, self.N
         grid = self.grid(qw)
@@ -407,6 +407,7 @@ class DequantBFP(Operator):
             ct_k=CT_K,
             s=S,
             t=T,
+            rounding="conv_even",
         )
         # Each block's bytes are indexed [k slice, n // T, k // S in the slice,
         # n % T, 9]. Lay the grid's blocks out as one such array for the whole

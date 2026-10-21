@@ -448,15 +448,17 @@ class Operator(jit.Operator, library=True):
         new._check_complete()
         return new
 
-    def _with_tunables(self, **tunables: Any) -> Self:
+    def with_tunables(self, **tunables: Any) -> Self:
+        """A copy at ``tunables``, every field ``resolve()`` derives left for
+        it to derive again.
+        """
         unknown = [n for n in tunables if n not in self.declaration.tunables]
         if unknown:
             raise TypeError(f"{type(self).__name__} has no tunable {unknown}")
-        # What resolve() computes is computed again.
         fixed = {n: None for n, p in self.declaration.params.items() if not p.init}
         return self.replace(**fixed, **tunables)
 
-    def _domains(self, dev) -> dict[str, tuple[Any, ...]]:
+    def domains(self, dev) -> dict[str, tuple[Any, ...]]:
         """The values the tuner tries for each tunable it searches, asked of
         the resolved operator. A combination the operator cannot resolve at
         is left out by the tuner. A ``pinned`` tunable is not searched, nor

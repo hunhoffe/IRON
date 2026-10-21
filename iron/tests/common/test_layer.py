@@ -248,7 +248,9 @@ def test_gemma_s_text_layer_projects_at_highest_precision():
 
 def test_embeddinggemma_2_loads_a_layer_s_per_layer_input_flat_or_nested():
     """Its per-layer input's weights as IRON's checkpoint names them, or
-    under ``ple_block`` as transformers 5 saves them: the same encoder.
+    under ``ple_block`` as transformers 5 saves them: the same encoder. Its
+    two layer kinds share a head size but not a RoPE base, so each reads
+    its own table.
     """
     rng = np.random.default_rng(5)
     c = Config(
@@ -286,6 +288,8 @@ def test_embeddinggemma_2_loads_a_layer_s_per_layer_input_flat_or_nested():
         for n, s in sorted(named.items())
     }
     encoder = EmbeddingGemma(c, nest(tensors))
+    assert {layer.rope for layer in encoder.layers} == set(encoder.rope)
+    assert len(encoder.rope) == 2
     ids, values = encoder.inputs(rng.integers(3, c.vocab_size, 9))
     got = np.asarray(encoder.reference(ids, **values), np.float32)
     assert np.isfinite(got).all()

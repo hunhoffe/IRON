@@ -27,6 +27,7 @@ from iron.operators.copy import Copy, Gather
 from iron.operators.depthwise_conv1d import DepthwiseConv1d
 from iron.operators.emit import Emit
 from iron.operators.flm.dequant.op import DequantBFP
+from iron.operators.flm.gemv.op import Q4nxGEMV
 from iron.operators.flm.gemm.op import ProjectionGEMM
 from iron.operators.flm.layer.op import DecodeLayer
 from iron.operators.flm.lm_head.op import LMHead
@@ -599,6 +600,17 @@ def test_flm_prefill_attention_rejects_unservable_shapes(cls, kwargs, match, npu
 def test_flm_lm_head_rejects_unservable_shapes(dim, vocab, softcap, match, npu2):
     with pytest.raises(ValueError, match=match):
         LMHead(dim=dim, vocab=vocab, softcap=softcap).resolved(npu2)
+
+
+@pytest.mark.parametrize("K, N", [(256, 64), (512, 32)])
+def test_flm_q4nx_gemv_rejects_shapes_off_the_layout(K, N, npu2):
+    with pytest.raises(ValueError, match="multiples of 512 and 64, q4nx's layout"):
+        Q4nxGEMV(K=K, N=N).resolved(npu2)
+
+
+def test_flm_q4nx_gemv_is_aie2p_only(npu1):
+    with pytest.raises(Unresolvable, match="AIE2P only"):
+        Q4nxGEMV(K=512, N=64).resolved(npu1)
 
 
 @pytest.mark.parametrize(

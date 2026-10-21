@@ -9,16 +9,21 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+import iron
+from iron.common.graph.compiled import walk
 from iron.lm import (
     DecoderConfig,
     OnHost as Host,
     accuracy,
     determinism,
+    quantize,
 )
 from iron.lm.generation import greedy
 from iron.lm.golden import Golden, HuggingFace
 from iron.lm.testing import assert_close
 from iron.applications.llama import Llama
+from iron.operators.flm import q4nx
+from iron.operators.ternary import layout as ternary
 from iron.tests.support.llama_model import PROFILE, checkpoint, shapes
 
 
@@ -211,3 +216,50 @@ class Decoder:
         model = self.host(cpu.config, cpu.weights)
         prompts = [cpu.prompt, cpu.prompt[::-1]]
         assert determinism(model, prompts, 3, 3) == 0
+
+
+class Q4nx:
+    """A ``Decoder`` subclass's tests over q4nx linear weights, before it in
+    the bases: transformers' model over what each matrix dequantizes to (the
+    embedding too, which a tied head reads), the graph quantizing those
+    again (``quantize``). A matrix off the layout's grid stays as drawn.
+    """
+
+    name = "q4nx"
+    layout = q4nx
+
+    @staticmethod
+    def held(w):
+        return q4nx.dequantize(q4nx.grid(q4nx.quantize(w)))
+
+    @classmethod
+    def weights(cls) -> SimpleNamespace:
+        tree = super().weights()
+        for name, w, parent, key in list(walk(tree)):
+            if np.ndim(w) == 2:
+                try:
+                    q = cls.held(w)
+                except ValueError:
+                    continue
+                q = iron.param(q.astype(w.dtype, order="C"))
+                if isinstance(parent, list):
+                    parent[key] = q
+                else:
+                    setattr(parent, key, q)
+        return tree
+
+    def host(self, config, weights):
+        model = super().host(config, weights)
+        quantize(model, self.layout)
+        return model
+
+
+class Ternary(Q4nx):
+    """``Q4nx``'s tests over ternary linear weights."""
+
+    name = "ternary"
+    layout = ternary
+
+    @staticmethod
+    def held(w):
+        return ternary.dequantize(ternary.quantize(w))

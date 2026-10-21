@@ -45,13 +45,10 @@ class Gemma3Config(DecoderConfig):
     )
     query_pre_attn_scalar: float = 256
     rope_local_base_freq: float = 10000.0
-    # Hugging Face's default: five sliding layers, then a global one.
-    layer_types: tuple[str, ...] | None = dataclasses.field(
-        default=None, kw_only=True, metadata={"convert": tuple}
-    )
 
     def __post_init__(self):
         super().__post_init__()
+        # Hugging Face's default: five sliding layers, then a global one.
         if self.layer_types is None:
             kinds = ("sliding_attention",) * 5 + ("full_attention",)
             types = tuple(kinds[i % 6] for i in range(self.num_hidden_layers))

@@ -16,8 +16,7 @@ op(q4nx_blob, packed_b)  # compiles once, then runs
 ```
 
 `K` is the in-feature count and `N` the out-feature count, so the result is B
-for a `(M, K) x (K, N)` GEMM. The output equals `ProjectionGEMM.pack_B` byte for byte
-under `Rounding.FLOOR`, the mode the cores run in.
+for a `(M, K) x (K, N)` GEMM, in the order `ProjectionGEMM.pack_B` lays it out.
 
 ## Input layout
 
@@ -108,10 +107,13 @@ A GEMM at another `tile_n` reads a buffer of the right size in the wrong order.
 
 ## Rounding
 
-The cores never call `set_rounding`, so both conversions run in the power-up
-`floor` mode: f32 to bf16 rounds toward negative infinity, and bf16 to
-bfp16ebs8 truncates onto the shared exponent. `DequantBFP.reference` reproduces both,
-so the tests compare bytes.
+Both conversions, f32 to bf16 and bf16 to bfp16ebs8, round to nearest, ties
+to even (mlir-aie's `q4nx_dequant(rounding="conv_even")`). FastFlowLM's
+packing floors both instead, which leaves prompt logits about 6% off. A
+mantissa that rounds to +128 raises its block's exponent, where
+`ProjectionGEMM.pack_B` saturates it to 127, so the two agree on the order
+but not on every byte. `DequantBFP.reference` reproduces the cores, so the
+tests compare bytes.
 
 ## Validation
 
@@ -119,7 +121,7 @@ so the tests compare bytes.
 |---|---|
 | descriptors reproduce `pack_b`'s order | `iron/tests/operators/test_flm_dequant_layout.py` |
 | device output equals the CPU reference | `iron/tests/operators/test_catalog.py`, at `DequantBFP.test`'s cases |
-| device output equals `ProjectionGEMM.pack_B` | `test.py::test_output_feeds_gemm_unchanged` |
+| device output is `pack_b`'s order, converted as a core converts | `test.py::test_output_feeds_gemm_unchanged` |
 
 A wrong stride yields a buffer of the right size holding real weight values in
 the wrong order. The layout tests therefore compare index arithmetic.

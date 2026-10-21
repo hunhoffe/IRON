@@ -62,7 +62,7 @@ def quiet(_):
 def ops(op):
     """``op`` at each of its settings, the recorded one first."""
     dev = aie_utils.ensure_current_device()
-    return [op._with_tunables(**s).resolved(dev) for s in settings(op, dev)]
+    return [op.with_tunables(**s).resolved(dev) for s in settings(op, dev)]
 
 
 def _cache(tmp_path):

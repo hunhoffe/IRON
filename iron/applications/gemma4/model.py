@@ -64,9 +64,6 @@ class Gemma4Config(DecoderConfig):
     hidden_act: str = dataclasses.field(
         default="gelu_pytorch_tanh", metadata={"json": "hidden_activation"}
     )
-    layer_types: tuple[str, ...] = dataclasses.field(
-        kw_only=True, metadata={"convert": tuple}
-    )
     global_head_dim: int = 512
     global_rope_theta: float = dataclasses.field(
         default=1000000.0,

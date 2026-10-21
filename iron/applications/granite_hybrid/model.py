@@ -51,9 +51,6 @@ class GraniteHybridConfig(GraniteConfig):
 
     # transformers' default; __post_init__ sets None but under "rope".
     rope_theta: float | None = dataclasses.field(default=10000.0, kw_only=True)
-    layer_types: tuple[str, ...] = dataclasses.field(
-        kw_only=True, metadata={"convert": tuple}
-    )
     position_embedding_type: str | None = dataclasses.field(default=None, kw_only=True)
     shared_intermediate_size: int = dataclasses.field(kw_only=True)
     num_local_experts: int = dataclasses.field(default=0, kw_only=True)
@@ -66,11 +63,6 @@ class GraniteHybridConfig(GraniteConfig):
 
     def __post_init__(self):
         super().__post_init__()
-        if len(self.layer_types) != self.num_hidden_layers:
-            raise ValueError(
-                f"GraniteHybridConfig: {len(self.layer_types)} layer_types for "
-                f"{self.num_hidden_layers} layers"
-            )
         if self.position_embedding_type != "rope":
             object.__setattr__(self, "rope_theta", None)
 

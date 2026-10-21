@@ -12,26 +12,23 @@ at, and returns a ``Profile`` naming the fastest for each shape.
 from __future__ import annotations
 
 import dataclasses
-import hashlib
 import itertools
 import json
 import logging
 import math
 import urllib.request
 from collections.abc import Callable, Hashable, Mapping, Sequence
-from pathlib import Path
 from typing import Any
 
 import numpy as np
-from aie.iron import ExternalFunction
-from aie.utils.compile import NPU_CACHE_HOME
+from aie.utils import set_current_device
 
 from iron.common.declare import Operator, Profile
 from iron.common.design import OperatorDesign
 from iron.common.graph.record import Recording
 from iron.common.image.coresidence import fits
 from iron.operators.gemm import GEMM
-from .measure import Cache, Standalone, Timing, judge, measure, write
+from .measure import Cache, Standalone, Timing, judge, measure
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +37,6 @@ CONFIDENCE = 2.0
 
 # Past this many settings, a shape's tunables are searched one at a time.
 EXHAUSTIVE = 32
-
-FIT_CACHE = Path(NPU_CACHE_HOME) / "iron" / "fits"
 
 # The fastest a core's clock may run, over the one the runtime read
 # (core_mhz), so a faster power mode's best setting is not skipped.
@@ -53,10 +48,8 @@ KERNEL_CHECKS = "https://xilinx.github.io/mlir-aie/kernel-checks/{npu}/latest.js
 def kernel_cycles(dev, log: Callable[[str], None] = print) -> dict[str, int]:
     """Each kernel's cycles per call as mlir-aie's nightly last timed it on
     ``dev``'s NPU, by ``ExternalFunction.recipe_key``; empty where they
-    cannot be read or this mlir-aie names no builds.
+    cannot be read.
     """
-    if not hasattr(ExternalFunction, "recipe_key"):
-        return {}
     url = KERNEL_CHECKS.format(npu=dev.name)
     try:
         with urllib.request.urlopen(url, timeout=30) as response:
@@ -163,8 +156,8 @@ def settings(
     op: Operator, dev, pinned: frozenset[str] = frozenset()
 ) -> list[dict[str, Any]]:
     """``op``'s tunables as resolved for ``dev``, then every other
-    combination of their ``Operator.domains`` it resolves at and whose
-    derived transfers fit their descriptors, each design once.
+    combination of their ``Operator.domains`` it resolves at and the placer
+    takes (``refusal``), each design once.
 
     Args:
         pinned: Tunables another operator of its shape pins, held at the
@@ -177,7 +170,7 @@ def settings(
             **{name: vars(resolved)[name] for name in pinned - op.pinned},
         )
     resolved = op.resolved(dev)
-    domains = resolved._domains(dev)
+    domains = resolved.domains(dev)
     default = {name: vars(resolved)[name] for name in domains}
     out = {_identity(resolved, dev): default}
     dropped = 0
@@ -186,15 +179,19 @@ def settings(
         if tunables == default:
             continue
         try:
-            moved = op._with_tunables(**tunables).resolved(dev)
-            if not moved.has_sequence_override():
-                for buf in moved.buffers:
-                    buf.transfers()
-        except ValueError as e:  # unresolvable, incompatible or untransferable here
-            logger.debug("%s at %s dropped: %s", type(op).__name__, tunables, e)
-            dropped += 1
-            continue
-        out.setdefault(_identity(moved, dev), tunables)
+            moved = op.with_tunables(**tunables).resolved(dev)
+            identity = _identity(moved, dev)
+        except ValueError as e:  # unresolvable or incompatible here
+            why = str(e)
+        else:
+            if identity in out:
+                continue
+            why = refusal(moved, dev)
+            if why is None:
+                out[identity] = tunables
+                continue
+        logger.debug("%s at %s dropped: %s", type(op).__name__, tunables, why)
+        dropped += 1
     if dropped:
         logger.info(
             "%s: %d of %d settings dropped",
@@ -209,22 +206,19 @@ def _identity(op: Operator, dev) -> str:
     return OperatorDesign(op.resolved(dev)).identity
 
 
-def refusal(op: Operator) -> str | None:
-    """Why the placer refuses ``op`` alone on a device, or None if it fits;
-    kept under ``FIT_CACHE``, keyed on its recipe.
-    """
-    design = OperatorDesign(op.resolved())
-    record = (
-        FIT_CACHE
-        / hashlib.sha256(design.compilable().recipe_hash.encode()).hexdigest()[:24]
-    )
-    if record.exists():
-        verdict = record.read_text()
-    else:
-        diagnostic = fits({design.identity: design})
-        verdict = "fits" if diagnostic is None else f"refused: {diagnostic}"
-        write(record, verdict)
-    return None if verdict == "fits" else verdict.removeprefix("refused: ")
+# Each design's placer verdict for the life of the process, by its identity
+# and its build environment (the device and the tools).
+VERDICTS: dict[tuple[str, str], str | None] = {}
+
+
+def refusal(op: Operator, dev) -> str | None:
+    """Why ``op`` alone does not build or place on ``dev``, or None."""
+    with set_current_device(dev):
+        design = OperatorDesign(op.resolved(dev))
+        key = (design.identity, design.compilable().artifact_hash)
+        if key not in VERDICTS:
+            VERDICTS[key] = fits({design.identity: design})
+    return VERDICTS[key]
 
 
 def line(found: Sequence[dict[str, Any]], through: dict[str, Any], name: str):
@@ -323,7 +317,7 @@ def shapes(calls: Sequence[Timed], dev) -> list[Shape]:
             if identity not in seen:
                 seen.add(identity)
                 shape.members.append((op, call.op_points(op), call.op_inputs(op)))
-    return [s for s in found.values() if s.members[0][0].resolved(dev)._domains(dev)]
+    return [s for s in found.values() if s.members[0][0].resolved(dev).domains(dev)]
 
 
 def time_shape(
@@ -352,11 +346,6 @@ def time_shape(
     for op, _, _ in shape.members[1:]:
         own = settings(op, dev, shape.pinned)
         found = [s for s in found if s in own]
-    found = [found[0]] + [
-        s
-        for s in found[1:]
-        if all(refusal(op._with_tunables(**s)) is None for op, _, _ in shape.members)
-    ]
     if len(found) == 1:
         return [Trial(found[0], 0.0, 0.0)]
     tried: dict[tuple, Trial] = {}
@@ -418,7 +407,7 @@ def _least(
     """
     total = 0.0
     for op, points, _ in shape.members:
-        moved = op._with_tunables(**s).resolved(dev)
+        moved = op.with_tunables(**s).resolved(dev)
         for weight, values in points:
             bound = least_us(moved, values, cycles, core_mhz)
             if bound is None:
@@ -446,7 +435,7 @@ def _time(
     variances: list[float | None] = [0.0] * len(found)
     refused: list[str | None] = [None] * len(found)
     for op, points, inputs in shape.members:
-        ops = [op._with_tunables(**s).resolved() for s in found]
+        ops = [op.with_tunables(**s).resolved() for s in found]
         for weight, values in points:
             ran = measure(
                 ops,

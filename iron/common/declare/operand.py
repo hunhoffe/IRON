@@ -367,7 +367,7 @@ class Operand:
             axis = self.batch_axes
             if axis >= len(shape) or shape[axis] % count:
                 raise ValueError(
-                    f"{self.name} {shape} does not divide across its {count} lanes "
+                    f"{name} {shape} does not divide across its {count} lanes "
                     f"on axis {axis}. Check {type(self.op).__name__}.compatible()"
                 )
             parts = TensorAccessPattern.full(shape).partition(count, axis)
@@ -384,12 +384,12 @@ class Operand:
         tile_rows = self.extent_unit(axis)
         if shape[axis] % (lanes * tile_rows):
             raise ValueError(
-                f"{self.name} {shape}: axis {axis} does not divide into "
+                f"{name} {shape}: axis {axis} does not divide into "
                 f"{tile_rows}-row tiles over {lanes} lanes"
             )
         if axis > 1:
             raise ValueError(
-                f"{self.name} {shape}: bounding axis {axis} needs {axis + 3} "
+                f"{name} {shape}: bounding axis {axis} needs {axis + 3} "
                 f"descriptor dimensions; a descriptor has four"
             )
         tiles = shape[axis] // (lanes * tile_rows)
@@ -397,7 +397,7 @@ class Operand:
         halves = self.split(run)
         if halves is None:
             raise ValueError(
-                f"{self.name}: a {run}-element tile does not fit one descriptor"
+                f"{name}: a {run}-element tile does not fit one descriptor"
             )
         # A unit D1 is stripped, which would drop the tile count into D1's
         # wrap; past it, a tile split in two keeps the count on D2, which has
@@ -412,7 +412,7 @@ class Operand:
             tap = tiled[:, :, lane].split(2, halves[1])
             if not self.fits(tap):
                 raise ValueError(
-                    f"{self.name} {shape}: the round-robin split over {lanes} "
+                    f"{name} {shape}: the round-robin split over {lanes} "
                     f"lanes does not fit one descriptor per lane"
                 )
             for k in range(count) if self.replicate else [lane]:

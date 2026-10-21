@@ -211,6 +211,11 @@ class DecoderConfig(Config):
     # SmolLM3's) picks its layers per model, so there it must be false.
     sliding_window: int | None = dataclasses.field(default=None, kw_only=True)
     use_sliding_window: bool | None = dataclasses.field(default=None, kw_only=True)
+    # Each layer's kind as config.json names it ("full_attention",
+    # "sliding_attention", a mixer's own); None where every layer is alike.
+    layer_types: tuple[str, ...] | None = dataclasses.field(
+        default=None, kw_only=True, metadata={"convert": tuple}
+    )
 
     def __post_init__(self):
         if self.head_dim is None:
@@ -219,6 +224,12 @@ class DecoderConfig(Config):
             )
         if self.prefill_chunk > self.max_seq_len:
             object.__setattr__(self, "prefill_chunk", self.max_seq_len)
+        types = self.layer_types
+        if types is not None and len(types) != self.num_hidden_layers:
+            raise ValueError(
+                f"{type(self).__name__}: {len(types)} layer_types for "
+                f"{self.num_hidden_layers} layers"
+            )
         if self.use_sliding_window and self.window is not None:
             raise ValueError(
                 f"{type(self).__name__}: use_sliding_window with sliding_window "

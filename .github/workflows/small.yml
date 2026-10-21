@@ -30,6 +30,8 @@ jobs:
         include:
           - {runner: phoenix, name: Phoenix}
           - {runner: krackan, name: Krackan}
+    # A fork's pull request never runs on these self-hosted runners.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: [self-hosted, "${{ matrix.runner }}"]
     steps:
       - name: Pull
@@ -38,6 +40,10 @@ jobs:
           persist-credentials: false
         env:
           HOME: /workspace
+
+      - name: Use a compile cache of this job's own
+        shell: bash
+        run: echo "NPU_CACHE_HOME=$RUNNER_TEMP/npu-cache" >> "$GITHUB_ENV"
 
       - name: Prerequisites
         uses: ./.github/actions/prereqs
@@ -62,6 +68,13 @@ jobs:
           name: results-${{ matrix.runner }}-small
           path: results/
           retention-days: 7
+
+      - name: Clean up this job's compile cache
+        # This runner is self-hosted, so $RUNNER_TEMP is not emptied for us
+        # between jobs; remove it ourselves, win or lose.
+        if: always()
+        shell: bash
+        run: rm -rf "$NPU_CACHE_HOME"
 
       - name: Mark workflow as failed if tests failed
         if: steps.test.outcome == 'failure'

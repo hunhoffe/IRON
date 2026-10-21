@@ -136,6 +136,13 @@ def test_a_sliding_window_some_layers_take_is_refused():
     assert off.window is None
 
 
+def test_layer_types_other_than_one_a_layer_are_refused():
+    kinds = ("full_attention",) * REAL_1B.num_hidden_layers
+    assert dataclasses.replace(REAL_1B, layer_types=kinds).layer_types == kinds
+    with pytest.raises(ValueError, match=f"3 layer_types for {len(kinds)} layers"):
+        dataclasses.replace(REAL_1B, layer_types=kinds[:3])
+
+
 def test_head_dim_falls_back_and_max_seq_len_is_the_native_context(tmp_path):
     """No ``head_dim`` (Qwen 2.5, Granite, LFM2, Phi-4-mini-instruct) is
     ``hidden_size // num_attention_heads``; one given is kept.

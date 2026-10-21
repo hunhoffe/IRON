@@ -151,8 +151,3 @@ def test_a_rope_config_without_rope_theta_takes_transformers_default(tmp_path):
     config = TOY.to_json() | {"position_embedding_type": "rope"}
     (tmp_path / "config.json").write_text(json.dumps(config))
     assert GraniteHybridConfig.from_checkpoint(tmp_path).rope_theta == 10000.0
-
-
-def test_layer_types_short_of_the_layers_are_refused():
-    with pytest.raises(ValueError, match="3 layer_types for 4 layers"):
-        dataclasses.replace(TOY, layer_types=TOY.layer_types[:3])

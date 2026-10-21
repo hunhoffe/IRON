@@ -47,9 +47,6 @@ class Qwen35Config(DecoderConfig):
     rope_theta: float = dataclasses.field(
         metadata={"json": "rope_parameters.rope_theta"}
     )
-    layer_types: tuple[str, ...] = dataclasses.field(
-        kw_only=True, metadata={"convert": tuple}
-    )
     partial_rotary_factor: float = dataclasses.field(
         default=0.25,
         kw_only=True,

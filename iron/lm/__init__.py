@@ -37,6 +37,7 @@ from .blocks import (
     Weights,
     activation,
     filterbank,
+    quantize,
     residual_add,
 )
 from iron.common.feature_map import ConcatChannels, Conv2d, MaxPool2d
@@ -103,6 +104,7 @@ __all__ = [
     "main",
     "not_json",
     "prompt_text",
+    "quantize",
     "residual_add",
     "rope_angles",
     "subtree",

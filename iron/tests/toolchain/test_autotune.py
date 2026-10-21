@@ -39,9 +39,7 @@ pytestmark = pytest.mark.usefixtures("npu2")
 
 def designs(op, dev, pinned=frozenset()):
     """``op``'s settings, each with the design it resolves to."""
-    return [
-        (s, op._with_tunables(**s).resolved(dev)) for s in settings(op, dev, pinned)
-    ]
+    return [(s, op.with_tunables(**s).resolved(dev)) for s in settings(op, dev, pinned)]
 
 
 def identities(found, dev):
@@ -124,19 +122,20 @@ def test_settings_keep_a_width_whose_bounded_tile_count_moves_to_d2(npu2):
     assert [s["num_aie_columns"] for s in settings(op, npu2)] == [8, 4, 2, 1]
 
 
-def test_derived_fields_are_not_widths(npu2):
+def test_derived_fields_are_not_widths(npu2, monkeypatch):
+    monkeypatch.setattr(tuning, "refusal", lambda op, dev: None)  # the search alone
     # resolve() sets GEMM's A shims and MHA's lanes from the other fields
     # whatever it is given, so a width there would be timed once per value
     # and built alike.
     gemm = GEMM(M=512, K=512, N=512)
-    assert "n_shim_mem_a" not in gemm.resolved(npu2)._domains(npu2)
+    assert "n_shim_mem_a" not in gemm.resolved(npu2).domains(npu2)
     # n_shim_mem_a resolves to at most the columns: many settings, one design.
     found = designs(GEMM(M=2560, K=768, N=3072, b_col_maj=True), npu2)
     assert len(identities(found, npu2)) == len(found)
     widths = [s["num_aie_columns"] for s, _ in found]
     assert list(dict.fromkeys(widths)) == [8, 4, 2, 1]
     mha = MHA(num_heads=8, seq_pad=256).resolved(npu2)
-    assert mha._domains(npu2) == {
+    assert mha.domains(npu2) == {
         "num_pipelines": (8, 4, 2, 1),
         "B_q": (64, 32, 16),
         "pv_cores": (1, 2),
@@ -145,14 +144,14 @@ def test_derived_fields_are_not_widths(npu2):
 
 def test_gemm_searches_tile_k_only_where_c_accumulates_in_f32(npu2):
     plain = GEMM(M=2048, K=2048, N=2048).resolved(npu2)
-    assert set(plain._domains(npu2)) == {
+    assert set(plain.domains(npu2)) == {
         "num_aie_columns",
         "tile_m",
         "tile_n",
         "placement",
     }
     exact = GEMM(M=2048, K=2048, N=2048, precision=Precision.HIGHEST).resolved(npu2)
-    assert set(exact._domains(npu2)) == {
+    assert set(exact.domains(npu2)) == {
         "num_aie_columns",
         "tile_m",
         "tile_k",
@@ -167,14 +166,14 @@ def test_gemm_tiles_are_whole_kernel_blocks(name):
     gemm = GEMM(M=2048, K=2048, N=2048, precision=Precision.HIGHEST).resolved(dev)
     # aie2's kernel blocks m by four of its r = 4, aie2p's by two.
     assert gemm.mac_block(dev)[0] == (16 if name == "npu1" else 8)
-    domains = gemm._domains(dev)
+    domains = gemm.domains(dev)
     for field, block in zip(("tile_m", "tile_k", "tile_n"), gemm.mac_block(dev)):
         assert all(tile % block == 0 for tile in domains[field]), (field, block)
 
 
 def test_a_baked_replication_is_not_searched(npu2):
     # The join bakes DequantBFP's two n-halves, though a per= names them.
-    assert DequantBFP(K=2048, N=2048).resolved(npu2)._domains(npu2) == {
+    assert DequantBFP(K=2048, N=2048).resolved(npu2).domains(npu2) == {
         "cols": (8, 4, 2, 1)
     }
 
@@ -197,21 +196,21 @@ def test_a_ladder_runs_through_the_resolved_value(npu2):
     # The default chunk, 8016, is the slice's largest even divisor to 8192,
     # which no power of two from the step reaches.
     sample = Sample(vocab=128256).resolved(npu2)
-    assert sample._domains(npu2)["chunk"] == (8016, 4008, 2004, 1002)
+    assert sample.domains(npu2)["chunk"] == (8016, 4008, 2004, 1002)
     # Three octaves either side of 256, kept to multiples of 64.
     add = ElementwiseAdd(size=1 << 16, num_aie_columns=8).resolved(npu2)
-    assert add._domains(npu2)["tile_size"] == (2048, 1024, 512, 256, 128, 64)
+    assert add.domains(npu2)["tile_size"] == (2048, 1024, 512, 256, 128, 64)
 
 
 def test_a_block_is_no_larger_than_a_core_holds(npu2):
     # Uncapped, a 32768-row prefill's ladder runs to kv_len, and generating
     # MHA at a 32768 x 32768 score tile to ask the placer takes 8 GiB.
     mha = MHA(num_heads=8, seq_pad=32768).resolved(npu2)
-    assert mha._domains(npu2)["B_q"] == (64, 32, 16)
+    assert mha.domains(npu2)["B_q"] == (64, 32, 16)
     wide = MHA(num_heads=4, seq_pad=2048, d=256, causal=False).resolved(npu2)
-    assert wide._domains(npu2)["B_q"] == (16,)
+    assert wide.domains(npu2)["B_q"] == (16,)
     softmax = Softmax(rows=32, cols=32768).resolved(npu2)
-    assert max(softmax._domains(npu2)["block"]) == 4096
+    assert max(softmax.domains(npu2)["block"]) == 4096
 
 
 def test_descent_reaches_every_mha_setting_one_tunable_a_move(npu2):
@@ -245,7 +244,7 @@ def test_a_row_a_core_holds_whole_is_one_block(npu2):
 
 def test_flm_gemm_searches_its_a_tile_and_row_blocks(npu2):
     gemm = ProjectionGEMM(M=2048, K=2048, N=2048).resolved(npu2)
-    assert gemm._domains(npu2) == {
+    assert gemm.domains(npu2) == {
         "tile_ma": (64, 32, 16),
         "m_chunk": (8, 4, 2, 1),
         "k_tile": (512, 256, 128),
@@ -264,7 +263,7 @@ def test_a_placement_is_searched_by_name(tmp_path, npu2):
     profile = Profile()
     profile.add(GEMM, placement=GEMMPlacement.TILES)
     held = profile.make(GEMM, M=512, K=512, N=512)
-    assert held.resolved(npu2)._domains(npu2)["placement"] == (
+    assert held.resolved(npu2).domains(npu2)["placement"] == (
         GEMMPlacement.TILES,
         GEMMPlacement.SHIMS,
     )
@@ -284,10 +283,10 @@ def test_a_profile_refuses_a_derived_field():
 
 def test_a_narrowed_operator_keeps_its_fixed_fields():
     add = ElementwiseAdd(size=SIZE, tile_size=TILE)
-    narrow = add._with_tunables(num_aie_columns=2)
+    narrow = add.with_tunables(num_aie_columns=2)
     assert (narrow.size, narrow.tile_size, narrow.num_aie_columns) == (SIZE, TILE, 2)
     with pytest.raises(TypeError, match="no tunable"):
-        add._with_tunables(size=SIZE // 2)
+        add.with_tunables(size=SIZE // 2)
 
 
 def test_cache_keys_follow_the_build_the_values_and_the_inputs(npu2):
@@ -297,7 +296,7 @@ def test_cache_keys_follow_the_build_the_values_and_the_inputs(npu2):
     assert Cache.key(ElementwiseAdd(size=SIZE, tile_size=TILE)) == key
     assert Cache.key(add, {}, {}) == key
     others = [
-        Cache.key(add._with_tunables(num_aie_columns=2)),
+        Cache.key(add.with_tunables(num_aie_columns=2)),
         Cache.key(add, {"n": 1}),
         Cache.key(add, {"n": 2}),
         Cache.key(add, inputs={"a": x}),
@@ -305,6 +304,19 @@ def test_cache_keys_follow_the_build_the_values_and_the_inputs(npu2):
         Cache.key(add, full_elf=False),
     ]
     assert len({key, *others}) == 1 + len(others)
+
+
+def test_a_placer_verdict_is_kept_per_device(monkeypatch, npu1, npu2):
+    """One recipe placed once on each device, whatever device is current."""
+    placed = []
+    monkeypatch.setattr(tuning, "VERDICTS", {})
+    monkeypatch.setattr(
+        tuning, "fits", lambda _: placed.append(aie_utils.get_current_device())
+    )
+    add = ElementwiseAdd(size=SIZE, tile_size=TILE, num_aie_columns=1)
+    for dev in (npu2, npu2, npu1, npu1):
+        assert tuning.refusal(add, dev) is None
+    assert placed == [npu2, npu1]
 
 
 def test_cache_entries_round_trip_per_platform_and_mode(tmp_path):
@@ -393,7 +405,7 @@ def _gemm_judged():
     output, and each setting's bound on C.
     """
     default = GEMM(M=256, K=256, N=256)
-    narrow = default._with_tunables(tile_k=16)
+    narrow = default.with_tunables(tile_k=16)
     v = vectors(default)
     bounds = [
         op.resolved().tolerance().bound(*v.inputs.values()) for op in (default, narrow)
@@ -458,7 +470,7 @@ def _fake(monkeypatch, step_us, output=lambda op: "same"):
         }
 
     monkeypatch.setattr(tuning, "measure", measure)
-    monkeypatch.setattr(tuning, "refusal", lambda op: None)
+    monkeypatch.setattr(tuning, "refusal", lambda op, dev: None)
 
 
 def _tune(recording, dev, profile=None):
@@ -524,7 +536,7 @@ def test_an_operator_is_timed_at_each_point_its_extents_move(monkeypatch, npu2):
         }
 
     monkeypatch.setattr(tuning, "measure", measure)
-    monkeypatch.setattr(tuning, "refusal", lambda op: None)
+    monkeypatch.setattr(tuning, "refusal", lambda op, dev: None)
     call = Timed(
         Rotate().record(x=(64, 64), angles=(64, 64)),
         points=[Point(0.5, {"n": 16}), Point(0.5, {"n": 64})],
@@ -566,11 +578,11 @@ def test_a_gemm_setting_slower_by_its_kernel_alone_is_never_timed(
         }
 
     monkeypatch.setattr(tuning, "measure", measure)
-    monkeypatch.setattr(tuning, "refusal", lambda op: None)
+    monkeypatch.setattr(tuning, "refusal", lambda op, dev: None)
     op = GEMM(M=256, K=256, N=256, precision=Precision.HIGH)
     shape = Shape(op)
     shape.members.append((op, [(1.0, {})], {}))
-    found = [op._with_tunables(**s).resolved(npu2) for s in settings(op, npu2)]
+    found = [op.with_tunables(**s).resolved(npu2) for s in settings(op, npu2)]
     # Every tile but 16 rows by 16 columns runs at 1 cycle a call, that one
     # at what puts its bound just over or just under the 100 us step.
     cycles = {key(o.layout()): 1 for o in found}
@@ -600,21 +612,14 @@ def test_kernel_cycles_are_the_nightly_s_rows_by_their_build(
         "builds": {"mm/a": "matmul-1", "mm/b": "matmul-2"},
     }
     (tmp_path / "npu2.json").write_text(json.dumps(latest))
-    monkeypatch.setattr(tuning.ExternalFunction, "recipe_key", None, raising=False)
     monkeypatch.setattr(tuning, "KERNEL_CHECKS", f"file://{tmp_path}/{{npu}}.json")
     assert tuning.kernel_cycles(npu2) == {"matmul-1": 900}
     monkeypatch.setattr(tuning, "KERNEL_CHECKS", f"file://{tmp_path}/none.json")
     assert tuning.kernel_cycles(npu2, log=lambda _: None) == {}
 
 
-def test_an_mlir_aie_that_names_no_builds_gives_no_kernel_cycles(monkeypatch, npu2):
-    monkeypatch.delattr(tuning.ExternalFunction, "recipe_key", raising=False)
-    monkeypatch.setattr(tuning, "KERNEL_CHECKS", "file:///never/read/{npu}.json")
-    assert tuning.kernel_cycles(npu2) == {}
-
-
 @pytest.mark.parametrize("name", ["npu1", "npu2"])
-def test_every_gemm_tile_searched_is_one_the_nightly_times(name, request):
+def test_every_gemm_tile_searched_is_one_the_nightly_times(name, request, monkeypatch):
     """mlir-aie's nightly times the tiles ``_iron_gemm_tiles`` in its
     ``test/python/npu/kernel_cases.py`` names: powers of two, m and n at
     least 16 (m 8 on npu2 without bfp16 macs), k 64 below HIGHEST, whose
@@ -622,12 +627,13 @@ def test_every_gemm_tile_searched_is_one_the_nightly_times(name, request):
     reaches outside them has no cycles to skip it by.
     """
     dev = request.getfixturevalue(name)
+    monkeypatch.setattr(tuning, "refusal", lambda op, dev: None)  # the search alone
     for precision in Precision:
         op = GEMM(M=4096, K=4096, N=4096, precision=precision)
         least_m = 8 if name == "npu2" and precision != Precision.MEDIUM else 16
         c_bytes = 6 if precision == Precision.HIGHEST else 4
         for s in settings(op, dev):
-            r = op._with_tunables(**s).resolved(dev)
+            r = op.with_tunables(**s).resolved(dev)
             m, k, n = r.tile_m, r.tile_k, r.tile_n
             assert all(v & (v - 1) == 0 for v in (m, k, n)), (m, k, n)
             assert m >= least_m and n >= 16, (precision, m, n)

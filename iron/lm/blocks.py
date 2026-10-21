@@ -26,6 +26,7 @@ from iron.common.graph.compiled import walk
 from iron.common.image.packaging import require_device
 from iron.operators.axpy import AXPY
 from iron.operators.copy import Copy
+from iron.operators.flm import q4nx
 from iron.operators.gemm import GEMM
 from iron.operators.limbs import Limbs, stacked
 from iron.operators.log import Log
@@ -599,6 +600,23 @@ class Linear(iron.Graph):
             )
             for n, end in zip(rows, ends)
         ]
+
+
+def quantize(graph: iron.Graph, layout=q4nx) -> None:
+    """Hold each ``Linear`` weight under the loaded ``graph`` in ``layout``,
+    which ``F.linear`` runs: q4nx, 5 bits a weight where bf16 takes 16 (AIE2P
+    only), or ``ternary.layout``, 2.125. A weight two of them share is
+    quantized once; one off the layout's block grid stays bf16.
+    """
+    held: dict[int, np.ndarray] = {}
+    for _, w, linear, key in list(walk(graph)):
+        if isinstance(linear, Linear) and key == "weight":
+            if id(w) not in held:
+                try:
+                    held[id(w)] = iron.param(layout.quantize(w))
+                except ValueError:
+                    held[id(w)] = w
+            setattr(linear, key, held[id(w)])
 
 
 class Embedding(iron.Graph):

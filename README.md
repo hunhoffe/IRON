@@ -120,6 +120,7 @@ Each model is a package under [iron/applications/](./iron/applications/) over [i
 | Qwen3 1.7B, 0.6B | [qwen3](./iron/applications/qwen3/) | `qwen3-1.7b`, `qwen3-0.6b` |
 | Qwen3-Reranker 0.6B (`score`) | [qwen3_reranker](./iron/applications/qwen3_reranker/) | `qwen3-reranker-0.6b` |
 | Qwen3-Embedding 0.6B (`embed`) | [qwen3_embedding](./iron/applications/qwen3_embedding/) | `qwen3-embedding-0.6b` |
+| BERT cross-encoder (`score`, toy shape) | [bert](./iron/applications/bert/) | none: drawn weights |
 | Qwen 2.5 1.5B Instruct | [qwen2](./iron/applications/qwen2/) | `qwen2.5-1.5b-instruct` |
 | SmolLM2 1.7B Instruct | [smollm2](./iron/applications/smollm2/) | `smollm2-1.7b-instruct` |
 | Phi-4-mini-instruct | [phi3](./iron/applications/phi3/) | `phi-4-mini-instruct` |
@@ -133,6 +134,8 @@ Each model is a package under [iron/applications/](./iron/applications/) over [i
 | Ministral 3 text decoder (drawn weights) | [ministral3](./iron/applications/ministral3/) | none yet |
 | LFM2-1.2B | [lfm2](./iron/applications/lfm2/) | `lfm2-1.2b` |
 | SmolVLM-256M-Instruct | [idefics3](./iron/applications/idefics3/) | `smolvlm-256m-instruct` |
+| Qwen3-VL (toy shape) | [qwen3_vl](./iron/applications/qwen3_vl/) | none: drawn weights |
+| SmolVLA (toy shape) | [smolvla](./iron/applications/smolvla/) | none: drawn weights |
 | EmbeddingGemma 2 | [embedding_gemma2](./iron/applications/embedding_gemma2/) | `embeddinggemma-2` |
 | ResNet-50 | [resnet](./iron/applications/resnet/) | `resnet-50` |
 | YOLOX-Nano | [yolox](./iron/applications/yolox/) | `yolox-nano` |

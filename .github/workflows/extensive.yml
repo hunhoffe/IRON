@@ -39,6 +39,10 @@ jobs:
         env:
           HOME: /workspace
 
+      - name: Use a compile cache of this job's own
+        shell: bash
+        run: echo "NPU_CACHE_HOME=$RUNNER_TEMP/npu-cache" >> "$GITHUB_ENV"
+
       - name: Prerequisites
         uses: ./.github/actions/prereqs
         with:
@@ -62,6 +66,13 @@ jobs:
           name: results-${{ matrix.runner }}-extensive
           path: results/
           retention-days: 7
+
+      - name: Clean up this job's compile cache
+        # This runner is self-hosted, so $RUNNER_TEMP is not emptied for us
+        # between jobs; remove it ourselves, win or lose.
+        if: always()
+        shell: bash
+        run: rm -rf "$NPU_CACHE_HOME"
 
       - name: Mark workflow as failed if tests failed
         if: steps.test.outcome == 'failure'

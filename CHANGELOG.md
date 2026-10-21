@@ -30,6 +30,38 @@ public API adds its entry under Unreleased.
   `F.gelu`'s default and `hidden_act` `"gelu"`. `Whisper.load` builds
   large-v3-turbo from its checkpoint (`Whisper.config`, `WhisperConfig`'s
   `decoder_start_token_id` its `bos`).
+- Ternary weights, Ternary Bonsai's: `iron.lm.quantize(model, ternary.layout)`
+  holds each `Linear` weight on the layout's grid as -1, 0 or +1 times a bf16
+  scale per 128 in-features, 2.125 bits a weight. `F.linear` runs one row on
+  `TernaryGEMV` and several on `flm.ProjectionGEMM` over what
+  `TernaryDequant` writes. `quantize` leaves a weight off its layout's grid
+  in bf16, q4nx's too.
+- NeuCodec's decoder (`NeuCodecDecoder`), NeuTTS's vocoder: a clip's
+  speech codes to 24 kHz audio, the graph from the codes' rows to their
+  spectra, with a toy golden from neucodec's own modules.
+- q4nx weights for a language model: `iron.lm.quantize(model)` holds every
+  `Linear` weight as q4nx, 5 bits a weight. `F.linear` runs a uint8 weight as q4nx: one row on
+  `flm.Q4nxGEMV`, several on `flm.ProjectionGEMM` over what
+  `flm.DequantBFP` dequantizes. Qwen3 and Llama have q4nx toy goldens.
+- `flm.Q4nxGEMV`: one bf16 row times a q4nx weight, each core streaming
+  32 out-features' blocks past it, for a decode step that reads 5 bits a
+  weight. `flm.q4nx.quantize` lays a float weight out as it and
+  `DequantBFP` read it, and `flm.q4nx.grid` reads that layout back as
+  blocks.
+- A BERT cross-encoder (`BertCrossEncoder.score`): a query and a passage
+  as one sequence, post-norm layers with learned position and segment
+  embeddings, scored by `BertForSequenceClassification`'s head, with a toy
+  golden.
+- SmolVLA (`SmolVLA.sample`): one camera, a task and a state cached
+  through the VLM's layers once (`observe`), then the action expert's
+  Euler steps over that cache (`denoise`), with toy goldens of the
+  observation's keys and values and of the action chunk.
+- Qwen3-VL (`Qwen3VL`, its text model `Qwen3VLText`), one square image:
+  the host writes each position's three-part RoPE row into a table the
+  decoder reads (`Qwen3VLText.place`), and the vision tower's DeepStack
+  rows are added to the image's rows after the first layers, with a toy
+  golden. `Multimodal.from_placed` runs a placed chunk's merged rows
+  through the text model, for a model that adds its own.
 - Qwen3-Reranker (`Qwen3Reranker.score`: "yes" over "no" after its model
   card's prompt) and Qwen3-Embedding (`Qwen3Embedding.embed`: the last
   token's unit-length final hidden state, one compile up to a prompt
@@ -254,6 +286,12 @@ public API adds its entry under Unreleased.
 
 ### Changed
 
+- `flm.DequantBFP` rounds to nearest, ties to even, where it floored as
+  FastFlowLM does: q4nx prompt logits land 3% off the reference, not 6%.
+- An operator's tunables and the values they range over are public:
+  `Operator.domains(dev)` and `Operator.with_tunables(**tunables)`.
+  `autotune.settings` keeps only settings the placer takes, so
+  `time_shape` filters no further.
 - A projection's precision is its model config's (`Config.precision`; Llama's
   is `HIGH` from 3B's width), not a tunable a profile sets or the tuner tries.
 - EmbeddingGemma 2's audio and vision towers, `AudioTower` and
@@ -547,7 +585,8 @@ public API adds its entry under Unreleased.
 ### Removed
 
 - `AdjacentPacking(max_members=)`: a pack grows while the placer takes it.
-  `time_shape(fit_cache=)`: it reads the default `FIT_CACHE`.
+  `time_shape(fit_cache=)` and `autotune.FIT_CACHE`: a placer verdict is
+  kept for the process.
 - `iron.lm.EncodeStep`: an encoder's layers are called with a `Call`, one
   prompt of `rows` from position 0, its `ropes` and `embeddings` as before.
 - A graph body's `aie.iron.DispatchTime[T]` per-call value, which no view
