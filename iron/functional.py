@@ -106,7 +106,7 @@ def linear(x: Handle | State, weight, bias=None, *, precision=None, **gemv) -> H
             B = DequantBFP.step(weight.reshape(-1), K=K, N=N)
             # Resolved here: whether B is packed is the device's, and the
             # tiling DequantBFP writes it in is pinned.
-            gemm = ProjectionGEMM(
+            gemm = ProjectionGEMM(  # pyright: ignore[reportCallIssue]
                 M=x.shape[0],
                 K=K,
                 N=N,
