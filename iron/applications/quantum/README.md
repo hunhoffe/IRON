@@ -71,5 +71,16 @@ float32 once. So the simulator is float32-class, not bit-exact float32.
   IBM simulator patent (US11586792, US11157667 and US12675718).
 - Measurement, noise and batches of circuits are not built.
 
+## Prior work
+
+None of the method is new; running it on XDNA through IRON's operators is.
+[qsim](https://github.com/quantumlib/qsim) (Apache-2.0) fuses gates the same
+greedy, windowed way and applies them as dense matrices.
+[Aicir](https://arxiv.org/abs/2608.09733) simulates on Ascend NPUs with
+complex64 as float32 pairs, applying each gate by gather, matmul and scatter
+where this package copies blocks. Float32 matmuls from low-precision units
+follow Henry et al. 2019 ([arXiv 1904.06376](https://arxiv.org/abs/1904.06376))
+and AMD's own AIE-ML emulation (UG1603). Qiskit Aer is the usual oracle.
+
 The device-free tests are in `tests/applications/quantum/reference/`. The
 device test, `tests/applications/quantum/test.py`, runs a 20-qubit QFT.
