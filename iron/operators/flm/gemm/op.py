@@ -1289,7 +1289,7 @@ class ProjectionGEMM(Operator):
             return B.T if self.b_col_maj else B
         t = self.resolved()
         return unpack_b(
-            B, self.K, self.N, t.k_tile, t.tile_n, S, T, t.ct_max_k, bool(t.bfp16_b)
+            B, self.K, self.N, t.k_tile, t.tile_n, S, T, t.ct_k, bool(t.bfp16_b)
         )
 
     def ops(self) -> int:

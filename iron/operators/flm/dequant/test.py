@@ -37,7 +37,7 @@ def test_output_feeds_gemm_unchanged():
     v = vectors(op, **op.test.draw(op))
     t = ProjectionGEMM(M=256, K=op.K, N=op.N, tile_n=64).resolved()
     B = rb(q4nx.dequantize(op.grid(v["qw"])), "rne").T.copy()
-    plain = pack_b(B, t.k_tile, t.tile_n, S, T, t.ct_max_k).astype(np.float32)
+    plain = pack_b(B, t.k_tile, t.tile_n, S, T, t.ct_k).astype(np.float32)
     packed = bfp.encode_core_even(plain.reshape(-1, S, T).transpose(0, 2, 1))
     _check(op, v.inputs, {"out": packed.reshape(-1)})
 
