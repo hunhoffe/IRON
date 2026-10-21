@@ -142,6 +142,8 @@ Each model is a package under [iron/applications/](./iron/applications/) over [i
 | Whisper large-v3-turbo | [whisper](./iron/applications/whisper/) | `whisper-large-v3-turbo` |
 | Gemma 4 E2B in FastFlowLM | [gemma4_engine](./iron/operators/flm/gemma4_engine/) | `$FLM_MODEL_PATH` (the tests default to `fastflowlm`) |
 
+The [compressor](./iron/applications/compressor/) codes text losslessly with any of the text decoders' predictions.
+
 What the text decoders (Llama to LFM2 above) share:
 
 - **Setup**: `requirements_examples.txt`, as [installing](#installation-linux) says. XRT maps every device buffer locked, and a model's weights and caches are banks of at most 3.5 GiB (`iron.common.image.allocator.BANK`), so `ulimit -l` must cover one bank.
