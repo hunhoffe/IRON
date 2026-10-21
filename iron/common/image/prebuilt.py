@@ -51,7 +51,17 @@ def find(key: str) -> CacheEntry | None:
         if all((directory / f).is_file() for f in FILES):
             elf, params = (directory / f for f in FILES)
             return CacheEntry(
-                directory, None, None, elf, (), params, None, (), None, None
+                directory=directory,
+                xclbin=None,
+                insts=None,
+                elf=elf,
+                full_elf_kernel=None,
+                pdis=(),
+                params=params,
+                lowered_mlir=None,
+                objects=(),
+                manifest=None,
+                dispatch_library=None,
             )
     return None
 
