@@ -28,14 +28,16 @@ times each side (`--cpu` without an NPU).
   `q` two 30-bit primes, within the Homomorphic Encryption Standard's
   128-bit bound. `docs @ encrypted` packs `4096 // d` rows per plaintext,
   each reversed, so one ciphertext-times-plaintext product holds each row's
-  dot product at one coefficient. No rotations, key switching or
-  bootstrapping.
+  dot product at one coefficient, as in Cheetah (Huang et al., USENIX
+  Security 2022). No rotations, key switching or bootstrapping.
 - **Arithmetic**, `ntt.py`: every product is a negacyclic NTT, done as two
   dense transforms of length 64 with a pointwise twist between them. Each
   dense transform modulo `p` is one int8 matrix product, a `(256, 256)`
   weight of pre-reduced twiddle bytes times the data's four signed bytes,
   accumulated in int32 by IRON's `GEMM` and recombined on the host. This
-  follows CROSS (arXiv 2501.07047, MIT).
+  follows CROSS's basis-aligned transformation and 3-step negacyclic NTT
+  (arXiv 2501.07047). Written from the paper; no code is copied from its
+  JAX implementation (MIT).
 
 ## Tests
 

@@ -11,7 +11,8 @@ of two 30-bit primes. A vector is encrypted as the low coefficients of one
 polynomial. ``matrix @ encrypted`` packs ``n // d`` rows of length ``d`` per
 plaintext polynomial, each reversed at its own offset, so that one
 ciphertext-times-plaintext product holds each row's dot product at one
-coefficient: no rotations, no key switching, no bootstrapping. The
+coefficient: no rotations, no key switching, no bootstrapping. This is
+Cheetah's coefficient encoding (Huang et al., USENIX Security 2022). The
 products are NTTs (``ntt.NTT``), which run on the NPU as int8 matrix
 products.
 
