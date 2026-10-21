@@ -17,11 +17,12 @@ from pathlib import Path
 import aie.utils as aie_utils
 from aie import ir
 from aie.iron import CompileTime, Program
-from aie.utils.compile.jit.compilabledesign import CompilableDesign
+from aie.utils.compile.jit.compilabledesign import CacheEntry, CompilableDesign
 from aie.utils.npukernel import NPUKernel
 
 from ..declare import Operator
 from ..design import BuiltArray, OperatorDesign
+from . import prebuilt
 from .artifacts import Design
 from .callable import FullELFCallable, PerStepCallable
 from .compose import Composition
@@ -64,7 +65,7 @@ class FullELF:
         self.commands = tuple(commands)
         self.shared_words = dict(shared_words or {})
         self.composition: Composition | None = None
-        self.design: CompilableDesign | None = None
+        self.entry: CacheEntry | None = None
 
     @staticmethod
     def in_arena(scratch: list[str], residents: Mapping[str, object]) -> list[str]:
@@ -75,57 +76,58 @@ class FullELF:
         """Build the ELF once (idempotent); returns its path.
 
         Keyed on ``Composition.identity``, so a hit generates nothing: the
-        designs are composed, inside ``compile()``, only on a miss.
+        designs are composed, inside ``compile()``, only on a miss. Where
+        there are stores of prebuilt images (``prebuilt.stores``), the text
+        is composed first, and an image they hold is used as it is.
         """
-        design = self.design
-        if design is None:
-            dev = require_device()
-            if not dev.can_dispatch_full_elf:
-                raise RuntimeError(
-                    f"{dev.name} ({dev.arch}) does not dispatch a full ELF"
-                )
-            composition = self.composition = Composition(seq)
-            flags = [
-                *self.FLAGS,
-                *([self.TRACE_FLAG] if seq.traced else []),
-            ]
+        if self.entry is None:
+            self.entry = self._build(seq)
+        assert self.entry.elf is not None, "a full ELF's build has one"
+        return Path(self.entry.elf)
 
-            # The cache follows the modules a generator reaches, not the state
-            # of what it closes over, so the identity is one.
-            def generator(key: CompileTime[str]) -> ir.Module:
-                return ir.Module.parse(composition.text())
+    def _build(self, seq) -> CacheEntry:
+        dev = require_device()
+        if not dev.can_dispatch_full_elf:
+            raise RuntimeError(f"{dev.name} ({dev.arch}) does not dispatch a full ELF")
+        composition = self.composition = Composition(seq)
+        flags = [*self.FLAGS, *([self.TRACE_FLAG] if seq.traced else [])]
+        operators = seq.unique_operators()
+        aiecc_flags = list(
+            dict.fromkeys([*flags, *(f for op in operators for f in op.aiecc_flags)])
+        )
+        key = None
+        if prebuilt.stores():
+            key = prebuilt.key(composition.text(), aiecc_flags)
+            if (found := prebuilt.find(key)) is not None:
+                return found
 
-            design = CompilableDesign(
-                generator,
-                compile_kwargs={"key": composition.identity},
-                full_elf=True,
-                aiecc_flags=list(
-                    dict.fromkeys(
-                        [
-                            *flags,
-                            *(
-                                f
-                                for op in seq.unique_operators()
-                                for f in op.aiecc_flags
-                            ),
-                        ]
-                    )
-                ),
-            )
-            design.compile()
-            self.design = design
+        # The cache follows the modules a generator reaches, not the state
+        # of what it closes over, so the identity is one. The text is
+        # composed inside compile(), which records the kernels it names.
+        def generator(key: CompileTime[str]) -> ir.Module:
+            return ir.Module.parse(composition.text())
+
+        design = CompilableDesign(
+            generator,
+            compile_kwargs={"key": composition.identity},
+            full_elf=True,
+            aiecc_flags=aiecc_flags,
+        )
+        design.compile()
         entry = design.get_cache_entry()
-        assert entry is not None and entry.elf is not None, "compile() built it"
-        return Path(entry.elf)
+        assert entry is not None, "compile() built it"
+        if key is not None:
+            prebuilt.add(key, entry)
+        return entry
 
     def record(self, designs: list[Operator], sharing: list[tuple[str, ...]]):
-        """The designs' records, the ELF's cache entry, and no one stream."""
-        assert self.design is not None, "link() built the image"
+        """The designs' records, the ELF's entry, and no one stream."""
+        assert self.entry is not None, "link() built the image"
         records = tuple(
             Design(name=f"op{i}_{type(op).__name__}", operators=sharing[i])
             for i, op in enumerate(designs)
         )
-        return records, self.design.get_cache_entry(), None
+        return records, self.entry, None
 
     def callable(self, seq, arena) -> FullELFCallable:
         return FullELFCallable(seq, arena=arena)

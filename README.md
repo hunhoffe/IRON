@@ -114,6 +114,8 @@ The commands that run the operator and model tests are in [AGENTS.md](./AGENTS.m
 
 Each model is a package under [iron/applications/](./iron/applications/) over [iron/lm/](./iron/lm/), the library every model shares ([AGENTS.md](./AGENTS.md#language-models) describes it); its README says what is its own and where its files come from. The tests find a checkpoint at `$IRON_EXAMPLE_WEIGHTS_DIR/<checkpoint>`, default `/srv` (`iron.lm.testing.weights_dir`).
 
+`iron-serve qwen3 Qwen/Qwen3-0.6B --port 8001` serves a model over the OpenAI API (`/v1/chat/completions`, `/v1/embeddings` or `/v1/rerank`, by what the model does), which is how [Lemonade](https://lemonade-server.ai) runs IRON's models.
+
 | Model | Application | Checkpoint |
 |---|---|---|
 | Llama 3.2 1B, 3B | [llama](./iron/applications/llama/) | `llama3.2-1b`, `llama3.2-3b` |
