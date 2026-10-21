@@ -2254,6 +2254,20 @@ def test_one_row_times_a_number_is_elementwise():
     np.testing.assert_array_equal(got, want.astype(bfloat16).astype(np.float32))
 
 
+def test_one_row_no_line_splits_is_rowwise(npu2):
+    """A row elementwise lines can't split, as ResNet's 10-label bias, stays
+    rowwise and resolves.
+    """
+
+    class Biased(iron.Graph):
+        def body(self, x):
+            return x + 1
+
+    t = Biased().record(x=(1, 10))
+    assert _steps(t) == ["RowwiseAdd"]
+    t.steps[-1].op.resolved(npu2)
+
+
 def test_a_difference_is_one_axpy_and_a_number_less_a_handle_two_steps():
     class Differences(iron.Graph):
         def body(self, x, y):
