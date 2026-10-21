@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
@@ -30,7 +29,8 @@ import pytest
 from ml_dtypes import bfloat16
 from safetensors.numpy import load_file, save_file
 
-from iron.lm import Checkpoint, Sampler, TokenizerJson
+from iron.lm import Checkpoint, Sampler
+from iron.lm.model import TokenizerJson
 from iron.applications.llama.model import LlamaConfig
 from iron.lm import testing
 from iron.lm.checkpoint import renamed
@@ -212,6 +212,33 @@ def test_a_batchnorm_s_int64_counter_loads_beside_its_float_weights(tmp_path):
     assert tensors["bn.weight"].tolist() == [1.5, -2.0]
     assert tensors["bn.num_batches_tracked"].dtype == np.int64
     assert tensors["bn.num_batches_tracked"] == 7
+
+
+def test_checkpoint_rejects_a_tensor_with_no_byte_range(tmp_path):
+    blob = json.dumps({"x": {"dtype": "F32", "shape": [4]}}).encode()
+    path = tmp_path / "bad.safetensors"
+    path.write_bytes(struct.pack("<Q", len(blob)) + blob + bytes(16))
+    with pytest.raises(ValueError, match="x has no data_offsets"):
+        Checkpoint(path)
+
+
+def test_checkpoint_rejects_an_empty_archive(tmp_path):
+    path = tmp_path / "empty.pth"
+    zipfile.ZipFile(path, "w").close()
+    with pytest.raises(ValueError, match="an empty archive"):
+        Checkpoint(path)
+
+
+def test_a_layer_index_far_past_its_layers_is_refused(tmp_path):
+    """One tensor named layers.4000000000 would build four billion modules."""
+    header = {
+        "layers.4000000000.w": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}
+    }
+    blob = json.dumps(header).encode()
+    path = tmp_path / "far.safetensors"
+    path.write_bytes(struct.pack("<Q", len(blob)) + blob + bytes(4))
+    with pytest.raises(ValueError, match="layers.4000000000 is past its 1 layers"):
+        Checkpoint(path).tree()
 
 
 def test_checkpoint_rejects_an_unsupported_dtype(tmp_path):
@@ -771,3 +798,43 @@ def test_the_lm_testing_helpers_import_without_pytest():
     """A model's CLI reads ``weights_dir`` from ``iron.lm.testing``."""
     code = "import sys, iron.lm.testing; assert 'pytest' not in sys.modules"
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+@pytest.mark.parametrize(
+    "files, own, expect",
+    [
+        (
+            {
+                "cgroup.controllers": "",
+                "memory.max": "max",
+                "a/memory.max": str(2 << 30),
+                "a/b/memory.max": str(3 << 30),
+            },
+            "0::/a/b",
+            2 << 30,
+        ),
+        (
+            {"memory/job/memory.limit_in_bytes": str(5 << 30)},
+            "4:memory:/job",
+            5 << 30,
+        ),
+        ({"cgroup.controllers": "", "memory.max": "max"}, "0::/", None),
+    ],
+    ids=["v2-nested", "v1", "unbounded"],
+)
+def test_cgroup_limit_reads_the_lowest_ceiling(
+    tmp_path, monkeypatch, files, own, expect
+):
+    """``host_budget``'s ceiling: the lowest cgroup v2 ``memory.max`` on the
+    way to the root, v1's ``memory.limit_in_bytes``, or none.
+    """
+    from iron.lm import model
+
+    root = tmp_path / "cgroup"
+    for name, text in files.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(text)
+    (tmp_path / "self").write_text(own + "\n")
+    monkeypatch.setattr(model, "CGROUP", root)
+    monkeypatch.setattr(model, "PROC_CGROUP", tmp_path / "self")
+    assert model._cgroup_limit() == expect

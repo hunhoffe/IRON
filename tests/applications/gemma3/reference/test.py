@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
@@ -43,6 +42,7 @@ TOY = Gemma3Config(
 
 class TestGemma3(Decoder):
     model, config, model_type, name = Gemma3, TOY, "gemma3_text", "toy"
+    recorded = dict(prefill_chunk=256)
 
     @classmethod
     def names(cls):

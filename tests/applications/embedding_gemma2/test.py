@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
@@ -25,7 +24,6 @@ import pytest
 from aie.utils.benchmark import run_iters
 from aie.utils.verify import Tolerance, compare
 from ml_dtypes import bfloat16
-from PIL import Image
 
 import iron
 from iron import Scratchpad
@@ -34,11 +32,12 @@ from iron.applications.embedding_gemma2.model import (
     Config,
     EmbeddingGemma,
     Multimodal,
-    Tokenizer,
+    TextProcessor,
 )
 from iron.applications.gemma4.audio import AudioConfig, AudioTower
 from iron.applications.gemma4.vision import VisionConfig, VisionTower
-from iron.lm import Checkpoint, prompt_text, rope_angles
+from iron.lm import Checkpoint, rope_angles
+from iron.lm.model import prompt_text
 from iron.lm.golden import Golden
 from iron.lm.testing import Download, check_embedding, require, weights_dir
 from iron.operators.copy import Copy
@@ -184,6 +183,8 @@ def photo(name: str) -> np.ndarray:
     """`COCO[name]`, fetched into IRON's cache and decoded:
     `(height, width, 3)` uint8.
     """
+    from PIL import Image
+
     with Image.open(COCO[name].fetch()) as image:
         return np.array(image.convert("RGB"))
 
@@ -218,7 +219,7 @@ def weights():
 @pytest.fixture(scope="module")
 def tokenizer():
     require(DIRECTORY / "tokenizer.json")
-    return Tokenizer(DIRECTORY / "tokenizer.json")
+    return TextProcessor(DIRECTORY / "tokenizer.json")
 
 
 @pytest.fixture(scope="module")
@@ -259,7 +260,7 @@ def embedding(reference, text, task, speech=None, name=None, dims=None):
     e = reference(
         f"embedding {task} {speech} {name} {text}",
         lambda model: model.encode(
-            Tokenizer.TASKS[task] + text,
+            TextProcessor.TASKS[task] + text,
             None if speech is None else clip(speech),
             None if name is None else photo(name),
         ),

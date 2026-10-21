@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
@@ -26,6 +25,7 @@ from iron import Scratchpad
 from iron.common import Built, Operator
 from iron.common.design import OperatorDesign
 from iron.common.image.packaging import Kind
+from iron.tests.support.tools import requires
 
 WIDTH = 256
 MAX_K = 16
@@ -110,6 +110,7 @@ def test_one_image_repeats_a_tile_k_times(image, npu2):
         assert wrong.size == 0, f"{k=}: {len(wrong)} differ, first {wrong[:4]}"
 
 
+@requires("aiecc", "peano")
 def test_npu1_xclbin_pushes_the_call_s_repeat_count(npu1):
     op = _bound_op().resolved()
     design = OperatorDesign(op, full_elf=False).compile()

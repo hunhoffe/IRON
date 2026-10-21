@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
@@ -48,6 +47,7 @@ TOY = Gemma4Config(
 
 class TestGemma4(Decoder):
     model, config, model_type, name = Gemma4, TOY, "gemma4", "toy"
+    recorded = dict(prefill_chunk=256)
     json = {
         "text_config": {
             "vocab_size_per_layer_input": TOY.vocab_size,

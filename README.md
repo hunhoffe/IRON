@@ -90,8 +90,9 @@ If starting from `Ubuntu 24.04` you may need to update the Linux kernel to 6.11+
    source /opt/xilinx/xrt/setup.sh
    ```
 
-1. Install required Python packages (from requirements.txt), the mlir-aie
-   release wheel it pins among them:
+1. Install required Python packages (from requirements.txt). The mlir-aie
+   it pins is the last release; [AGENTS.md](AGENTS.md#environment) says
+   how to run against the newer one this branch needs:
    ```bash
    pip install -r requirements.txt
    ```
@@ -112,7 +113,7 @@ The commands that run the operator and model tests are in [AGENTS.md](./AGENTS.m
 
 ## Models
 
-Each model is a package under [iron/applications/](./iron/applications/) over [iron/lm/](./iron/lm/), the library every model shares ([AGENTS.md](./AGENTS.md#language-models) describes it); its README says what is its own and where its files come from. The tests find a checkpoint at `$IRON_EXAMPLE_WEIGHTS_DIR/<checkpoint>`, default `/srv` (`iron.lm.testing.weights_dir`).
+Each model is a package under [iron/applications/](./iron/applications/) over [iron/lm/](./iron/lm/), the library every model shares ([AGENTS.md](./AGENTS.md#language-models) describes it). Each model's README says which code is specific to it and where its files come from. The tests find a checkpoint at `$IRON_EXAMPLE_WEIGHTS_DIR/<checkpoint>`, default `/srv` (`iron.lm.testing.weights_dir`).
 
 | Model | Application | Checkpoint |
 |---|---|---|
@@ -145,7 +146,7 @@ What the text decoders (Llama to LFM2 above) share:
 
 - **Run**: `python -m iron.applications.<application>.model <directory or repository id> [--prompt TEXT]`, the directory holding `config.json`, the checkpoint and the tokenizer; `-v` logs each compile; `--help` lists the options, and [Llama's README](./iron/applications/llama/README.md#running) explains them.
 - **Test**: `pytest tests/applications/<application>/` (or `tests/applications/decoders/ -k <application>` for the decoders that share one test) loads the model once and checks throughput, accuracy against transformers' logits recorded in `golden.npz` beside the checkpoint, and determinism. `pytest <test> --record-goldens -p no:xdist` records missing logits where torch and transformers are installed; they are not IRON's requirements.
-- **Tune**: `python -m iron.lm.tune <application> --checkpoint <directory>/model.safetensors` times each operator at every setting of its tunables and rewrites the application's `profiles/<device>.json`; review it with `git diff` and commit it.
+- **Tune**: `python -m iron.lm.tune <application> --checkpoint <directory>` times each operator at every setting of its tunables and rewrites the application's `profiles/<device>.json`; review it with `git diff` and commit it.
 
 ## Architecture
 

@@ -669,8 +669,9 @@ def _broadcast(whole, rowwise, x: Handle, y) -> Handle:
     shape = tuple(getattr(y, "shape", ()))
     if len(x.shape) > 1 and shape == x.shape[-1:]:
         rows = x.elements // x.shape[-1]
-        if rows == 1:
-            # One row: the row is an operand of its shape, streamed, not held in a core.
+        if rows == 1 and x.shape[-1] % 64 == 0:
+            # One row: the row is an operand of its shape, streamed, not held
+            # in a core, where elementwise lines (64-element steps) split it.
             return whole.step(x.reshape(x.shape[-1]), y).reshape(x.shape)
         return rowwise.step(x.reshape(rows, x.shape[-1]), y).reshape(x.shape)
     if shape == x.shape:

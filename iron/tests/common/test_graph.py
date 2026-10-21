@@ -2254,6 +2254,20 @@ def test_one_row_times_a_number_is_elementwise():
     np.testing.assert_array_equal(got, want.astype(bfloat16).astype(np.float32))
 
 
+def test_one_row_no_line_splits_is_rowwise(npu2):
+    """A row elementwise lines can't split, as ResNet's 10-label bias, stays
+    rowwise and resolves.
+    """
+
+    class Biased(iron.Graph):
+        def body(self, x):
+            return x + 1
+
+    t = Biased().record(x=(1, 10))
+    assert _steps(t) == ["RowwiseAdd"]
+    t.steps[-1].op.resolved(npu2)
+
+
 def test_a_difference_is_one_axpy_and_a_number_less_a_handle_two_steps():
     class Differences(iron.Graph):
         def body(self, x, y):
@@ -2398,3 +2412,26 @@ def test_a_refused_step_shows_an_unheld_param_as_an_array_of_its_shape():
 
     with pytest.raises(ValueError, match=r"^Project: GEMV\(ndarray \[256, 512\], x\)"):
         Project().record(x=(256,))
+
+
+def test_reference_without_a_device_names_how_to_bind_one(monkeypatch):
+    class Doubled(iron.Graph):
+        def body(self, x):
+            return x + x
+
+    x = np.ones((4, 64), dtype=bfloat16)
+    np.testing.assert_array_equal(Doubled().reference(x, dev=from_name("npu1")), x + x)
+    monkeypatch.setattr(aie_utils, "ensure_current_device", lambda: None)
+    with pytest.raises(RuntimeError, match="set_current_device"):
+        Doubled().reference(x)
+
+
+def test_a_per_call_value_s_default_is_given_when_left_out():
+    class Defaulted(iron.Graph):
+        def body(self, x, *, n: iron.Scratchpad[np.int32] = 1):
+            return x + x
+
+    x = np.ones((4, 64), dtype=bfloat16)
+    np.testing.assert_array_equal(Defaulted().reference(x), x + x)
+    with pytest.raises(TypeError, match=r"\['m'\] unknown"):
+        Defaulted().reference(x, m=2)

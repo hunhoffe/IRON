@@ -53,8 +53,10 @@ class _Shard:
         header.pop("__metadata__", None)
         self.tensors = {}
         for name, t in header.items():
-            if t["dtype"] not in self.DTYPES:
-                raise ValueError(f"{self.path}: {name} is {t['dtype']}")
+            if t.get("dtype") not in self.DTYPES:
+                raise ValueError(f"{self.path}: {name} is {t.get('dtype')}")
+            if len(t.get("data_offsets", ())) != 2 or "shape" not in t:
+                raise ValueError(f"{self.path}: {name} has no data_offsets or shape")
             begin, end = (8 + length + o for o in t["data_offsets"])
             dtype = np.dtype(self.DTYPES[t["dtype"]])
             if (
@@ -74,6 +76,8 @@ class _Shard:
         bytes, which PyTorch stores uncompressed.
         """
         archive = zipfile.ZipFile(self.path)
+        if not archive.namelist():
+            raise ValueError(f"{self.path}: an empty archive, not a checkpoint")
         root = archive.namelist()[0].split("/")[0]
 
         def storage(key: str) -> np.ndarray:
@@ -197,6 +201,14 @@ class _TorchUnpickler(pickle.Unpickler):
         )
 
 
+def weights_file(directory) -> Path:
+    """A checkpoint directory's weights: a sharded checkpoint's
+    ``model.safetensors.index.json``, else ``model.safetensors``.
+    """
+    index = Path(directory) / "model.safetensors.index.json"
+    return index if index.exists() else index.with_name("model.safetensors")
+
+
 class Checkpoint:
     """A ``.safetensors`` file or a PyTorch checkpoint, or, given its
     ``.safetensors.index.json``, every shard a sharded checkpoint splits
@@ -250,12 +262,12 @@ class Checkpoint:
     def tree(
         self, fill: Literal["read", "random", "unread"] = "read", seed: int = 0
     ) -> SimpleNamespace:
-        """The checkpoint as a tree of its tensors, each a ``param``, by
-        their names, each split at its dots:
-        ``model.layers.3.self_attn.q_proj.weight`` is
-        ``tree.model.layers[3].self_attn.q_proj.weight``, a run of indices a
-        list, an empty module at an index the checkpoint skips (a module
-        holding no tensor, as ``nn.Sequential``'s ``Flatten``).
+        """Return the checkpoint's tensors as a tree of ``param``, split at the dots.
+
+        ``model.layers.3.self_attn.q_proj.weight`` becomes
+        ``tree.model.layers[3].self_attn.q_proj.weight``. A run of indices
+        becomes a list. An index the checkpoint skips, such as a tensorless
+        ``Flatten`` in an ``nn.Sequential``, becomes an empty module.
 
         Args:
             fill: What the arrays hold. ``"read"``: the tensors, views of the
@@ -317,7 +329,13 @@ def _tree(node, path: str, file) -> Any:
         return node
     items = {key: _tree(child, f"{path}{key}.", file) for key, child in node.items()}
     if items and all(key.isdigit() for key in items):
-        indices = range(max(map(int, items)) + 1)
+        top = max(map(int, items))
+        # A skipped index is a module with no weights (an activation in a
+        # Sequential), never most of them: a name can't make the host
+        # build millions.
+        if top >= 4 * len(items) + 4:
+            raise ValueError(f"{file}: {path}{top} is past its {len(items)} layers")
+        indices = range(top + 1)
         tree = _Layers(
             items[str(i)] if str(i) in items else _tree({}, f"{path}{i}.", file)
             for i in indices

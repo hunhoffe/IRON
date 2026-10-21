@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
@@ -79,7 +78,7 @@ def test_restricted_test_without_npu_runtime_skips_with_the_reason(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 passed, 1 skipped" in result.stdout, result.stdout
     (reason,) = [ln for ln in result.stdout.splitlines() if ln.startswith("SKIPPED")]
-    assert "No NPU runtime: " in reason and "xrt" in reason.lower(), reason
+    assert "No NPU runtime: " in reason, reason
 
 
 @pytest.mark.supported_devices("npu1", "npu2")

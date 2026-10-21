@@ -25,8 +25,13 @@ Elsewhere:
 
 Install as the README says. XRT must be sourced
 (`source /opt/xilinx/xrt/setup.sh`) before anything runs on a device.
-`requirements.txt` pins an mlir-aie wheel, which brings the kernel library
-and finds the Peano wheel itself.
+`requirements.txt` pins the last mlir-aie release, which brings the
+kernel library and finds the Peano wheel itself. This branch needs a newer
+mlir-aie: the commit in `.github/workflows/ci-lint.yml`'s `ref:`. Until a
+release carries it, install the pinned wheel and copy that commit's
+`python/` over the wheel's `aie/` package, keeping the wheel's
+`_mlir_libs`; set `MLIR_AIE_KERNEL_SOURCES` to the checkout. A pull request
+that needs a newer mlir-aie bumps that `ref:` in the same pull request.
 
 - Compiled artifacts live in mlir-aie's content-keyed cache,
   `~/.npu/cache/<hash>/` or `$NPU_CACHE_HOME`; nothing is written to the
@@ -67,11 +72,11 @@ Formatting and licence checks are in CONTRIBUTING.md.
   which is how a `Profile` names them. `flm.ProjectionGEMM` is not
   `iron.operators.GEMM`.
 - `iron/common/declare/`: IRON's `Operator` over mlir-aie's declaration
-  (`aie.utils.compile.jit`'s `param()`, `tunable()`, `per_call()`), the
-  bound operands and `Value`s a build reads (a `Value` is a `per_call()`
-  member bound to one operator, `op.value(name)`; `op.<name>` is it too,
-  except an extent's, which reads as its number), `Xclbin`, `Profile`,
-  `Precision`.
+  (`aie.utils.compile.jit`'s `param()`, `tunable()`, `per_call()`), and the
+  bound operands and `Value`s a build reads. A `Value` is one operator's
+  `per_call()` member, `op.value(name)`, which `op.<name>` also returns
+  except for an extent, which reads as its number. Also `Xclbin`,
+  `Profile` and `Precision`.
 - `iron/common/design/`: an operator's MLIR module (`OperatorDesign`) and
   its runtime sequence (`OperatorRuntime`).
 - `iron/common/graph/`: `iron.Graph`, recording and `compile`.
@@ -119,8 +124,9 @@ CONTRIBUTING.md walks through the common case. The rules:
    it needs more than one module.
 2. Declare `class X(Operator)`:
    - Parameters are mlir-aie's `param()`. A host shape's dimension is one
-     (`M: int = param()`); a tunable is `tunable()`, which a call, a profile
-     or `resolve(dev)` fills, in that order, then its default.
+     (`M: int = param()`). A tunable is `tunable()`. Its value comes from
+     the call if given, else the profile, else `resolve(dev)`, else its
+     default.
      Identity (`array_key`, `design_key`) is taken after resolution.
    - Operands are aie.iron's `In`/`Out`/`InOut`, declared by shape. An
      operand with `obj_shape=` (in the units a core reads; `per=` a column
@@ -164,8 +170,10 @@ CONTRIBUTING.md walks through the common case. The rules:
    operation per output element is not the count. `tolerance()` where the
    kernel's contract is not what the output is held to (a data mover
    returns `Tolerance.exact()`).
-6. `test = Testing(cases, draw=...)` on the class. Every operator has at
-   least one `bench=True` case in the default suite, large enough that
+6. `test = Testing(cases, draw=...)` on the class. A tolerance that is not
+   exact says where its number comes from in `note=`. Every operator
+   without a `test.py` of its own has at least one `bench=True` case in
+   the default suite, large enough that
    dispatch overhead (about 160 us) does not dominate, and a `lower=True`
    case for each layout or dtype its first default case does not reach.
    `iron/tests/operators/test_catalog.py` runs every declaration; a test with a

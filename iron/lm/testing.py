@@ -122,7 +122,7 @@ def load_from_flags(
     require(*files, staged=staged)
     max_seq_len = request.config.getoption("--max-seq-len")
     return functools.partial(
-        model.load, weights.parent, seed=seed, max_seq_len=max_seq_len
+        model.load, weights.parent, random_weights=seed, max_seq_len=max_seq_len
     )
 
 
@@ -324,7 +324,7 @@ def check_deep_decode(model, position: int, bound: float, chars: int = 1024, *, 
     tokens = prompt(model, chars, 1)
     token = greedy(model.logits(tokens))
     # A decode step takes the token; the device gathers its embedding row.
-    values = dict(token=token, position=position, start=0, rows=1, rope_start=0)
+    values = dict(token=token, position=position)
     with _fill_caches(model, len(tokens), position):
         got, _ = model(**values)
         got = got.numpy()

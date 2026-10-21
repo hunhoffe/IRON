@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
@@ -12,7 +11,6 @@ import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 import pytest
 from ml_dtypes import bfloat16
-from PIL import Image
 
 from iron.applications.yolox.model import (
     BN_EPS,
@@ -170,6 +168,8 @@ CENTRE, SIZE, SCORE_ERROR = 4.5, 0.06, 0.3
 
 
 def image(name: str) -> np.ndarray:
+    from PIL import Image
+
     with Image.open(COCO[name][0].fetch()) as photo:
         return preprocess(np.asarray(photo.convert("RGB")))
 

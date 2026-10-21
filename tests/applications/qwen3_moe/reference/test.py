@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
@@ -37,6 +36,7 @@ TOY = Qwen3MoeConfig(
 
 class TestQwen3Moe(Decoder):
     model, config, model_type, name = Qwen3Moe, TOY, "qwen3_moe", "toy"
+    recorded = dict(num_experts=64)
     # One whose bf16 router picks the experts float32 does at every step.
     seed = 0
 

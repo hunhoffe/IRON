@@ -25,7 +25,7 @@ import numpy as np
 import iron
 from iron.common.image.packaging import require_device
 
-from .checkpoint import Checkpoint
+from .checkpoint import Checkpoint, weights_file
 from .config import Config, DecoderConfig
 from .golden import Golden, HuggingFace
 from .generation import Sampler
@@ -44,6 +44,8 @@ HOST_RESERVE = 8 << 30
 # 337 MB. Rounded up with margin for a bigger compile or several xdist
 # workers.
 CGROUP_RESERVE = 512 << 20
+CGROUP = Path("/sys/fs/cgroup")
+PROC_CGROUP = Path("/proc/self/cgroup")
 
 
 def _cgroup_limit() -> int | None:
@@ -52,16 +54,16 @@ def _cgroup_limit() -> int | None:
     ``memory.limit_in_bytes``; ``None`` where neither bounds it (no cgroup
     mounted, or every level reads ``max``).
     """
-    root = Path("/sys/fs/cgroup")
+    root = CGROUP
     unified = (root / "cgroup.controllers").exists()
     try:
-        lines = Path("/proc/self/cgroup").read_text().splitlines()
+        lines = PROC_CGROUP.read_text().splitlines()
     except FileNotFoundError:
         return None
     own = None
     for line in lines:
         _, controllers, path = line.split(":", 2)
-        if controllers == "" if unified else "memory" in controllers.split(","):
+        if (controllers == "") if unified else ("memory" in controllers.split(",")):
             own = path
             break
     if own is None:
@@ -84,12 +86,11 @@ def _cgroup_limit() -> int | None:
 
 
 def host_budget() -> int:
-    """The bytes a model's arena may take here: physical memory less
-    ``HOST_RESERVE`` (the rest of the host), or a cgroup's lower ceiling
-    less ``CGROUP_RESERVE`` (this process's own, a cgroup already
-    excluding the rest of the host) where one bounds this process (a
-    container, or a job's own, as CI's self-hosted runners and a capped
-    test both impose with systemd).
+    """Return the bytes a model's arena may use on this host.
+
+    That is physical memory minus ``HOST_RESERVE``. When a cgroup caps this
+    process (a container, or a systemd-limited CI job), it is the smaller of
+    that and the cgroup's limit minus ``CGROUP_RESERVE``.
     """
     phys = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") - HOST_RESERVE
     limit = _cgroup_limit()
@@ -160,16 +161,11 @@ class Tokenizer:
             raise ValueError("the checkpoint has no chat template")
         _models_extra("jinja2")
         from jinja2 import TemplateError
-        from jinja2.sandbox import ImmutableSandboxedEnvironment
 
         def raise_exception(message):
             raise TemplateError(message)
 
-        env = ImmutableSandboxedEnvironment(
-            trim_blocks=True, lstrip_blocks=True, extensions=["jinja2.ext.loopcontrols"]
-        )
-        template = env.from_string(self.chat_template)
-        text = template.render(
+        text = _chat_template(self.chat_template).render(
             messages=messages,
             add_generation_prompt=True,
             bos_token=(
@@ -181,6 +177,17 @@ class Tokenizer:
             strftime_now=lambda f: datetime.datetime.now().strftime(f),
         )
         return self.encoding.encode(text)
+
+
+@functools.lru_cache(maxsize=8)
+def _chat_template(source: str):
+    """``source`` compiled once, in jinja2's sandbox, as transformers sets it up."""
+    from jinja2.sandbox import ImmutableSandboxedEnvironment
+
+    env = ImmutableSandboxedEnvironment(
+        trim_blocks=True, lstrip_blocks=True, extensions=["jinja2.ext.loopcontrols"]
+    )
+    return env.from_string(source)
 
 
 class TokenizerJson:
@@ -227,8 +234,8 @@ class Model(iron.Graph):
 
     A subclass sets ``config`` to the ``Config`` class that reads
     ``config.json``, or to one fixed shape. ``load`` sets ``checkpoint`` and
-    ``tokenizer`` on the instance, and ``seed`` when the weights are drawn
-    at random. With a seed, a prompt without a tokenizer is random tokens,
+    ``tokenizer`` on the instance, and ``random_weights``, the seed, when the
+    weights are drawn at random. Then a prompt without a tokenizer is random tokens,
     so speed, accuracy and determinism can be checked without real weights.
     ``stats`` holds the last generation's timings.
     """
@@ -240,7 +247,7 @@ class Model(iron.Graph):
     # What loads the checkpoint into transformers to record its goldens.
     hugging_face: type = HuggingFace
     checkpoint: Checkpoint | None = None
-    seed: int | None = None
+    random_weights: int | None = None
     tokenizer: Tokenizer | None = None
     stats: Stats | None = None
     # Set by a subclass. On the class, config is the Config class or one
@@ -260,20 +267,22 @@ class Model(iron.Graph):
         cls,
         path,
         *,
-        seed: int | None = None,
+        random_weights: int | None = None,
         max_seq_len: int | None = None,
         full_elf: bool | None = None,
     ) -> "Model":
         """``from_checkpoint``'s model compiled and loaded, weights uploaded;
         ``full_elf`` is every version's packaging (``load_versions``).
         """
-        model = cls.from_checkpoint(path, seed=seed, max_seq_len=max_seq_len)
+        model = cls.from_checkpoint(
+            path, random_weights=random_weights, max_seq_len=max_seq_len
+        )
         assert model.checkpoint is not None, "from_checkpoint gives it one"
         return model.load_versions(release=model.checkpoint.release, full_elf=full_elf)
 
     @classmethod
     def from_checkpoint(
-        cls, path, *, seed: int | None = None, max_seq_len: int | None = None
+        cls, path, *, random_weights: int | None = None, max_seq_len: int | None = None
     ) -> "Model":
         """The model of a Hugging Face repository's files, not yet loaded,
         its context ``max_seq_len`` or else fitted to this host (``fit``).
@@ -283,8 +292,8 @@ class Model(iron.Graph):
                 or a sharded one's ``model.safetensors.index.json``, and
                 ``tokenizer.json``; or a repository's id, those files
                 downloaded to Hugging Face's cache.
-            seed: In place of the checkpoint's weights and the tokenizer,
-                weights drawn at ``seed`` in its shapes (only its header is
+            random_weights: A seed: in place of the checkpoint's weights and
+                its tokenizer, weights drawn at it in its shapes (only its header is
                 read).
             max_seq_len: The longest context served, prompt and generated
                 tokens together, at most the checkpoint's own.
@@ -302,9 +311,7 @@ class Model(iron.Graph):
                 "chat_template.jinja",
             ]
             directory = Path(snapshot_download(str(path), allow_patterns=files))
-        weights = directory / "model.safetensors.index.json"
-        if not weights.exists():
-            weights = directory / "model.safetensors"
+        weights = weights_file(directory)
         config = cls.default_config(weights)
         if max_seq_len is None:
             config = cls.fit(config, weights)
@@ -317,10 +324,14 @@ class Model(iron.Graph):
                 )
             config = dataclasses.replace(config, max_seq_len=max_seq_len)
         checkpoint = Checkpoint(weights)
-        tree = checkpoint.tree() if seed is None else checkpoint.tree("random", seed)
+        tree = (
+            checkpoint.tree()
+            if random_weights is None
+            else checkpoint.tree("random", random_weights)
+        )
         model = cls(config, tree)
-        model.checkpoint, model.seed = checkpoint, seed
-        if seed is None:
+        model.checkpoint, model.random_weights = checkpoint, random_weights
+        if random_weights is None:
             settings = directory / "tokenizer_config.json"
             jinja = directory / "chat_template.jinja"
             found = json.loads(settings.read_text()) if settings.exists() else {}
@@ -442,7 +453,7 @@ class Model(iron.Graph):
         beside the checkpoint (``golden.npz``) from its ``config.json`` and
         its tensors (``Checkpoint.fingerprint``).
         """
-        if self.seed is not None:
+        if self.random_weights is not None:
 
             class Host(OnHost, type(self)):
                 pass
@@ -459,14 +470,16 @@ class Model(iron.Graph):
     def prompt(self, chars: int, skip: int = 0) -> list[int]:
         """``chars`` characters of ``prompt.txt`` from ``skip`` on, tokenized.
 
-        With no tokenizer, ``chars // 3`` tokens drawn at ``seed`` and
+        With no tokenizer, ``chars // 3`` tokens drawn at the weights' seed and
         ``skip``: a little more than the text encodes to (Llama 3's
         tokenizer takes 3.7 characters a token), so a check sized in
         characters runs at about its size on the text.
         """
         if self.tokenizer is None:
-            assert self.seed is not None, "without a tokenizer, weights drawn at a seed"
-            rng = np.random.default_rng((self.seed, skip))
+            assert (
+                self.random_weights is not None
+            ), "without a tokenizer, weights drawn at random"
+            rng = np.random.default_rng((self.random_weights, skip))
             draw = rng.integers(0, self.config.vocab_size, chars // 3 - 1)
             return [self.bos, *draw]
         return self.tokenizer(prompt_text(chars, skip))
@@ -613,15 +626,16 @@ def _is_text(prompt) -> bool:
 class OnHost:
     """A model with its versions stood in by its graph's reference
     (``Graph.reference``), run at whatever shape it is called with: the
-    model with no device, mixed in before the model's own class. It
-    compiles nothing, and ``generate`` draws on the host.
+    model with no NPU, tiled for the bound device, mixed in before the
+    model's own class. It compiles nothing, and ``generate`` draws on the
+    host.
     """
 
     if TYPE_CHECKING:  # the model's, mixed in after
 
         def logits(self, tokens) -> np.ndarray: ...
 
-        def reference(self, *tensors, **values) -> Any: ...
+        def reference(self, *tensors, dev=None, **values) -> Any: ...
 
     def _draw(self, tokens, max_tokens: int, sampler: Sampler, each=True):
         history = [int(t) for t in tokens]

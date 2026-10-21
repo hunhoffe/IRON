@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
@@ -15,7 +14,7 @@ import numpy as np
 import pytest
 
 from iron.applications.qwen3_5.model import Qwen35, Qwen35Config
-from iron.lm import TokenizerJson
+from iron.lm.model import TokenizerJson
 from iron.lm.checkpoint import leaves
 from iron.lm.testing import require, weights_dir
 from iron.tests.support.llama_reference import Decoder
@@ -47,6 +46,7 @@ TOY = Qwen35Config(
 
 class TestQwen35(Decoder):
     model, config, model_type, name = Qwen35, TOY, "qwen3_5", "toy"
+    recorded = dict(prefill_chunk=256, linear_num_value_heads=64)
     # Seed 7's last greedy step's top two swap in bf16.
     seed = 1
     json = {"text_config": {"rope_parameters": {"rope_type": "default"}}}
