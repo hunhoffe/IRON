@@ -33,6 +33,16 @@ A **fusion** runs several of a graph's steps as one device configuration.
   </picture>
 </p>
 </details>
+<details>
+<summary>Up close: kernels, buffers, DMA channels and routes</summary>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/swiglu_fusion.detail.dark.svg">
+    <img src="assets/swiglu_fusion.detail.light.svg" width="480"
+         alt="A close-up of the fused SwiGLU's tiles: each core's kernel and buffers, the mem tiles, the shim DMA channels and the routes between them.">
+  </picture>
+</p>
+</details>
 <!-- /illustration -->
 
 ## Walkthrough of [swiglu_fusion.py](./swiglu_fusion.py)
