@@ -221,3 +221,21 @@
 
 /* ── Footer ──────────────────────────────────────────────────────────────── */
 .md-footer { font-size: 0.8rem; }
+
+/* Illustration viewers (docs/hooks/illustrations.py): tabs per view, the image
+   for Material's current scheme, at most the 480px the scenes are drawn for. */
+.iron-ill { margin: 1.5em auto; max-width: 480px; }
+.iron-ill-tabs { display: flex; gap: .4em; margin-bottom: .6em; }
+.iron-ill-tabs button {
+  font: inherit; font-size: .75rem; padding: .3em .9em; cursor: pointer;
+  border: 1px solid var(--md-default-fg-color--lighter); border-radius: .3em;
+  background: none; color: var(--md-default-fg-color);
+}
+.iron-ill-tabs button[aria-selected="true"] {
+  background: var(--md-accent-fg-color); border-color: var(--md-accent-fg-color);
+  color: var(--md-accent-bg-color);
+}
+.iron-ill-pane img { display: block; width: 100%; height: auto; }
+.iron-ill-dark { display: none !important; }
+[data-md-color-scheme="slate"] .iron-ill-light { display: none !important; }
+[data-md-color-scheme="slate"] .iron-ill-dark { display: block !important; }
