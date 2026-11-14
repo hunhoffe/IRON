@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# PILOT. Written by iron-design-explorer (`iron-explorer animate views --capture`),
+# with the scenes it generated; never edited by hand.
+
+[swiglu_fusion]
+views = ["overview", "array", "detail"]
+scene = "views.fusion"
+source = "programming_guide/section-9/swiglu_fusion.py:SwiGLU"
+source_commit = "272a006"
+inputs = "sha256:357d8deb23bcfc5b"
+renderer = "iron-design-explorer 672f59f"
+positions = "compiler"

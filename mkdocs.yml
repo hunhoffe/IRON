@@ -75,6 +75,9 @@ theme:
 extra_css:
   - assets/css/iron.css
 
+extra_javascript:
+  - assets/javascripts/illustrations.js
+
 extra:
   social:
     - icon: fontawesome/brands/github
@@ -129,6 +132,8 @@ hooks:
   - docs/hooks/spdx_header.py
   # Rewrites links that escape the doc tree into repo source to GitHub URLs.
   - docs/hooks/rewrite_source_links.py
+  # A generated illustration's views as one tabbed viewer (pilot).
+  - docs/hooks/illustrations.py
 
 markdown_extensions:
   - admonition
